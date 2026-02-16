@@ -26,52 +26,57 @@ color = Color(0, 0, 0, 1)
 
 [node name="Title" type="Label" parent="." unique_id=2060935438]
 layout_mode = 1
-offset_left = 100.0
-offset_top = 80.0
-offset_right = 412.0
-offset_bottom = 150.0
+offset_left = 304.0
+offset_top = 150.0
+offset_right = 1104.0
+offset_bottom = 300.0
+theme_override_font_sizes/font_size = 64
 text = "BATTLE CITY"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="Option1P" type="Label" parent="." unique_id=1504584301]
 layout_mode = 1
-offset_left = 160.0
-offset_top = 220.0
-offset_right = 352.0
-offset_bottom = 260.0
+offset_left = 504.0
+offset_top = 400.0
+offset_right = 904.0
+offset_bottom = 460.0
+theme_override_font_sizes/font_size = 36
 text = "1 PLAYER"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="Option2P" type="Label" parent="." unique_id=175023577]
 layout_mode = 1
-offset_left = 160.0
-offset_top = 270.0
-offset_right = 352.0
-offset_bottom = 310.0
+offset_left = 504.0
+offset_top = 480.0
+offset_right = 904.0
+offset_bottom = 540.0
+theme_override_font_sizes/font_size = 36
 text = "2 PLAYERS"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="Cursor" type="Label" parent="." unique_id=779641737]
 layout_mode = 1
-offset_left = 130.0
-offset_top = 220.0
-offset_right = 155.0
-offset_bottom = 260.0
+offset_left = 454.0
+offset_top = 400.0
+offset_right = 504.0
+offset_bottom = 460.0
+theme_override_font_sizes/font_size = 36
 text = ">"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="Controls" type="Label" parent="." unique_id=1639186135]
 layout_mode = 1
-offset_left = 80.0
-offset_top = 360.0
-offset_right = 432.0
-offset_bottom = 440.0
+offset_left = 354.0
+offset_top = 650.0
+offset_right = 1054.0
+offset_bottom = 800.0
+theme_override_font_sizes/font_size = 28
 text = "P1: WASD + SPACE
 P2: ARROWS + RCTRL
-ENTER to start"
+F11: Toggle Fullscreen"
 horizontal_alignment = 1
 vertical_alignment = 1

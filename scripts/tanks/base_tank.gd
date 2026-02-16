@@ -3,6 +3,7 @@ extends CharacterBody2D
 
 const HALF_TILE: int = 16
 const TILE_SIZE: int = 32
+const TANK_SIZE: int = 64  # Tanks occupy 2x2 tiles
 
 @export var move_speed: float = 128.0
 @export var max_health: int = 1
@@ -70,7 +71,7 @@ func shoot() -> void:
 	# 3-star player tanks can destroy steel
 	if self is PlayerTank and self.star_level >= 3:
 		bullet.can_destroy_steel = true
-	bullet.global_position = global_position + current_direction * (TILE_SIZE * 0.5)
+	bullet.global_position = global_position + current_direction * (TANK_SIZE * 0.5)
 
 	# Set collision layers based on owner
 	if bullet.is_player_bullet:
@@ -108,6 +109,7 @@ func _spawn_explosion() -> void:
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var explosion := explosion_scene.instantiate()
 	explosion.global_position = global_position
+	explosion.scale = Vector2(2, 2)  # Larger explosion for 2x2 tanks
 	var effects_container = get_tree().get_first_node_in_group("effects_container")
 	if effects_container:
 		effects_container.add_child(explosion)

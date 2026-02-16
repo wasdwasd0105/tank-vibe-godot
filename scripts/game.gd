@@ -51,14 +51,15 @@ func _spawn_player(player_id: int) -> void:
 	var player: PlayerTank = player_scene.instantiate()
 	player.player_id = player_id
 
-	# Spawn positions: P1 bottom-left, P2 bottom-right
+	# Spawn positions: P1 bottom-left area, P2 bottom-right area
+	# Tanks are 2x2 tiles, centered on even tile boundaries
 	var spawn_x: float
 	if player_id == 0:
-		spawn_x = 48 + 4 * 32 + 16  # Grid column 4
+		spawn_x = 48 + 12 * 32 + 32  # Grid columns 12-13 center
 	else:
-		spawn_x = 48 + 8 * 32 + 16  # Grid column 8
+		spawn_x = 48 + 26 * 32 + 32  # Grid columns 26-27 center
 
-	var spawn_y: float = 16 + 12 * 32 + 16  # Grid row 12
+	var spawn_y: float = 16 + 28 * 32 + 32  # Grid rows 28-29 center
 
 	player.global_position = Vector2(spawn_x, spawn_y)
 	players_container.add_child(player)
@@ -93,7 +94,7 @@ func _on_base_destroyed() -> void:
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var explosion := explosion_scene.instantiate()
 	explosion.global_position = eagle.global_position
-	explosion.scale = Vector2(3, 3)
+	explosion.scale = Vector2(5, 5)
 	effects_container.add_child(explosion)
 	GameManager.trigger_game_over()
 

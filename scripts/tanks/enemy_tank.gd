@@ -140,10 +140,10 @@ func destroy() -> void:
 func _spawn_powerup() -> void:
 	var powerup_scene := preload("res://scenes/powerups/powerup.tscn")
 	var powerup := powerup_scene.instantiate()
-	# Random position on the playfield
+	# Random position on the playfield (40x30 grid, offset 48,16)
 	powerup.global_position = Vector2(
-		randf_range(48, 48 + 13 * 32),
-		randf_range(48, 48 + 13 * 32)
+		randf_range(48, 48 + 40 * 32),
+		randf_range(16, 16 + 30 * 32)
 	)
 	powerup.global_position = powerup.global_position.snapped(Vector2(32, 32))
 	var container = get_tree().get_first_node_in_group("powerups_container")

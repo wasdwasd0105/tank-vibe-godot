@@ -2,7 +2,8 @@ class_name LevelManager
 extends Node2D
 
 const TILE_SIZE: int = 32
-const GRID_SIZE: int = 13
+const GRID_WIDTH: int = LevelData.GRID_WIDTH   # 40
+const GRID_HEIGHT: int = LevelData.GRID_HEIGHT  # 30
 
 # Texture references for tiles
 var brick_texture: Texture2D
@@ -39,13 +40,12 @@ func _ready() -> void:
 	# Create boundary walls around the playfield
 	_create_boundaries()
 
-	# Set up eagle
+	# Set up eagle (2x2 tiles)
 	var eagle = $Eagle
 	if eagle:
 		eagle.add_to_group("eagle")
-		# Add collision shape to eagle
 		var shape := RectangleShape2D.new()
-		shape.size = Vector2(28, 28)
+		shape.size = Vector2(60, 60)  # 2x2 tiles with 4px border (64-4=60)
 		var col_shape := eagle.get_node_or_null("CollisionShape2D")
 		if col_shape:
 			col_shape.shape = shape
@@ -123,16 +123,16 @@ func _create_tree_texture() -> Texture2D:
 	return ImageTexture.create_from_image(img)
 
 func _create_boundaries() -> void:
-	# Create invisible walls around the 13x13 playfield
+	# Create invisible walls around the playfield
 	var boundary_positions := []
 	# Top and bottom rows
-	for x in range(-1, GRID_SIZE + 1):
+	for x in range(-1, GRID_WIDTH + 1):
 		boundary_positions.append(Vector2i(x, -1))
-		boundary_positions.append(Vector2i(x, GRID_SIZE))
+		boundary_positions.append(Vector2i(x, GRID_HEIGHT))
 	# Left and right columns
-	for y in range(GRID_SIZE):
+	for y in range(GRID_HEIGHT):
 		boundary_positions.append(Vector2i(-1, y))
-		boundary_positions.append(Vector2i(GRID_SIZE, y))
+		boundary_positions.append(Vector2i(GRID_WIDTH, y))
 
 	for pos in boundary_positions:
 		var body := StaticBody2D.new()
@@ -157,8 +157,8 @@ func load_stage(stage_num: int) -> void:
 		stage_index = 0
 
 	var layout: Array = LevelData.STAGES[stage_index]
-	for y in range(GRID_SIZE):
-		for x in range(GRID_SIZE):
+	for y in range(GRID_HEIGHT):
+		for x in range(GRID_WIDTH):
 			var tile_type: int = layout[y][x]
 			if tile_type != LevelData.Tile.EMPTY:
 				_place_tile(Vector2i(x, y), tile_type)
@@ -223,11 +223,17 @@ func _create_tile_body(world_pos: Vector2, layer: int) -> StaticBody2D:
 
 func _place_base_walls() -> void:
 	_original_base_walls.clear()
-	# Eagle is at position (6, 12) in the grid, centered
-	# Surround with bricks at specific positions
+	# Eagle occupies 2x2 tiles at (EAGLE_COL, EAGLE_ROW) to (EAGLE_COL+1, EAGLE_ROW+1)
+	# Surround with bricks
+	var ec: int = LevelData.EAGLE_COL   # 19
+	var er: int = LevelData.EAGLE_ROW   # 28
 	var wall_positions := [
-		Vector2i(5, 11), Vector2i(6, 11), Vector2i(7, 11),
-		Vector2i(5, 12),                   Vector2i(7, 12),
+		# Top row above eagle
+		Vector2i(ec - 1, er - 1), Vector2i(ec, er - 1), Vector2i(ec + 1, er - 1), Vector2i(ec + 2, er - 1),
+		# Left side
+		Vector2i(ec - 1, er), Vector2i(ec - 1, er + 1),
+		# Right side
+		Vector2i(ec + 2, er), Vector2i(ec + 2, er + 1),
 	]
 	for pos in wall_positions:
 		if not _tile_data.has(pos):

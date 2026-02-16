@@ -27,8 +27,8 @@ func _physics_process(delta: float) -> void:
 	var movement: Vector2 = direction * speed * delta
 	position += movement
 
-	# Check bounds (playfield boundaries)
-	if position.x < 32 or position.x > 480 or position.y < 0 or position.y > 448:
+	# Check bounds (playfield boundaries: offset 48,16 with 40x30 tiles of 32px)
+	if position.x < 32 or position.x > 1344 or position.y < 0 or position.y > 992:
 		_destroy()
 		return
 

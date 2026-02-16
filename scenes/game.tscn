@@ -12,8 +12,8 @@
 script = ExtResource("1_game")
 
 [node name="Background" type="ColorRect" parent="."]
-offset_right = 512.0
-offset_bottom = 480.0
+offset_right = 1408.0
+offset_bottom = 992.0
 color = Color(0.1, 0.1, 0.1, 1)
 
 [node name="Playfield" type="Node2D" parent="."]
@@ -26,11 +26,12 @@ script = ExtResource("2_level_mgr")
 z_index = 10
 
 [node name="Eagle" type="StaticBody2D" parent="Playfield"]
-position = Vector2(208, 400)
+position = Vector2(640, 928)
 collision_layer = 128
 collision_mask = 48
 
 [node name="Sprite2D" type="Sprite2D" parent="Playfield/Eagle"]
+scale = Vector2(2, 2)
 texture = ExtResource("6_eagle_tex")
 texture_filter = 0
 
@@ -52,13 +53,13 @@ texture_filter = 0
 script = ExtResource("3_spawner")
 
 [node name="SpawnPoint1" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(64, 32)
+position = Vector2(112, 48)
 
 [node name="SpawnPoint2" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(256, 32)
+position = Vector2(688, 48)
 
 [node name="SpawnPoint3" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(448, 32)
+position = Vector2(1264, 48)
 
 [node name="SpawnTimer" type="Timer" parent="EnemySpawner"]
 wait_time = 2.0
@@ -66,16 +67,17 @@ wait_time = 2.0
 [node name="HUD" type="Control" parent="."]
 layout_mode = 3
 anchors_preset = 0
-offset_left = 420.0
+offset_left = 1330.0
 offset_top = 16.0
-offset_right = 510.0
-offset_bottom = 470.0
+offset_right = 1408.0
+offset_bottom = 970.0
 script = ExtResource("4_hud")
 
 [node name="EnemyCount" type="Label" parent="HUD"]
 layout_mode = 0
-offset_right = 90.0
-offset_bottom = 60.0
+offset_right = 78.0
+offset_bottom = 80.0
+theme_override_font_sizes/font_size = 24
 text = "ENEMY
 20"
 horizontal_alignment = 1
@@ -83,25 +85,28 @@ horizontal_alignment = 1
 [node name="P1Lives" type="Label" parent="HUD"]
 layout_mode = 0
 offset_top = 200.0
-offset_right = 90.0
-offset_bottom = 240.0
+offset_right = 78.0
+offset_bottom = 260.0
+theme_override_font_sizes/font_size = 24
 text = "P1: 3"
 horizontal_alignment = 1
 
 [node name="P2Lives" type="Label" parent="HUD"]
 layout_mode = 0
-offset_top = 260.0
-offset_right = 90.0
-offset_bottom = 300.0
+offset_top = 300.0
+offset_right = 78.0
+offset_bottom = 360.0
+theme_override_font_sizes/font_size = 24
 text = "P2: 3"
 horizontal_alignment = 1
 visible = false
 
 [node name="StageLabel" type="Label" parent="HUD"]
 layout_mode = 0
-offset_top = 380.0
-offset_right = 90.0
-offset_bottom = 440.0
+offset_top = 460.0
+offset_right = 78.0
+offset_bottom = 540.0
+theme_override_font_sizes/font_size = 24
 text = "ST
 1"
 horizontal_alignment = 1

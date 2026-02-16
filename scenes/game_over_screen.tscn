@@ -27,16 +27,18 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme_override_font_sizes/font_size = 64
 text = "GAME OVER"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="ScoreLabel" type="Label" parent="."]
 layout_mode = 1
-offset_left = 100.0
-offset_top = 280.0
-offset_right = 412.0
-offset_bottom = 340.0
+offset_left = 404.0
+offset_top = 550.0
+offset_right = 1004.0
+offset_bottom = 650.0
+theme_override_font_sizes/font_size = 32
 text = "Press SPACE to continue"
 horizontal_alignment = 1
 vertical_alignment = 1
