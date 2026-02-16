@@ -1,0 +1,19 @@
+[gd_scene load_steps=4 format=3 uid="uid://cpowup1"]
+
+[ext_resource type="Script" path="res://scripts/powerups/powerup.gd" id="1_powerup"]
+[ext_resource type="Texture2D" path="res://assets/sprites/powerups/powerup.png" id="2_powerup_tex"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_powerup"]
+size = Vector2(28, 28)
+
+[node name="PowerUp" type="Area2D"]
+collision_layer = 64
+collision_mask = 4
+script = ExtResource("1_powerup")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+texture = ExtResource("2_powerup_tex")
+texture_filter = 0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_powerup")

@@ -1,0 +1,77 @@
+[gd_scene format=3 uid="uid://cmain01"]
+
+[ext_resource type="Script" uid="uid://b3c0p0g04j1nc" path="res://scripts/ui/title_screen.gd" id="1_title"]
+
+[node name="TitleScreen" type="Control" unique_id=1990173913]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_title")
+
+[node name="Background" type="ColorRect" parent="." unique_id=1713865695]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 1.0
+offset_top = 1.0
+offset_right = 1.0
+offset_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 1)
+
+[node name="Title" type="Label" parent="." unique_id=2060935438]
+layout_mode = 1
+offset_left = 100.0
+offset_top = 80.0
+offset_right = 412.0
+offset_bottom = 150.0
+text = "BATTLE CITY"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Option1P" type="Label" parent="." unique_id=1504584301]
+layout_mode = 1
+offset_left = 160.0
+offset_top = 220.0
+offset_right = 352.0
+offset_bottom = 260.0
+text = "1 PLAYER"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Option2P" type="Label" parent="." unique_id=175023577]
+layout_mode = 1
+offset_left = 160.0
+offset_top = 270.0
+offset_right = 352.0
+offset_bottom = 310.0
+text = "2 PLAYERS"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Cursor" type="Label" parent="." unique_id=779641737]
+layout_mode = 1
+offset_left = 130.0
+offset_top = 220.0
+offset_right = 155.0
+offset_bottom = 260.0
+text = ">"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Controls" type="Label" parent="." unique_id=1639186135]
+layout_mode = 1
+offset_left = 80.0
+offset_top = 360.0
+offset_right = 432.0
+offset_bottom = 440.0
+text = "P1: WASD + SPACE
+P2: ARROWS + RCTRL
+ENTER to start"
+horizontal_alignment = 1
+vertical_alignment = 1

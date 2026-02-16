@@ -1,0 +1,112 @@
+class_name EnemySpawner
+extends Node2D
+
+@export var spawn_interval: float = 2.0
+@export var max_concurrent_enemies: int = 4
+
+var _spawn_queue: Array = []  # Array of EnemyTank.EnemyType
+var _current_spawn_point: int = 0
+var _active_enemies: int = 0
+var _total_spawned: int = 0
+
+@onready var spawn_timer: Timer = $SpawnTimer
+
+var spawn_points: Array[Marker2D] = []
+
+func _ready() -> void:
+	for child in get_children():
+		if child is Marker2D:
+			spawn_points.append(child)
+	if spawn_timer:
+		spawn_timer.timeout.connect(_on_spawn_timer_timeout)
+
+func start_stage(stage_num: int) -> void:
+	_spawn_queue.clear()
+	_total_spawned = 0
+	_active_enemies = 0
+
+	var stage_index := stage_num - 1
+	if stage_index < 0 or stage_index >= LevelData.ENEMY_WAVES.size():
+		stage_index = 0
+
+	var wave: Array = LevelData.ENEMY_WAVES[stage_index]
+
+	# Build queue with all enemy types
+	for i in range(wave[0]):
+		_spawn_queue.append(EnemyTank.EnemyType.BASIC)
+	for i in range(wave[1]):
+		_spawn_queue.append(EnemyTank.EnemyType.FAST)
+	for i in range(wave[2]):
+		_spawn_queue.append(EnemyTank.EnemyType.POWER)
+	for i in range(wave[3]):
+		_spawn_queue.append(EnemyTank.EnemyType.ARMOR)
+	_spawn_queue.shuffle()
+
+	GameManager.enemies_remaining = _spawn_queue.size()
+
+	if GameManager.is_two_player:
+		max_concurrent_enemies = 6
+
+	spawn_timer.wait_time = spawn_interval
+	spawn_timer.start()
+
+	# Spawn first enemy immediately
+	_spawn_enemy()
+
+func _on_spawn_timer_timeout() -> void:
+	if _spawn_queue.is_empty():
+		spawn_timer.stop()
+		return
+	if _active_enemies >= max_concurrent_enemies:
+		return
+	_spawn_enemy()
+
+func _spawn_enemy() -> void:
+	if _spawn_queue.is_empty():
+		return
+	if spawn_points.is_empty():
+		return
+
+	var spawn_pos: Vector2 = spawn_points[_current_spawn_point % spawn_points.size()].global_position
+	_current_spawn_point = (_current_spawn_point + 1) % spawn_points.size()
+
+	# Check if spawn point is clear
+	var space_state := get_world_2d().direct_space_state
+	var query := PhysicsPointQueryParameters2D.new()
+	query.position = spawn_pos
+	query.collision_mask = 0b1100  # player and enemy tanks
+	var results := space_state.intersect_point(query)
+	if not results.is_empty():
+		return  # Spawn point blocked, try next tick
+
+	var enemy_type: int = _spawn_queue.pop_front()
+
+	var enemy_scene := preload("res://scenes/tanks/enemy_tank.tscn")
+	var enemy: EnemyTank = enemy_scene.instantiate()
+	enemy.enemy_type = enemy_type as EnemyTank.EnemyType
+	enemy.has_powerup = _total_spawned in LevelData.POWERUP_CARRIERS
+
+	var enemies_container = get_tree().get_first_node_in_group("enemies_container")
+	if enemies_container:
+		enemies_container.add_child(enemy)
+	else:
+		get_tree().current_scene.add_child(enemy)
+	enemy.global_position = spawn_pos
+	enemy.tree_exited.connect(_on_enemy_removed)
+
+	_total_spawned += 1
+	_active_enemies += 1
+
+func _on_enemy_removed() -> void:
+	_active_enemies -= 1
+	if _spawn_queue.is_empty() and _active_enemies <= 0:
+		Events.all_enemies_defeated.emit()
+
+func destroy_all_enemies() -> void:
+	var enemies := get_tree().get_nodes_in_group("enemies")
+	for enemy in enemies:
+		if is_instance_valid(enemy):
+			enemy.destroy()
+
+func get_remaining_count() -> int:
+	return _spawn_queue.size() + _active_enemies

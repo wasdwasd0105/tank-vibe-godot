@@ -1,0 +1,107 @@
+[gd_scene load_steps=8 format=3 uid="uid://cgame01"]
+
+[ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
+[ext_resource type="Script" path="res://scripts/level/level_manager.gd" id="2_level_mgr"]
+[ext_resource type="Script" path="res://scripts/level/enemy_spawner.gd" id="3_spawner"]
+[ext_resource type="Script" path="res://scripts/ui/game_hud.gd" id="4_hud"]
+[ext_resource type="Texture2D" path="res://assets/sprites/tiles/tileset.png" id="5_tileset_tex"]
+[ext_resource type="Texture2D" path="res://assets/sprites/tiles/eagle.png" id="6_eagle_tex"]
+[ext_resource type="Texture2D" path="res://assets/sprites/tiles/tree.png" id="7_tree_tex"]
+
+[node name="Game" type="Node2D"]
+script = ExtResource("1_game")
+
+[node name="Background" type="ColorRect" parent="."]
+offset_right = 512.0
+offset_bottom = 480.0
+color = Color(0.1, 0.1, 0.1, 1)
+
+[node name="Playfield" type="Node2D" parent="."]
+position = Vector2(48, 16)
+script = ExtResource("2_level_mgr")
+
+[node name="TerrainLayer" type="Node2D" parent="Playfield"]
+
+[node name="TreeLayer" type="Node2D" parent="Playfield"]
+z_index = 10
+
+[node name="Eagle" type="StaticBody2D" parent="Playfield"]
+position = Vector2(208, 400)
+collision_layer = 128
+collision_mask = 48
+
+[node name="Sprite2D" type="Sprite2D" parent="Playfield/Eagle"]
+texture = ExtResource("6_eagle_tex")
+texture_filter = 0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Playfield/Eagle"]
+
+[node name="Entities" type="Node2D" parent="."]
+
+[node name="Players" type="Node2D" parent="Entities"]
+
+[node name="Enemies" type="Node2D" parent="Entities"]
+
+[node name="Bullets" type="Node2D" parent="Entities"]
+
+[node name="PowerUps" type="Node2D" parent="Entities"]
+
+[node name="Effects" type="Node2D" parent="Entities"]
+
+[node name="EnemySpawner" type="Node2D" parent="."]
+script = ExtResource("3_spawner")
+
+[node name="SpawnPoint1" type="Marker2D" parent="EnemySpawner"]
+position = Vector2(64, 32)
+
+[node name="SpawnPoint2" type="Marker2D" parent="EnemySpawner"]
+position = Vector2(256, 32)
+
+[node name="SpawnPoint3" type="Marker2D" parent="EnemySpawner"]
+position = Vector2(448, 32)
+
+[node name="SpawnTimer" type="Timer" parent="EnemySpawner"]
+wait_time = 2.0
+
+[node name="HUD" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 0
+offset_left = 420.0
+offset_top = 16.0
+offset_right = 510.0
+offset_bottom = 470.0
+script = ExtResource("4_hud")
+
+[node name="EnemyCount" type="Label" parent="HUD"]
+layout_mode = 0
+offset_right = 90.0
+offset_bottom = 60.0
+text = "ENEMY
+20"
+horizontal_alignment = 1
+
+[node name="P1Lives" type="Label" parent="HUD"]
+layout_mode = 0
+offset_top = 200.0
+offset_right = 90.0
+offset_bottom = 240.0
+text = "P1: 3"
+horizontal_alignment = 1
+
+[node name="P2Lives" type="Label" parent="HUD"]
+layout_mode = 0
+offset_top = 260.0
+offset_right = 90.0
+offset_bottom = 300.0
+text = "P2: 3"
+horizontal_alignment = 1
+visible = false
+
+[node name="StageLabel" type="Label" parent="HUD"]
+layout_mode = 0
+offset_top = 380.0
+offset_right = 90.0
+offset_bottom = 440.0
+text = "ST
+1"
+horizontal_alignment = 1
