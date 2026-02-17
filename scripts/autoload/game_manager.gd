@@ -49,8 +49,7 @@ func next_stage() -> void:
 	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
 
 func get_max_stages() -> int:
-	var LevelDataScript = load("res://scripts/level/level_data.gd")
-	return LevelDataScript.STAGES.size()
+	return LevelData.get_stage_count()
 
 func add_score(player_id: int, points: int, enemy_type: int) -> void:
 	var old_score := player_scores[player_id]

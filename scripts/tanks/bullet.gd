@@ -109,31 +109,38 @@ func _check_tile_collision() -> void:
 		if tile2 not in tiles_to_check:
 			tiles_to_check.append(tile2)
 
-	# First pass: check if any tile is solid (would stop the bullet)
+	# First pass: check if any FG tile is solid (would stop the bullet)
 	var should_destroy: bool = false
 	var solid_tiles: Array[Vector2i] = []
 
 	for tile_pos in tiles_to_check:
-		if not _level_manager._tile_data.has(tile_pos):
+		if not _level_manager._fg_tile_data.has(tile_pos):
 			continue
-		var data: Dictionary = _level_manager._tile_data[tile_pos]
-		var tile_type: int = data.get("type", 0)
-		if tile_type == LevelData.Tile.BRICK or tile_type == LevelData.Tile.STEEL:
+		var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
+		var code: int = data.get("code", 0)
+		var cat := LevelData.get_tile_category(code)
+		if LevelData.is_solid_tile(cat):
 			should_destroy = true
 			solid_tiles.append(tile_pos)
 
 	# Second pass: damage all solid tiles simultaneously, then destroy bullet
 	if should_destroy:
 		for tile_pos in solid_tiles:
-			if not _level_manager._tile_data.has(tile_pos):
+			if not _level_manager._fg_tile_data.has(tile_pos):
 				continue  # tile may have been removed by a previous hit in this loop
-			var data: Dictionary = _level_manager._tile_data[tile_pos]
-			var tile_type: int = data.get("type", 0)
-			if tile_type == LevelData.Tile.BRICK:
-				_level_manager._damage_brick(tile_pos, direction)
-			elif tile_type == LevelData.Tile.STEEL:
-				if can_destroy_steel:
-					_level_manager._remove_tile(tile_pos)
+			var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
+			var code: int = data.get("code", 0)
+			var cat := LevelData.get_tile_category(code)
+			match cat:
+				LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+					_level_manager._damage_brick(tile_pos, direction)
+				LevelData.TileCategory.HARD_BRICK:
+					_level_manager._damage_hard_brick(tile_pos)
+				LevelData.TileCategory.IRON_BLOCK:
+					if can_destroy_steel:
+						_level_manager._remove_fg_tile(tile_pos)
+				LevelData.TileCategory.SUPER_BLOCK:
+					pass  # indestructible — bullet just stops
 		_destroy()
 
 func _on_body_entered(body: Node2D) -> void:

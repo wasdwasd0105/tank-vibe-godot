@@ -114,9 +114,9 @@ func _check_ice() -> void:
 		is_on_ice = false
 		return
 	var tile_pos: Vector2i = level_manager.world_to_tile(global_position)
-	if level_manager._tile_data.has(tile_pos):
-		var data: Dictionary = level_manager._tile_data[tile_pos]
-		is_on_ice = data.get("type", 0) == LevelData.Tile.ICE
+	if level_manager._bg_tile_data.has(tile_pos):
+		var data: Dictionary = level_manager._bg_tile_data[tile_pos]
+		is_on_ice = LevelData.get_tile_category(data.get("code", 0)) == LevelData.TileCategory.ICE
 	else:
 		is_on_ice = false
 

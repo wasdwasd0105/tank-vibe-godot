@@ -25,11 +25,7 @@ func start_stage(stage_num: int) -> void:
 	_total_spawned = 0
 	_active_enemies = 0
 
-	var stage_index := stage_num - 1
-	if stage_index < 0 or stage_index >= LevelData.ENEMY_WAVES.size():
-		stage_index = 0
-
-	var wave: Array = LevelData.ENEMY_WAVES[stage_index]
+	var wave: Array = LevelData.get_enemy_wave(stage_num)
 
 	# Build queue with all enemy types
 	for i in range(wave[0]):
@@ -44,8 +40,9 @@ func start_stage(stage_num: int) -> void:
 
 	GameManager.enemies_remaining = _spawn_queue.size()
 
+	max_concurrent_enemies = LevelData.get_max_concurrent(stage_num)
 	if GameManager.is_two_player:
-		max_concurrent_enemies = 6
+		max_concurrent_enemies = maxi(max_concurrent_enemies, 6)
 
 	spawn_timer.wait_time = spawn_interval
 	spawn_timer.start()
