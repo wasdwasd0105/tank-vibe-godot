@@ -5,7 +5,7 @@ const TILE_SIZE: int = 32
 const GRID_WIDTH: int = LevelData.GRID_WIDTH   # 40
 const GRID_HEIGHT: int = LevelData.GRID_HEIGHT  # 30
 
-# Tile texture lookup: code (int) -> Texture2D
+# Tile texture lookup: code (int) -> Texture2D  (populated from ThemeManager)
 var _tile_textures: Dictionary = {}
 
 # Containers
@@ -28,68 +28,14 @@ var _original_base_walls: Array[Vector2i] = []
 var _fortify_timer: float = -1.0
 var _is_fortified: bool = false
 
-# Brick color palettes for variants
-const SOFT_BRICK_COLORS: Array = [
-	Color(0.7, 0.13, 0.13),    # variant 0 - classic red
-	Color(0.65, 0.18, 0.10),   # variant 1 - orange-red
-	Color(0.72, 0.10, 0.15),   # variant 2 - deep red
-	Color(0.68, 0.15, 0.12),   # variant 3 - brown-red
-]
-
-const HARD_BRICK_COLORS: Array = [
-	Color(0.55, 0.40, 0.35),   # variant 0 - dark brown
-	Color(0.50, 0.38, 0.30),   # variant 1
-	Color(0.58, 0.42, 0.32),   # variant 2
-	Color(0.52, 0.36, 0.33),   # variant 3
-]
-
-const IRON_COLORS: Array = [
-	Color(0.75, 0.75, 0.75),   # variant 0
-	Color(0.70, 0.72, 0.74),   # variant 1
-	Color(0.78, 0.76, 0.74),   # variant 2
-	Color(0.72, 0.74, 0.76),   # variant 3
-]
-
-const SUPER_BLOCK_COLORS: Array = [
-	Color(0.80, 0.70, 0.30),   # variant 0 - gold
-	Color(0.75, 0.65, 0.25),   # variant 1
-	Color(0.85, 0.72, 0.28),   # variant 2
-	Color(0.78, 0.68, 0.32),   # variant 3
-]
-
-const ICE_COLORS: Array = [
-	Color(0.78, 0.85, 1.0),
-	Color(0.70, 0.82, 0.95),
-	Color(0.85, 0.90, 1.0),
-	Color(0.75, 0.80, 0.95),
-]
-
-const WATER_COLORS: Array = [
-	Color(0.0, 0.2, 0.59),
-	Color(0.0, 0.25, 0.65),
-	Color(0.05, 0.2, 0.55),
-	Color(0.0, 0.18, 0.62),
-]
-
-const GRASS_COLORS: Array = [
-	Color(0.0, 0.40, 0.0),
-	Color(0.0, 0.36, 0.05),
-	Color(0.05, 0.43, 0.0),
-	Color(0.0, 0.38, 0.02),
-]
-
-const BURNED_GRASS_COLORS: Array = [
-	Color(0.35, 0.28, 0.10),
-	Color(0.32, 0.25, 0.12),
-	Color(0.38, 0.30, 0.08),
-	Color(0.34, 0.26, 0.14),
-]
-
 func _ready() -> void:
 	terrain_node = $TerrainLayer
 	tree_node = $TreeLayer
 
-	_generate_textures()
+	# Get textures from ThemeManager (procedural or image-based)
+	_tile_textures = ThemeManager.get_all_tile_textures()
+	ThemeManager.theme_changed.connect(_on_theme_changed)
+
 	_create_boundaries()
 
 	# Set up eagle (2x2 tiles)
@@ -108,162 +54,8 @@ func _process(delta: float) -> void:
 		if _fortify_timer <= 0:
 			_revert_fortification()
 
-# =====================================================================
-# Texture Generation
-# =====================================================================
-
-func _generate_textures() -> void:
-	# Ice variants (0x01-0x04)
-	for i in range(4):
-		_tile_textures[0x01 + i] = _create_ice_texture(ICE_COLORS[i])
-
-	# Water variants (0x05-0x08)
-	for i in range(4):
-		_tile_textures[0x05 + i] = _create_water_texture(WATER_COLORS[i])
-
-	# Grass variants (0x09-0x0C)
-	for i in range(4):
-		_tile_textures[0x09 + i] = _create_grass_texture(GRASS_COLORS[i])
-
-	# Burned grass variants (0x0D-0x10)
-	for i in range(4):
-		_tile_textures[0x0D + i] = _create_burned_grass_texture(BURNED_GRASS_COLORS[i])
-
-	# Soft brick full variants (0x19-0x1C)
-	for i in range(4):
-		_tile_textures[0x19 + i] = _create_brick_texture(SOFT_BRICK_COLORS[i])
-	# Extra soft brick codes: A1, AB, AC
-	_tile_textures[0xA1] = _create_brick_texture(SOFT_BRICK_COLORS[1])
-	_tile_textures[0xAB] = _create_brick_texture(SOFT_BRICK_COLORS[2])
-	_tile_textures[0xAC] = _create_brick_texture(SOFT_BRICK_COLORS[3])
-
-	# Hard brick: 4 HP levels x 4 variants
-	for hp in range(4, 0, -1):
-		for v in range(4):
-			var code := LevelData.get_hard_brick_code(hp, v)
-			_tile_textures[code] = _create_hard_brick_texture(HARD_BRICK_COLORS[v], hp)
-
-	# Iron block variants (0x39-0x3C)
-	for i in range(4):
-		_tile_textures[0x39 + i] = _create_iron_texture(IRON_COLORS[i])
-
-	# Super block variants (0x3D-0x40)
-	for i in range(4):
-		_tile_textures[0x3D + i] = _create_super_block_texture(SUPER_BLOCK_COLORS[i])
-
-func _create_brick_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	var mortar := Color(base_color.r * 0.6, base_color.g + 0.15, base_color.b + 0.05)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			if y % 8 == 0 or y % 8 == 7:
-				img.set_pixel(x, y, mortar)
-			elif (y < 8 or (16 <= y and y < 24)) and x % 16 == 0:
-				img.set_pixel(x, y, mortar)
-			elif ((8 <= y and y < 16) or 24 <= y) and (x + 8) % 16 == 0:
-				img.set_pixel(x, y, mortar)
-			else:
-				img.set_pixel(x, y, base_color)
-	return ImageTexture.create_from_image(img)
-
-func _create_hard_brick_texture(base_color: Color, hp: int) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	# Hard brick has thicker mortar lines and a slightly metallic look
-	var mortar := Color(0.3, 0.25, 0.2)
-	# Darken based on HP (lower HP = lighter/more cracked)
-	var color_mult := 0.7 + hp * 0.075  # HP4=1.0, HP3=0.925, HP2=0.85, HP1=0.775
-	var brick_col := Color(base_color.r * color_mult, base_color.g * color_mult, base_color.b * color_mult)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			# Thicker mortar lines for hard brick
-			if y % 8 <= 1 or y % 8 >= 6:
-				img.set_pixel(x, y, mortar)
-			elif (y < 8 or (16 <= y and y < 24)) and x % 16 <= 1:
-				img.set_pixel(x, y, mortar)
-			elif ((8 <= y and y < 16) or 24 <= y) and (x + 8) % 16 <= 1:
-				img.set_pixel(x, y, mortar)
-			else:
-				img.set_pixel(x, y, brick_col)
-	return ImageTexture.create_from_image(img)
-
-func _create_iron_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	var highlight := Color(base_color.r + 0.13, base_color.g + 0.13, base_color.b + 0.13)
-	var shadow := Color(base_color.r - 0.25, base_color.g - 0.25, base_color.b - 0.25)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			if x < 2 or y < 2:
-				img.set_pixel(x, y, highlight)
-			elif x >= TILE_SIZE - 2 or y >= TILE_SIZE - 2:
-				img.set_pixel(x, y, shadow)
-			else:
-				img.set_pixel(x, y, base_color)
-	return ImageTexture.create_from_image(img)
-
-func _create_super_block_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	var highlight := Color(minf(base_color.r + 0.15, 1.0), minf(base_color.g + 0.15, 1.0), minf(base_color.b + 0.10, 1.0))
-	var shadow := Color(base_color.r * 0.6, base_color.g * 0.6, base_color.b * 0.6)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			if x < 3 or y < 3:
-				img.set_pixel(x, y, highlight)
-			elif x >= TILE_SIZE - 3 or y >= TILE_SIZE - 3:
-				img.set_pixel(x, y, shadow)
-			else:
-				# Diamond pattern for super block
-				var cx := absi(x - TILE_SIZE / 2)
-				var cy := absi(y - TILE_SIZE / 2)
-				if (cx + cy) % 6 < 2:
-					img.set_pixel(x, y, highlight)
-				else:
-					img.set_pixel(x, y, base_color)
-	return ImageTexture.create_from_image(img)
-
-func _create_ice_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			var v := ((x + y) % 4) * 0.03
-			img.set_pixel(x, y, Color(
-				minf(base_color.r + v, 1.0),
-				minf(base_color.g + v, 1.0),
-				minf(base_color.b, 1.0)
-			))
-	return ImageTexture.create_from_image(img)
-
-func _create_water_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			var wave := absi(((x + y) % 8) - 4)
-			var b_offset := wave * 0.06
-			img.set_pixel(x, y, Color(
-				base_color.r,
-				base_color.g + b_offset * 0.5,
-				minf(base_color.b + b_offset, 1.0)
-			))
-	return ImageTexture.create_from_image(img)
-
-func _create_grass_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			if ((x + y * 3) * 7) % 5 < 3:
-				img.set_pixel(x, y, Color(base_color.r, minf(base_color.g + 0.1, 1.0), base_color.b))
-			else:
-				img.set_pixel(x, y, base_color)
-	return ImageTexture.create_from_image(img)
-
-func _create_burned_grass_texture(base_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			if ((x + y * 3) * 7) % 5 < 3:
-				img.set_pixel(x, y, Color(base_color.r + 0.05, base_color.g + 0.03, base_color.b))
-			else:
-				img.set_pixel(x, y, Color(base_color.r - 0.05, base_color.g - 0.03, base_color.b))
-	return ImageTexture.create_from_image(img)
+func _on_theme_changed(_theme_name: String) -> void:
+	_tile_textures = ThemeManager.get_all_tile_textures()
 
 # =====================================================================
 # Boundaries
@@ -396,8 +188,7 @@ func _place_fg_tile(pos: Vector2i, code: int) -> void:
 			var damage_mask := LevelData.get_soft_brick_damage_mask(code)
 			_brick_damage[pos] = damage_mask
 			var variant := LevelData.get_variant_index(code)
-			var brick_color: Color = SOFT_BRICK_COLORS[clampi(variant, 0, 3)]
-			spr.texture = _create_partial_brick_texture(damage_mask, brick_color)
+			spr.texture = ThemeManager.get_partial_brick_texture(damage_mask, variant)
 			body = _create_tile_body(world_pos, 1)
 			_adjust_collision_for_damage(body, world_pos, damage_mask)
 			terrain_node.add_child(spr)
@@ -536,51 +327,17 @@ func _update_brick_visual(tile_pos: Vector2i, damage: int) -> void:
 	if not is_instance_valid(spr):
 		return
 
-	# Get brick color from the stored code's variant
+	# Get variant from the stored code
 	var code: int = data.get("code", 0x19)
 	var variant := LevelData.get_variant_index(code)
-	var brick_color: Color = SOFT_BRICK_COLORS[clampi(variant, 0, 3)]
 
-	spr.texture = _create_partial_brick_texture(damage, brick_color)
+	spr.texture = ThemeManager.get_partial_brick_texture(damage, variant)
 
 	# Update collision shape
 	var body: StaticBody2D = data.get("body")
 	if body and is_instance_valid(body):
 		var spr_pos: Vector2 = spr.position
 		_adjust_collision_for_damage(body, spr_pos, damage)
-
-func _create_partial_brick_texture(damage: int, brick_color: Color) -> Texture2D:
-	var img := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
-	var mortar := Color(brick_color.r * 0.6, brick_color.g + 0.15, brick_color.b + 0.05)
-	var transparent := Color(0, 0, 0, 0)
-	var half := TILE_SIZE / 2
-
-	for y in range(TILE_SIZE):
-		for x in range(TILE_SIZE):
-			var in_tl := x < half and y < half
-			var in_tr := x >= half and y < half
-			var in_bl := x < half and y >= half
-			var in_br := x >= half and y >= half
-
-			var show := false
-			if in_tl and (damage & 0b1000) != 0:
-				show = true
-			elif in_tr and (damage & 0b0100) != 0:
-				show = true
-			elif in_bl and (damage & 0b0010) != 0:
-				show = true
-			elif in_br and (damage & 0b0001) != 0:
-				show = true
-
-			if show:
-				if y % 8 == 0 or y % 8 == 7:
-					img.set_pixel(x, y, mortar)
-				else:
-					img.set_pixel(x, y, brick_color)
-			else:
-				img.set_pixel(x, y, transparent)
-
-	return ImageTexture.create_from_image(img)
 
 func _adjust_collision_for_damage(body: StaticBody2D, sprite_pos: Vector2, damage: int) -> void:
 	if not body or not is_instance_valid(body):

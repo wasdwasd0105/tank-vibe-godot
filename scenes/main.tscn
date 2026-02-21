@@ -68,6 +68,17 @@ text = ">"
 horizontal_alignment = 1
 vertical_alignment = 1
 
+[node name="OptionTheme" type="Label" parent="."]
+layout_mode = 1
+offset_left = 504.0
+offset_top = 560.0
+offset_right = 904.0
+offset_bottom = 620.0
+theme_override_font_sizes/font_size = 36
+text = "THEME: Default"
+horizontal_alignment = 1
+vertical_alignment = 1
+
 [node name="Controls" type="Label" parent="." unique_id=1639186135]
 layout_mode = 1
 offset_left = 354.0

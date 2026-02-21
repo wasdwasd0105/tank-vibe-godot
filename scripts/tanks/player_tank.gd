@@ -36,9 +36,16 @@ func _ready() -> void:
 	set_collision_mask_value(4, true)   # enemy_tanks
 	set_collision_mask_value(6, true)   # enemy_bullets
 	set_collision_mask_value(7, true)   # powerups
-	# Update sprite color
+	# Apply theme sprite and color
 	if sprite:
-		sprite.modulate = PLAYER_COLORS[player_id]
+		var tank_key := "p1" if player_id == 0 else "p2"
+		var theme_tex := ThemeManager.get_tank_texture(tank_key)
+		if theme_tex:
+			sprite.texture = theme_tex
+		if ThemeManager.is_tank_modulate_mode():
+			sprite.modulate = PLAYER_COLORS[player_id]
+		else:
+			sprite.modulate = Color.WHITE
 
 func _physics_process(delta: float) -> void:
 	if is_invincible:

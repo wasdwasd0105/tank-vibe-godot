@@ -51,7 +51,12 @@ func _ready() -> void:
 	set_collision_mask_value(2, true)   # water
 	set_collision_mask_value(3, true)   # player_tanks
 	set_collision_mask_value(5, true)   # player_bullets
-	# Update sprite color
+	# Apply theme sprite and color
+	if sprite:
+		var enemy_key := "e%d" % (enemy_type + 1)
+		var theme_tex := ThemeManager.get_tank_texture(enemy_key)
+		if theme_tex:
+			sprite.texture = theme_tex
 	_update_color()
 	_update_sprite_direction()
 
@@ -74,7 +79,10 @@ func _physics_process(delta: float) -> void:
 			if fmod(_flash_timer, 0.3) < 0.15:
 				sprite.modulate = Color.RED
 			else:
-				_update_color()
+				if ThemeManager.is_tank_modulate_mode():
+					_update_color()
+				else:
+					sprite.modulate = Color.WHITE
 
 func _ai_update(delta: float) -> void:
 	_direction_change_timer -= delta
@@ -117,6 +125,9 @@ func _bias_toward_eagle() -> void:
 
 func _update_color() -> void:
 	if not sprite:
+		return
+	if not ThemeManager.is_tank_modulate_mode():
+		sprite.modulate = Color.WHITE
 		return
 	if enemy_type == EnemyType.ARMOR:
 		var color_index := clampi(max_health - health, 0, ARMOR_COLORS.size() - 1)

@@ -22,6 +22,7 @@ config/features=PackedStringArray("4.6", "GL Compatibility")
 
 Events="*res://scripts/autoload/events.gd"
 GameManager="*res://scripts/autoload/game_manager.gd"
+ThemeManager="*res://scripts/autoload/theme_manager.gd"
 WindowManager="*res://scripts/autoload/window_manager.gd"
 
 [display]
