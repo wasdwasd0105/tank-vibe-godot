@@ -1,13 +1,13 @@
 extends Control
 
-@onready var enemy_count_label: Label = $RightPanel/EnemyCount
-@onready var stage_label: Label = $RightPanel/StageLabel
-
+@onready var stage_label: Label = $LeftPanel/StageLabel
 @onready var p1_lives_label: Label = $LeftPanel/P1Lives
 @onready var p1_score_label: Label = $LeftPanel/P1Score
-@onready var p2_header: Label = $LeftPanel/P2Header
-@onready var p2_lives_label: Label = $LeftPanel/P2Lives
-@onready var p2_score_label: Label = $LeftPanel/P2Score
+
+@onready var enemy_count_label: Label = $RightPanel/EnemyCount
+@onready var p2_header: Label = $RightPanel/P2Header
+@onready var p2_lives_label: Label = $RightPanel/P2Lives
+@onready var p2_score_label: Label = $RightPanel/P2Score
 
 func _ready() -> void:
 	update_display()
@@ -16,10 +16,10 @@ func _process(_delta: float) -> void:
 	update_display()
 
 func update_display() -> void:
-	if enemy_count_label:
-		enemy_count_label.text = str(GameManager.enemies_remaining)
 	if stage_label:
 		stage_label.text = str(GameManager.current_stage)
+	if enemy_count_label:
+		enemy_count_label.text = str(GameManager.enemies_remaining)
 	if p1_lives_label:
 		p1_lives_label.text = "Lives: " + str(maxi(GameManager.player_lives[0], 0))
 	if p1_score_label:

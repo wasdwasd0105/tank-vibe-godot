@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://cstgin1"]
+[gd_scene load_steps=3 format=3 uid="uid://cstgin1"]
 
 [ext_resource type="Script" path="res://scripts/ui/stage_intro.gd" id="1_stage_intro"]
+[ext_resource type="Texture2D" uid="uid://stage_intro_bg" path="res://assets/background/stage_intro.png" id="2_stage_intro_bg"]
 
 [node name="StageIntro" type="Control"]
 layout_mode = 3
@@ -11,14 +12,16 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_stage_intro")
 
-[node name="Background" type="ColorRect" parent="."]
+[node name="Background" type="TextureRect" parent="."]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.5, 0.5, 0.5, 1)
+texture = ExtResource("2_stage_intro_bg")
+expand_mode = 1
+stretch_mode = 6
 
 [node name="StageLabel" type="Label" parent="."]
 layout_mode = 1
