@@ -23,14 +23,20 @@ var _brick_damage: Dictionary = {}
 # Hard brick HP tracking: Key: Vector2i, Value: int (remaining HP 1-4)
 var _hard_brick_hp: Dictionary = {}
 
+# Background image
+var _bg_image_sprite: Sprite2D
+
 # Base wall fortification
 var _original_base_walls: Array[Vector2i] = []
 var _fortify_timer: float = -1.0
 var _is_fortified: bool = false
 
+const BG_ASSETS_DIR: String = "res://assets/background/"
+
 func _ready() -> void:
 	terrain_node = $TerrainLayer
 	tree_node = $TreeLayer
+	_bg_image_sprite = $BackgroundImage
 
 	# Get textures from ThemeManager (procedural or image-based)
 	_tile_textures = ThemeManager.get_all_tile_textures()
@@ -103,6 +109,9 @@ func load_stage(stage_num: int) -> void:
 
 	var stage_data: LevelData.StageData = stages[stage_index]
 
+	# Load background image if available
+	_load_background_image(stage_data.bg_bitmap)
+
 	for y in range(LevelData.GRID_HEIGHT):
 		for x in range(LevelData.GRID_WIDTH):
 			# BG layer
@@ -117,6 +126,49 @@ func load_stage(stage_num: int) -> void:
 					_place_fg_tile(Vector2i(x, y), fg_code)
 
 	_place_base_walls()
+
+func _load_background_image(bg_bitmap: String) -> void:
+	if not _bg_image_sprite:
+		return
+	_bg_image_sprite.texture = null
+
+	if bg_bitmap.is_empty():
+		return
+
+	# Try multiple case variations since .dat files may have "BG01.JPG"
+	# but actual files are "BG01.jpg"
+	var name_no_ext := bg_bitmap.get_basename()
+	var ext := bg_bitmap.get_extension()
+	var candidates: Array[String] = [
+		bg_bitmap,                                  # original: "BG02.jpg" or "BG01.JPG"
+		name_no_ext + "." + ext.to_lower(),         # lowercase ext: "BG01.jpg"
+		bg_bitmap.to_lower(),                       # all lowercase: "bg01.jpg"
+		name_no_ext.to_upper() + "." + ext.to_lower(),  # upper name + lower ext: "BG01.jpg"
+	]
+
+	var tex: Texture2D = null
+	for filename in candidates:
+		var res_path := BG_ASSETS_DIR + filename
+		if ResourceLoader.exists(res_path):
+			tex = load(res_path) as Texture2D
+			break
+
+	if not tex:
+		# Fall back to runtime image loading from filesystem
+		for filename in candidates:
+			var res_path := BG_ASSETS_DIR + filename
+			var abs_path := ProjectSettings.globalize_path(res_path)
+			var img := Image.new()
+			if img.load(abs_path) == OK:
+				tex = ImageTexture.create_from_image(img)
+				break
+
+	if tex:
+		_bg_image_sprite.texture = tex
+		var game_width: float = GRID_WIDTH * TILE_SIZE   # 1280
+		var game_height: float = GRID_HEIGHT * TILE_SIZE  # 960
+		var tex_size := tex.get_size()
+		_bg_image_sprite.scale = Vector2(game_width / tex_size.x, game_height / tex_size.y)
 
 func _clear_tiles() -> void:
 	for pos in _bg_tile_data.keys():

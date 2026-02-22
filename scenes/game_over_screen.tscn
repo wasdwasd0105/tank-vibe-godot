@@ -34,9 +34,9 @@ vertical_alignment = 1
 
 [node name="ScoreLabel" type="Label" parent="."]
 layout_mode = 1
-offset_left = 404.0
+offset_left = 500.0
 offset_top = 550.0
-offset_right = 1004.0
+offset_right = 1100.0
 offset_bottom = 650.0
 theme_override_font_sizes/font_size = 32
 text = "Press SPACE to continue"

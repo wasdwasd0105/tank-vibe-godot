@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3 uid="uid://cgame01"]
+[gd_scene load_steps=9 format=3 uid="uid://cgame01"]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
 [ext_resource type="Script" path="res://scripts/level/level_manager.gd" id="2_level_mgr"]
@@ -8,17 +8,23 @@
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/eagle.png" id="6_eagle_tex"]
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/tree.png" id="7_tree_tex"]
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+bg_color = Color(0.05, 0.05, 0.05, 1)
+
 [node name="Game" type="Node2D"]
 script = ExtResource("1_game")
 
 [node name="Background" type="ColorRect" parent="."]
-offset_right = 1408.0
-offset_bottom = 992.0
+offset_right = 1600.0
+offset_bottom = 1000.0
 color = Color(0.1, 0.1, 0.1, 1)
 
 [node name="Playfield" type="Node2D" parent="."]
-position = Vector2(48, 16)
+position = Vector2(160, 16)
 script = ExtResource("2_level_mgr")
+
+[node name="BackgroundImage" type="Sprite2D" parent="Playfield"]
+position = Vector2(640, 480)
 
 [node name="TerrainLayer" type="Node2D" parent="Playfield"]
 
@@ -53,60 +59,142 @@ texture_filter = 0
 script = ExtResource("3_spawner")
 
 [node name="SpawnPoint1" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(112, 48)
+position = Vector2(224, 48)
 
 [node name="SpawnPoint2" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(688, 48)
+position = Vector2(800, 48)
 
 [node name="SpawnPoint3" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(1264, 48)
+position = Vector2(1376, 48)
 
 [node name="SpawnTimer" type="Timer" parent="EnemySpawner"]
 wait_time = 2.0
 
 [node name="HUD" type="Control" parent="."]
 layout_mode = 3
-anchors_preset = 0
-offset_left = 1330.0
-offset_top = 16.0
-offset_right = 1408.0
-offset_bottom = 970.0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 script = ExtResource("4_hud")
 
-[node name="EnemyCount" type="Label" parent="HUD"]
+[node name="LeftPanel" type="Panel" parent="HUD"]
 layout_mode = 0
-offset_right = 78.0
+offset_right = 160.0
+offset_bottom = 1000.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="P1Header" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 40.0
+offset_right = 150.0
 offset_bottom = 80.0
-theme_override_font_sizes/font_size = 24
-text = "ENEMY
-20"
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(0.9, 0.7, 0.1, 1)
+text = "I P"
 horizontal_alignment = 1
 
-[node name="P1Lives" type="Label" parent="HUD"]
+[node name="P1Lives" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
-offset_top = 200.0
-offset_right = 78.0
-offset_bottom = 260.0
+offset_left = 10.0
+offset_top = 90.0
+offset_right = 150.0
+offset_bottom = 130.0
 theme_override_font_sizes/font_size = 24
-text = "P1: 3"
+text = "Lives: 3"
 horizontal_alignment = 1
 
-[node name="P2Lives" type="Label" parent="HUD"]
+[node name="P1Score" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
-offset_top = 300.0
-offset_right = 78.0
-offset_bottom = 360.0
-theme_override_font_sizes/font_size = 24
-text = "P2: 3"
+offset_left = 10.0
+offset_top = 140.0
+offset_right = 150.0
+offset_bottom = 180.0
+theme_override_font_sizes/font_size = 20
+text = "0"
+horizontal_alignment = 1
+
+[node name="P2Header" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 260.0
+offset_right = 150.0
+offset_bottom = 300.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(0.1, 0.8, 0.2, 1)
+text = "II P"
 horizontal_alignment = 1
 visible = false
 
-[node name="StageLabel" type="Label" parent="HUD"]
+[node name="P2Lives" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
-offset_top = 460.0
-offset_right = 78.0
-offset_bottom = 540.0
+offset_left = 10.0
+offset_top = 310.0
+offset_right = 150.0
+offset_bottom = 350.0
 theme_override_font_sizes/font_size = 24
-text = "ST
-1"
+text = "Lives: 3"
+horizontal_alignment = 1
+visible = false
+
+[node name="P2Score" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 360.0
+offset_right = 150.0
+offset_bottom = 400.0
+theme_override_font_sizes/font_size = 20
+text = "0"
+horizontal_alignment = 1
+visible = false
+
+[node name="RightPanel" type="Panel" parent="HUD"]
+layout_mode = 0
+offset_left = 1440.0
+offset_right = 1600.0
+offset_bottom = 1000.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="EnemyHeader" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 40.0
+offset_right = 150.0
+offset_bottom = 80.0
+theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(0.9, 0.3, 0.3, 1)
+text = "ENEMY"
+horizontal_alignment = 1
+
+[node name="EnemyCount" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 90.0
+offset_right = 150.0
+offset_bottom = 130.0
+theme_override_font_sizes/font_size = 32
+text = "20"
+horizontal_alignment = 1
+
+[node name="StageHeader" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 800.0
+offset_right = 150.0
+offset_bottom = 840.0
+theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
+text = "STAGE"
+horizontal_alignment = 1
+
+[node name="StageLabel" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 850.0
+offset_right = 150.0
+offset_bottom = 920.0
+theme_override_font_sizes/font_size = 48
+text = "1"
 horizontal_alignment = 1

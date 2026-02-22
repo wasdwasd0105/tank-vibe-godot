@@ -151,9 +151,9 @@ func destroy() -> void:
 func _spawn_powerup() -> void:
 	var powerup_scene := preload("res://scenes/powerups/powerup.tscn")
 	var powerup := powerup_scene.instantiate()
-	# Random position on the playfield (40x30 grid, offset 48,16)
+	# Random position on the playfield (40x30 grid, offset 160,16)
 	powerup.global_position = Vector2(
-		randf_range(48, 48 + 40 * 32),
+		randf_range(160, 160 + 40 * 32),
 		randf_range(16, 16 + 30 * 32)
 	)
 	powerup.global_position = powerup.global_position.snapped(Vector2(32, 32))

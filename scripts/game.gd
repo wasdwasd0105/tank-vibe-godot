@@ -53,13 +53,14 @@ func _spawn_player(player_id: int) -> void:
 
 	# Spawn positions: P1 bottom-left area, P2 bottom-right area
 	# Tanks are 2x2 tiles, centered on even tile boundaries
+	var pf: Vector2 = level_manager.global_position
 	var spawn_x: float
 	if player_id == 0:
-		spawn_x = 48 + 12 * 32 + 32  # Grid columns 12-13 center
+		spawn_x = pf.x + 12 * 32 + 32  # Grid columns 12-13 center
 	else:
-		spawn_x = 48 + 26 * 32 + 32  # Grid columns 26-27 center
+		spawn_x = pf.x + 26 * 32 + 32  # Grid columns 26-27 center
 
-	var spawn_y: float = 16 + 28 * 32 + 32  # Grid rows 28-29 center
+	var spawn_y: float = pf.y + 28 * 32 + 32  # Grid rows 28-29 center
 
 	player.global_position = Vector2(spawn_x, spawn_y)
 	players_container.add_child(player)

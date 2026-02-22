@@ -27,10 +27,10 @@ WindowManager="*res://scripts/autoload/window_manager.gd"
 
 [display]
 
-window/size/viewport_width=1408
-window/size/viewport_height=992
-window/size/window_width_override=1408
-window/size/window_height_override=992
+window/size/viewport_width=1600
+window/size/viewport_height=1000
+window/size/window_width_override=1600
+window/size/window_height_override=1000
 window/stretch/mode="viewport"
 
 [dotnet]

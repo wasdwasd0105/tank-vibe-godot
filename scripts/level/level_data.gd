@@ -35,6 +35,7 @@ enum TileCategory {
 # --- Parsed Stage Data ---
 class StageData:
 	var caption: String = ""
+	var bg_bitmap: String = ""  # background image filename (e.g. "BG02.jpg")
 	var bg_grid: Array = []   # 30 rows of 40 ints (hex codes)
 	var fg_grid: Array = []   # 30 rows of 40 ints (hex codes)
 	var enemy_count: Array = []  # parsed from EnemyCount line
@@ -185,7 +186,97 @@ static func get_hard_brick_code(hp: int, variant: int) -> int:
 	return 0x29 + variant
 
 # =====================================================================
-# Map File Parser
+# Stage.dat Binary Parser
+# =====================================================================
+
+## Binary format constants
+const DAT_STAGE_SIZE: int = 6000
+const DAT_BG_OFFSET: int = 1200
+const DAT_FG_OFFSET: int = 3600
+const DAT_COL_STRIDE: int = 60  # 30 rows * 2 bytes per cell
+const DAT_BGBITMAP_OFFSET: int = 64
+const DAT_ENEMY_OFFSET: int = 144
+const DAT_MAXCOUNT_OFFSET: int = 208
+
+## Load all stages from a Stage.dat binary file
+static func load_stages_from_dat(path: String) -> Array:
+	var stages: Array = []
+	var file := FileAccess.open(path, FileAccess.READ)
+	if not file:
+		push_error("LevelData: Failed to open dat file: " + path)
+		return stages
+
+	var all_data := file.get_buffer(file.get_length())
+	file.close()
+
+	var stage_count := all_data.size() / DAT_STAGE_SIZE
+	# Skip stage 0 (Splash Stage / title screen)
+	for stage_idx in range(1, stage_count):
+		var base := stage_idx * DAT_STAGE_SIZE
+		var sd := StageData.new()
+
+		# Parse stage name (length-prefixed string at offset 0)
+		# 0xFF is used as separator between caption and subtitle, e.g. "Name\xFF(Easy)"
+		var name_len: int = all_data[base]
+		if name_len > 0 and name_len < 64:
+			# Find 0xFF separator and only take the part before it
+			var actual_len := name_len
+			for i in range(name_len):
+				if all_data[base + 1 + i] == 0xFF:
+					actual_len = i
+					break
+			var name_bytes := all_data.slice(base + 1, base + 1 + actual_len)
+			sd.caption = name_bytes.get_string_from_ascii()
+
+		# Parse BG_Bitmap (length-prefixed string at offset 64)
+		var bg_len: int = all_data[base + DAT_BGBITMAP_OFFSET]
+		if bg_len > 0 and bg_len < 64:
+			var bg_bytes := all_data.slice(base + DAT_BGBITMAP_OFFSET + 1, base + DAT_BGBITMAP_OFFSET + 1 + bg_len)
+			sd.bg_bitmap = bg_bytes.get_string_from_ascii()
+
+		# Parse enemy count (24 x LE16 at offset 144, we use first 4)
+		for i in range(24):
+			var off := base + DAT_ENEMY_OFFSET + i * 2
+			var val: int = all_data[off] | (all_data[off + 1] << 8)
+			sd.enemy_count.append(val)
+
+		# Parse max concurrent enemies (LE16 at offset 208)
+		var mc_off := base + DAT_MAXCOUNT_OFFSET
+		sd.max_count = all_data[mc_off] | (all_data[mc_off + 1] << 8)
+		if sd.max_count <= 0:
+			sd.max_count = 4
+
+		# Parse BG and FG grids (column-major, 2 bytes per cell)
+		for row in range(GRID_HEIGHT):
+			var bg_row: Array = []
+			var fg_row: Array = []
+			for col in range(GRID_WIDTH):
+				# BG tile (binary values are game codes - 1, same as FG)
+				var bg_off := base + DAT_BG_OFFSET + col * DAT_COL_STRIDE + row * 2
+				var bg_val: int = all_data[bg_off]
+				if bg_val == 0xFF:
+					bg_row.append(0x00)
+				else:
+					bg_row.append((bg_val + 1) & 0xFF)
+
+				# FG tile (binary values are game codes - 1)
+				var fg_off := base + DAT_FG_OFFSET + col * DAT_COL_STRIDE + row * 2
+				var fg_val: int = all_data[fg_off]
+				if fg_val == 0xFF:
+					fg_row.append(0x00)
+				else:
+					fg_row.append((fg_val + 1) & 0xFF)
+
+			sd.bg_grid.append(bg_row)
+			sd.fg_grid.append(fg_row)
+
+		stages.append(sd)
+
+	print("LevelData: Loaded %d stages from %s" % [stages.size(), path])
+	return stages
+
+# =====================================================================
+# Text Map File Parser
 # =====================================================================
 
 ## Load all stages from a .txt map file
@@ -216,6 +307,8 @@ static func load_stages_from_file(path: String) -> Array:
 		elif current_stage:
 			if line.begins_with("Caption="):
 				current_stage.caption = line.substr(8)
+			elif line.begins_with("BG_Bitmap="):
+				current_stage.bg_bitmap = line.substr(10).strip_edges()
 			elif line.begins_with("EnemyCount="):
 				var parts := line.substr(11).split(",")
 				for p in parts:
@@ -251,13 +344,18 @@ static func load_stages_from_file(path: String) -> Array:
 
 ## Load all map files from the maps directory
 static func _load_all_maps() -> Array:
+	# Prefer Stage.dat binary format (supports dynamic stage count)
+	var dat_path := MAP_DIR + "Stage.dat"
+	if FileAccess.file_exists(dat_path):
+		return load_stages_from_dat(dat_path)
+
+	# Fallback to .txt files
 	var all_stages: Array = []
 	var dir := DirAccess.open(MAP_DIR)
 	if not dir:
 		push_error("LevelData: Failed to open maps directory: " + MAP_DIR)
 		return all_stages
 
-	# Collect all .txt files
 	var files: Array[String] = []
 	dir.list_dir_begin()
 	var file_name := dir.get_next()
@@ -268,7 +366,6 @@ static func _load_all_maps() -> Array:
 	dir.list_dir_end()
 	files.sort()
 
-	# Parse each file
 	for f in files:
 		var stages := load_stages_from_file(MAP_DIR + f)
 		all_stages.append_array(stages)
@@ -298,6 +395,24 @@ static func get_enemy_wave(stage_num: int) -> Array:
 		return [stage.enemy_count[0], stage.enemy_count[1],
 				stage.enemy_count[2], stage.enemy_count[3]]
 	return DEFAULT_ENEMY_WAVE.duplicate()
+
+## Get caption (name) for a stage (1-indexed)
+static func get_stage_caption(stage_num: int) -> String:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return ""
+	var stage: StageData = stages[idx]
+	return stage.caption
+
+## Get background bitmap filename for a stage (1-indexed)
+static func get_stage_bg_bitmap(stage_num: int) -> String:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return ""
+	var stage: StageData = stages[idx]
+	return stage.bg_bitmap
 
 ## Get max concurrent enemies for a stage
 static func get_max_concurrent(stage_num: int) -> int:
