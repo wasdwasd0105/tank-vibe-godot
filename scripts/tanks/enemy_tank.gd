@@ -1,9 +1,8 @@
 class_name EnemyTank
 extends BaseTank
 
-enum EnemyType { BASIC = 0, FAST = 1, POWER = 2, ARMOR = 3 }
-
-@export var enemy_type: EnemyType = EnemyType.BASIC
+# Tank type ID (1-24) matching tank_<id>.png sprites and Stage.dat EnemyCount values
+@export var tank_type_id: int = 1
 @export var has_powerup: bool = false
 @export var points_value: int = 100
 
@@ -11,32 +10,79 @@ var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _flash_timer: float = 0.0
 
+# --- Addon system ---
+const ADDON_MOON_SHIELD := "moon-shield"
+const ADDON_ANTI_WATER := "anti-water"
+const ADDON_ANTI_ICE := "anti-ice"
+const ADDON_MEMORY_SAVE := "memory-save"
+
+# Which tank types have which addons (type_id -> array of addon names)
+const TYPE_ADDONS: Dictionary = {
+	2:  [ADDON_ANTI_WATER],
+	4:  [ADDON_MOON_SHIELD],
+	6:  [ADDON_ANTI_ICE],
+	8:  [ADDON_MEMORY_SAVE],
+	12: [ADDON_MOON_SHIELD],
+	16: [ADDON_ANTI_WATER],
+	18: [ADDON_ANTI_WATER],
+	20: [ADDON_ANTI_ICE],
+	22: [ADDON_ANTI_ICE],
+	24: [ADDON_MEMORY_SAVE],
+}
+
+var addons: Array = []
+var has_moon_shield: bool = false
+var has_anti_ice: bool = false
+var _shield_sprite: Sprite2D = null  # Reference for front-positioned shield
+var _addon_sprites: Array = []  # All addon Sprite2D nodes for rotation
+const SHIELD_FRONT_OFFSET: float = 5.0  # Pixels from center toward front
+
+# Per-addon size multiplier (relative to TANK_SIZE) and front offset override
+const ADDON_CONFIG: Dictionary = {
+	"moon-shield":  { "scale": 0.9, "offset": 5.0 },
+	"anti-water":   { "scale": 1.0, "offset": 0.0 },
+	"anti-ice":     { "scale": 1.0, "offset": 10.0 },
+	"memory-save":  { "scale": 1.0, "offset": 0.0 },
+}
+
+# Stats for each of the 24 tank types from tank_table.xlsx
+# Speed mapping: 1->64, 2->96, 3->128 pixels/sec
+# Points scale with HP tier
+const SPEED_MAP: Dictionary = { 1: 64.0, 2: 96.0, 3: 128.0 }
 const TYPE_STATS: Dictionary = {
-	EnemyType.BASIC:  { "speed": 96.0,  "health": 1, "bullet_speed": 192.0, "points": 100 },
-	EnemyType.FAST:   { "speed": 192.0, "health": 1, "bullet_speed": 256.0, "points": 200 },
-	EnemyType.POWER:  { "speed": 128.0, "health": 1, "bullet_speed": 384.0, "points": 300 },
-	EnemyType.ARMOR:  { "speed": 128.0, "health": 4, "bullet_speed": 256.0, "points": 400 },
+	1:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
+	2:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
+	3:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
+	4:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
+	5:  { "speed": 3, "health": 1, "bullet_speed": 224.0, "points": 200 },
+	6:  { "speed": 2, "health": 2, "bullet_speed": 224.0, "points": 200 },
+	7:  { "speed": 3, "health": 1, "bullet_speed": 224.0, "points": 200 },
+	8:  { "speed": 2, "health": 2, "bullet_speed": 224.0, "points": 200 },
+	9:  { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
+	10: { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
+	11: { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
+	12: { "speed": 2, "health": 3, "bullet_speed": 256.0, "points": 300 },
+	13: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
+	14: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
+	15: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
+	16: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
+	17: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	18: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	19: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	20: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	21: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
+	22: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
+	23: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
+	24: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
 }
-
-const TYPE_COLORS: Dictionary = {
-	EnemyType.BASIC: Color(0.7, 0.7, 0.7),     # Grey
-	EnemyType.FAST:  Color(0.7, 0.7, 1.0),      # Light blue
-	EnemyType.POWER: Color(1.0, 0.5, 0.5),      # Light red
-	EnemyType.ARMOR: Color(0.3, 0.8, 0.3),      # Green
-}
-
-const ARMOR_COLORS: Array[Color] = [
-	Color(0.3, 0.8, 0.3),  # Green (4 HP)
-	Color(0.9, 0.9, 0.2),  # Yellow (3 HP)
-	Color(0.7, 0.7, 0.7),  # Grey (2 HP)
-	Color(0.9, 0.5, 0.3),  # Orange (1 HP)
-]
 
 func _ready() -> void:
 	super._ready()
 	add_to_group("enemies")
-	var stats: Dictionary = TYPE_STATS[enemy_type]
-	move_speed = stats["speed"]
+	# Clamp type ID and apply stats
+	tank_type_id = clampi(tank_type_id, 1, 24)
+	var stats: Dictionary = TYPE_STATS.get(tank_type_id, TYPE_STATS[1])
+	move_speed = SPEED_MAP.get(stats["speed"], 96.0)
 	max_health = stats["health"]
 	health = max_health
 	bullet_speed = stats["bullet_speed"]
@@ -51,13 +97,19 @@ func _ready() -> void:
 	set_collision_mask_value(2, true)   # water
 	set_collision_mask_value(3, true)   # player_tanks
 	set_collision_mask_value(5, true)   # player_bullets
-	# Apply theme sprite and color
+	# Apply tank sprite by type ID
 	if sprite:
-		var enemy_key := "e%d" % (enemy_type + 1)
+		var enemy_key := "e%d" % tank_type_id
 		var theme_tex := ThemeManager.get_tank_texture(enemy_key)
 		if theme_tex:
 			sprite.texture = theme_tex
-	_update_color()
+		# Dynamically scale sprite to fit 64x64 (2x2 tile) tank size
+		var tex_size := sprite.texture.get_size()
+		sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
+		sprite.modulate = Color.WHITE
+		sprite.z_index = 1  # Tank body renders above addon layer
+	# Apply addons for this tank type
+	_apply_addons()
 	_update_sprite_direction()
 
 func _physics_process(delta: float) -> void:
@@ -66,6 +118,8 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_ai_update(delta)
+	if has_anti_ice:
+		is_on_ice = false
 	velocity = current_direction * move_speed
 
 	var collided := move_and_slide()
@@ -79,10 +133,7 @@ func _physics_process(delta: float) -> void:
 			if fmod(_flash_timer, 0.3) < 0.15:
 				sprite.modulate = Color.RED
 			else:
-				if ThemeManager.is_tank_modulate_mode():
-					_update_color()
-				else:
-					sprite.modulate = Color.WHITE
+				sprite.modulate = Color.WHITE
 
 func _ai_update(delta: float) -> void:
 	_direction_change_timer -= delta
@@ -123,21 +174,67 @@ func _bias_toward_eagle() -> void:
 		current_direction = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
 	_update_sprite_direction()
 
-func _update_color() -> void:
-	if not sprite:
+func _update_sprite_direction() -> void:
+	super._update_sprite_direction()
+	_update_addon_directions()
+
+func _update_addon_directions() -> void:
+	# Compute rotation from facing direction
+	var rot := 0.0
+	if current_direction == Vector2.DOWN:
+		rot = PI
+	elif current_direction == Vector2.LEFT:
+		rot = -PI / 2
+	elif current_direction == Vector2.RIGHT:
+		rot = PI / 2
+	# Rotate all addon sprites to match tank direction
+	for addon_sprite in _addon_sprites:
+		if addon_sprite and is_instance_valid(addon_sprite):
+			addon_sprite.rotation = rot
+	# Moon-shield also has a front offset
+	if _shield_sprite and is_instance_valid(_shield_sprite):
+		var offset: float = ADDON_CONFIG.get(ADDON_MOON_SHIELD, {}).get("offset", SHIELD_FRONT_OFFSET)
+		_shield_sprite.position = current_direction * offset
+
+func _apply_addons() -> void:
+	if not TYPE_ADDONS.has(tank_type_id):
 		return
-	if not ThemeManager.is_tank_modulate_mode():
-		sprite.modulate = Color.WHITE
-		return
-	if enemy_type == EnemyType.ARMOR:
-		var color_index := clampi(max_health - health, 0, ARMOR_COLORS.size() - 1)
-		sprite.modulate = ARMOR_COLORS[color_index]
-	else:
-		sprite.modulate = TYPE_COLORS[enemy_type]
+	addons = TYPE_ADDONS[tank_type_id].duplicate()
+	for addon_name in addons:
+		# Add visual overlay
+		var tex := ThemeManager.get_addon_texture(addon_name)
+		if tex:
+			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
+			var addon_sprite := Sprite2D.new()
+			addon_sprite.texture = tex
+			addon_sprite.z_index = 0  # Render below tank sprite (sprite z_index=1)
+			var tex_size := tex.get_size()
+			var addon_size: float = TANK_SIZE * cfg["scale"]
+			addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
+			add_child(addon_sprite)
+			_addon_sprites.append(addon_sprite)
+			if addon_name == ADDON_MOON_SHIELD:
+				_shield_sprite = addon_sprite
+		# Apply gameplay effects
+		match addon_name:
+			ADDON_MOON_SHIELD:
+				has_moon_shield = true
+			ADDON_ANTI_WATER:
+				set_collision_mask_value(2, false)  # Can cross water
+			ADDON_ANTI_ICE:
+				has_anti_ice = true
+
+## Check if a bullet from the given direction is blocked by moon-shield.
+## Returns true if the bullet hits the tank's FRONT and the shield blocks it.
+func is_bullet_blocked(bullet_direction: Vector2) -> bool:
+	if not has_moon_shield:
+		return false
+	# Bullet hits front when it travels opposite to tank's facing direction
+	# dot < 0 means bullet is coming toward the front half of the tank
+	return bullet_direction.dot(current_direction) < 0
 
 func take_damage() -> void:
 	health -= 1
-	_update_color()
 	if health <= 0:
 		destroy()
 

@@ -151,6 +151,9 @@ func _on_body_entered(body: Node2D) -> void:
 
 	# Tank hits
 	if is_player_bullet and body is EnemyTank:
+		if body.is_bullet_blocked(direction):
+			_destroy()
+			return
 		body.take_damage()
 		_destroy()
 	elif not is_player_bullet and body is PlayerTank:

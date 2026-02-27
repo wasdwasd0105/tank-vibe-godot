@@ -42,10 +42,10 @@ func _ready() -> void:
 		var theme_tex := ThemeManager.get_tank_texture(tank_key)
 		if theme_tex:
 			sprite.texture = theme_tex
-		if ThemeManager.is_tank_modulate_mode():
-			sprite.modulate = PLAYER_COLORS[player_id]
-		else:
-			sprite.modulate = Color.WHITE
+		# Dynamically scale sprite to fit 64x64 (2x2 tile) tank size
+		var tex_size := sprite.texture.get_size()
+		sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
+		sprite.modulate = Color.WHITE
 
 func _physics_process(delta: float) -> void:
 	if is_invincible:

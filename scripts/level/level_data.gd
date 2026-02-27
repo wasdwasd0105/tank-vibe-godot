@@ -12,8 +12,10 @@ const EAGLE_ROW: int = 28
 # Which enemies (0-indexed) carry power-ups
 const POWERUP_CARRIERS: Array[int] = [3, 10, 17]
 
-# Default enemy wave fallback
+# Default enemy wave fallback (legacy: [basic, fast, power, armor])
 const DEFAULT_ENEMY_WAVE: Array = [18, 2, 0, 0]
+# Default spawn queue fallback (20 type-1 enemies)
+const DEFAULT_SPAWN_QUEUE: Array = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 
 # Path to map files directory
 const MAP_DIR: String = "res://maps/"
@@ -382,7 +384,7 @@ static func get_stages() -> Array:
 static func get_stage_count() -> int:
 	return get_stages().size()
 
-## Get enemy wave data for a stage (1-indexed)
+## Get enemy wave data for a stage (1-indexed) - LEGACY
 ## Returns [basic, fast, power, armor]
 static func get_enemy_wave(stage_num: int) -> Array:
 	var stages := get_stages()
@@ -395,6 +397,28 @@ static func get_enemy_wave(stage_num: int) -> Array:
 		return [stage.enemy_count[0], stage.enemy_count[1],
 				stage.enemy_count[2], stage.enemy_count[3]]
 	return DEFAULT_ENEMY_WAVE.duplicate()
+
+## Get enemy spawn queue for a stage (1-indexed)
+## Returns a shuffled array of tank type IDs (1-24) ready to spawn.
+## EnemyCount format: index = type (0→type1, 1→type2, ..., 23→type24),
+## value = how many of that type to spawn.
+static func get_enemy_spawn_queue(stage_num: int) -> Array:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return DEFAULT_SPAWN_QUEUE.duplicate()
+
+	var stage: StageData = stages[idx]
+	var queue: Array = []
+	for i in range(mini(stage.enemy_count.size(), 24)):
+		var count: int = stage.enemy_count[i]
+		var type_id: int = i + 1  # index 0 = type 1, index 1 = type 2, etc.
+		for _j in range(count):
+			queue.append(type_id)
+	if queue.is_empty():
+		return DEFAULT_SPAWN_QUEUE.duplicate()
+	queue.shuffle()
+	return queue
 
 ## Get caption (name) for a stage (1-indexed)
 static func get_stage_caption(stage_num: int) -> String:

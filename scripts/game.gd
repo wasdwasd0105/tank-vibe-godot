@@ -75,7 +75,7 @@ func _process(_delta: float) -> void:
 func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	GameManager.enemies_remaining -= 1
 	# Award points to closest player (simplified)
-	GameManager.add_score(0, points, enemy.enemy_type)
+	GameManager.add_score(0, points, enemy.tank_type_id)
 	_update_hud()
 
 func _on_all_enemies_defeated() -> void:
@@ -100,7 +100,7 @@ func _on_base_destroyed() -> void:
 	GameManager.trigger_game_over()
 
 func _on_game_over() -> void:
-	if _game_over_pending:
+	if _game_over_pending:  
 		return
 	_game_over_pending = true
 	await get_tree().create_timer(2.0).timeout

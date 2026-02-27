@@ -7,6 +7,7 @@ signal theme_changed(theme_name: String)
 
 const THEMES_DIR: String = "res://themes/"
 const DEFAULT_TANK_SPRITE: String = "res://assets/sprites/tanks/tank.png"
+const TANK_SPRITES_DIR: String = "res://assets/tank_sprites/"
 const TILE_SIZE: int = 32
 
 var current_theme: String = "default"
@@ -18,7 +19,8 @@ var _config: ConfigFile = null
 # Cached textures
 var _tile_textures: Dictionary = {}           # code (int) -> Texture2D
 var _partial_brick_cache: Dictionary = {}     # mask (int) or "mask_variant" (String) -> Texture2D
-var _tank_textures: Dictionary = {}           # "p1","p2","e1"-"e4" -> Texture2D
+var _tank_textures: Dictionary = {}           # "p1","p2","e1"-"e24" -> Texture2D
+var _addon_textures: Dictionary = {}         # "moon-shield","anti-water",etc -> Texture2D
 
 # =====================================================================
 # Procedural color palettes (moved from level_manager.gd)
@@ -132,6 +134,7 @@ func load_theme(theme_name: String) -> void:
 	_tile_textures.clear()
 	_partial_brick_cache.clear()
 	_tank_textures.clear()
+	_addon_textures.clear()
 
 	if _theme_type == "procedural":
 		_generate_procedural_textures()
@@ -139,6 +142,7 @@ func load_theme(theme_name: String) -> void:
 		_load_image_textures()
 
 	_load_tank_textures()
+	_load_addon_textures()
 	theme_changed.emit(theme_name)
 
 ## Full code→Texture2D dictionary (for level_manager)
@@ -168,6 +172,10 @@ func get_partial_brick_texture(damage_mask: int, variant: int) -> Texture2D:
 ## Tank sprite texture
 func get_tank_texture(tank_key: String) -> Texture2D:
 	return _tank_textures.get(tank_key, null)
+
+## Addon sprite texture (e.g. "moon-shield", "anti-water")
+func get_addon_texture(addon_name: String) -> Texture2D:
+	return _addon_textures.get(addon_name, null)
 
 ## Whether tanks should use color modulation (true) or dedicated sprites (false)
 func is_tank_modulate_mode() -> bool:
@@ -350,30 +358,103 @@ func _fix_zero_alpha(img: Image) -> void:
 # =====================================================================
 
 func _load_tank_textures() -> void:
+	# Always load the 24 enemy + 2 player sprites from tank_sprites/
+	_load_tank_sprites_from_assets()
+	# If theme has sprite overrides, apply those on top
 	if _tank_mode == "sprite" and _config:
 		var theme_dir := THEMES_DIR + current_theme + "/"
+		# Theme can override specific tanks via [tanks] section
 		var tank_keys: Dictionary = {
 			"p1": "tank_p1", "p2": "tank_p2",
-			"e1": "tank_e1", "e2": "tank_e2",
-			"e3": "tank_e3", "e4": "tank_e4",
 		}
+		# Also support theme overrides for e1-e24
+		for i in range(1, 25):
+			tank_keys["e%d" % i] = "tank_e%d" % i
 		for key in tank_keys:
 			var cfg_key: String = tank_keys[key]
 			var path: String = _config.get_value("tanks", cfg_key, "")
 			if not path.is_empty():
-				# Tank sprites use black-as-transparent, no tile_scale (tanks have their own scene scale)
 				var old_scale := _tile_scale
 				_tile_scale = 1
 				var tex := _load_image_with_black_transparent(theme_dir + path)
 				_tile_scale = old_scale
 				if tex:
 					_tank_textures[key] = tex
-	else:
-		# Modulate mode: use the default shared tank sprite
-		var tex := load(DEFAULT_TANK_SPRITE) as Texture2D
+	elif _tank_mode == "modulate":
+		# Modulate mode: if no tank_sprites loaded, fall back to default shared sprite
+		if _tank_textures.is_empty():
+			var tex := load(DEFAULT_TANK_SPRITE) as Texture2D
+			if tex:
+				for key in ["p1", "p2"]:
+					_tank_textures[key] = tex
+				for i in range(1, 25):
+					_tank_textures["e%d" % i] = tex
+
+## Load all tank sprites from assets/tank_sprites/ with blue edge as transparent
+func _load_tank_sprites_from_assets() -> void:
+	# Load player tanks
+	for p in ["p1", "p2"]:
+		var path := TANK_SPRITES_DIR + "tank_%s.png" % p
+		var tex := _load_image_with_blue_transparent(path)
 		if tex:
-			for key in ["p1", "p2", "e1", "e2", "e3", "e4"]:
-				_tank_textures[key] = tex
+			_tank_textures[p] = tex
+	# Load 24 enemy tank types
+	for i in range(1, 25):
+		var path := TANK_SPRITES_DIR + "tank_%d.png" % i
+		var tex := _load_image_with_blue_transparent(path)
+		if tex:
+			_tank_textures["e%d" % i] = tex
+
+## Load an image where the blue edge color (R<0.05, G<0.05, B>0.9) becomes transparent.
+## Used for tank sprites from assets/tank_sprites/.
+func _load_image_with_blue_transparent(path: String) -> Texture2D:
+	if path.is_empty():
+		return null
+	var img: Image = null
+	if ResourceLoader.exists(path):
+		var tex := load(path) as Texture2D
+		if tex:
+			img = tex.get_image()
+	if not img:
+		var fs_path := ProjectSettings.globalize_path(path)
+		img = Image.new()
+		if img.load(fs_path) != OK:
+			return null
+	if img.get_format() != Image.FORMAT_RGBA8:
+		img.convert(Image.FORMAT_RGBA8)
+	# Sample corner pixel to detect the background color
+	var bg_color := img.get_pixel(0, 0)
+	for y in range(img.get_height()):
+		for x in range(img.get_width()):
+			var c := img.get_pixel(x, y)
+			# Treat pixels matching the background color as transparent
+			if _is_same_color(c, bg_color):
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+			else:
+				c.a = 1.0
+				img.set_pixel(x, y, c)
+	return ImageTexture.create_from_image(img)
+
+func _is_same_color(a: Color, b: Color) -> bool:
+	return absf(a.r - b.r) < 0.03 and absf(a.g - b.g) < 0.03 and absf(a.b - b.b) < 0.03
+
+# =====================================================================
+# Addon texture loading
+# =====================================================================
+
+const ADDONS_DIR: String = "res://assets/sprites/addons/"
+
+## Load all addon sprites from assets/sprites/addons/ with corner-color-as-transparent
+const ADDON_NAMES: Array = ["moon-shield", "anti-water", "anti-ice", "memory-save"]
+
+func _load_addon_textures() -> void:
+	for addon_name in ADDON_NAMES:
+		var path: String = ADDONS_DIR + addon_name + ".png"
+		var tex := _load_image_with_blue_transparent(path)
+		if tex:
+			_addon_textures[addon_name] = tex
+		else:
+			push_warning("ThemeManager: Failed to load addon texture: %s" % path)
 
 # =====================================================================
 # Procedural texture generation (moved from level_manager.gd)

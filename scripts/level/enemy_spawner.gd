@@ -4,7 +4,7 @@ extends Node2D
 @export var spawn_interval: float = 2.0
 @export var max_concurrent_enemies: int = 4
 
-var _spawn_queue: Array = []  # Array of EnemyTank.EnemyType
+var _spawn_queue: Array = []  # Array of int (tank type IDs 1-24)
 var _current_spawn_point: int = 0
 var _active_enemies: int = 0
 var _total_spawned: int = 0
@@ -25,18 +25,8 @@ func start_stage(stage_num: int) -> void:
 	_total_spawned = 0
 	_active_enemies = 0
 
-	var wave: Array = LevelData.get_enemy_wave(stage_num)
-
-	# Build queue with all enemy types
-	for i in range(wave[0]):
-		_spawn_queue.append(EnemyTank.EnemyType.BASIC)
-	for i in range(wave[1]):
-		_spawn_queue.append(EnemyTank.EnemyType.FAST)
-	for i in range(wave[2]):
-		_spawn_queue.append(EnemyTank.EnemyType.POWER)
-	for i in range(wave[3]):
-		_spawn_queue.append(EnemyTank.EnemyType.ARMOR)
-	_spawn_queue.shuffle()
+	# Get the sequential spawn queue of tank type IDs (1-24)
+	_spawn_queue = LevelData.get_enemy_spawn_queue(stage_num)
 
 	GameManager.enemies_remaining = _spawn_queue.size()
 
@@ -76,11 +66,11 @@ func _spawn_enemy() -> void:
 	if not results.is_empty():
 		return  # Spawn point blocked, try next tick
 
-	var enemy_type: int = _spawn_queue.pop_front()
+	var type_id: int = _spawn_queue.pop_front()
 
 	var enemy_scene := preload("res://scenes/tanks/enemy_tank.tscn")
 	var enemy: EnemyTank = enemy_scene.instantiate()
-	enemy.enemy_type = enemy_type as EnemyTank.EnemyType
+	enemy.tank_type_id = type_id
 	enemy.has_powerup = _total_spawned in LevelData.POWERUP_CARRIERS
 
 	var enemies_container = get_tree().get_first_node_in_group("enemies_container")
