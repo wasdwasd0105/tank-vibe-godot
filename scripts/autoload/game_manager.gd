@@ -72,6 +72,12 @@ func lose_life(player_id: int) -> void:
 		else:
 			trigger_game_over()
 
+func add_score_direct(player_id: int, points: int) -> void:
+	var old_score := player_scores[player_id]
+	player_scores[player_id] += points
+	if old_score / EXTRA_LIFE_SCORE < player_scores[player_id] / EXTRA_LIFE_SCORE:
+		player_lives[player_id] += 1
+
 func add_life(player_id: int) -> void:
 	player_lives[player_id] += 1
 

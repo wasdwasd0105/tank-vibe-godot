@@ -9,9 +9,6 @@ const GRID_HEIGHT: int = 30
 const EAGLE_COL: int = 19
 const EAGLE_ROW: int = 28
 
-# Which enemies (0-indexed) carry power-ups
-const POWERUP_CARRIERS: Array[int] = [3, 10, 17]
-
 # Default enemy wave fallback (legacy: [basic, fast, power, armor])
 const DEFAULT_ENEMY_WAVE: Array = [18, 2, 0, 0]
 # Default spawn queue fallback (20 type-1 enemies)

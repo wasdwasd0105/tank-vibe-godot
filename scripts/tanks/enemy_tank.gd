@@ -3,12 +3,13 @@ extends BaseTank
 
 # Tank type ID (1-24) matching tank_<id>.png sprites and Stage.dat EnemyCount values
 @export var tank_type_id: int = 1
-@export var has_powerup: bool = false
 @export var points_value: int = 100
 
 var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
-var _flash_timer: float = 0.0
+var _hits_taken: int = 0
+var _damage_flash_timer: float = 0.0
+const DAMAGE_FLASH_DURATION: float = 0.15
 
 # --- Addon system ---
 const ADDON_MOON_SHIELD := "moon-shield"
@@ -40,9 +41,9 @@ const SHIELD_FRONT_OFFSET: float = 5.0  # Pixels from center toward front
 # Per-addon size multiplier (relative to TANK_SIZE) and front offset override
 const ADDON_CONFIG: Dictionary = {
 	"moon-shield":  { "scale": 0.9, "offset": 5.0 },
-	"anti-water":   { "scale": 1.0, "offset": 0.0 },
-	"anti-ice":     { "scale": 1.0, "offset": 10.0 },
-	"memory-save":  { "scale": 1.0, "offset": 0.0 },
+	"anti-water":   { "scale": 1.0, "offset": 5.0 },
+	"anti-ice":     { "scale": 1.0, "offset": 5.0 },
+	"memory-save":  { "scale": 1.0, "offset": 5.0 },
 }
 
 # Stats for each of the 24 tank types from tank_table.xlsx
@@ -51,29 +52,29 @@ const ADDON_CONFIG: Dictionary = {
 const SPEED_MAP: Dictionary = { 1: 64.0, 2: 96.0, 3: 128.0 }
 const TYPE_STATS: Dictionary = {
 	1:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
-	2:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
+	2:  { "speed": 1, "health": 2, "bullet_speed": 192.0, "points": 100 },
 	3:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
-	4:  { "speed": 1, "health": 1, "bullet_speed": 192.0, "points": 100 },
-	5:  { "speed": 3, "health": 1, "bullet_speed": 224.0, "points": 200 },
-	6:  { "speed": 2, "health": 2, "bullet_speed": 224.0, "points": 200 },
-	7:  { "speed": 3, "health": 1, "bullet_speed": 224.0, "points": 200 },
-	8:  { "speed": 2, "health": 2, "bullet_speed": 224.0, "points": 200 },
-	9:  { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
-	10: { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
-	11: { "speed": 2, "health": 2, "bullet_speed": 256.0, "points": 300 },
-	12: { "speed": 2, "health": 3, "bullet_speed": 256.0, "points": 300 },
+	4:  { "speed": 1, "health": 2, "bullet_speed": 192.0, "points": 100 },
+	5:  { "speed": 3, "health": 2, "bullet_speed": 224.0, "points": 200 },
+	6:  { "speed": 2, "health": 3, "bullet_speed": 224.0, "points": 200 },
+	7:  { "speed": 3, "health": 2, "bullet_speed": 224.0, "points": 200 },
+	8:  { "speed": 2, "health": 3, "bullet_speed": 224.0, "points": 200 },
+	9:  { "speed": 2, "health": 3, "bullet_speed": 256.0, "points": 300 },
+	10: { "speed": 2, "health": 3, "bullet_speed": 256.0, "points": 300 },
+	11: { "speed": 2, "health": 3, "bullet_speed": 256.0, "points": 300 },
+	12: { "speed": 2, "health": 4, "bullet_speed": 256.0, "points": 300 },
 	13: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
 	14: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
 	15: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
-	16: { "speed": 1, "health": 6, "bullet_speed": 288.0, "points": 400 },
+	16: { "speed": 1, "health": 7, "bullet_speed": 288.0, "points": 400 },
 	17: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
-	18: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	18: { "speed": 2, "health": 4, "bullet_speed": 320.0, "points": 500 },
 	19: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
-	20: { "speed": 2, "health": 3, "bullet_speed": 320.0, "points": 500 },
+	20: { "speed": 2, "health": 4, "bullet_speed": 320.0, "points": 500 },
 	21: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
-	22: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
+	22: { "speed": 2, "health": 3, "bullet_speed": 352.0, "points": 600 },
 	23: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
-	24: { "speed": 2, "health": 2, "bullet_speed": 352.0, "points": 600 },
+	24: { "speed": 2, "health": 3, "bullet_speed": 352.0, "points": 600 },
 }
 
 func _ready() -> void:
@@ -107,7 +108,6 @@ func _ready() -> void:
 		var tex_size := sprite.texture.get_size()
 		sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
 		sprite.modulate = Color.WHITE
-		sprite.z_index = 1  # Tank body renders above addon layer
 	# Apply addons for this tank type
 	_apply_addons()
 	_update_sprite_direction()
@@ -126,14 +126,16 @@ func _physics_process(delta: float) -> void:
 	if collided:
 		_change_direction()
 
-	# Flash effect for powerup carrier
-	if has_powerup:
-		_flash_timer += delta
+	# Damage flash effect (any tank that was recently hit)
+	if _damage_flash_timer > 0:
+		_damage_flash_timer -= delta
 		if sprite:
-			if fmod(_flash_timer, 0.3) < 0.15:
+			if fmod(_damage_flash_timer, 0.1) < 0.05:
 				sprite.modulate = Color.RED
 			else:
 				sprite.modulate = Color.WHITE
+		if _damage_flash_timer <= 0 and sprite:
+			sprite.modulate = Color.WHITE
 
 func _ai_update(delta: float) -> void:
 	_direction_change_timer -= delta
@@ -207,11 +209,11 @@ func _apply_addons() -> void:
 			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
 			var addon_sprite := Sprite2D.new()
 			addon_sprite.texture = tex
-			addon_sprite.z_index = 0  # Render below tank sprite (sprite z_index=1)
 			var tex_size := tex.get_size()
 			var addon_size: float = TANK_SIZE * cfg["scale"]
 			addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
 			add_child(addon_sprite)
+			move_child(addon_sprite, 0)  # Insert before Sprite2D so addon draws behind tank body
 			_addon_sprites.append(addon_sprite)
 			if addon_name == ADDON_MOON_SHIELD:
 				_shield_sprite = addon_sprite
@@ -235,27 +237,73 @@ func is_bullet_blocked(bullet_direction: Vector2) -> bool:
 
 func take_damage() -> void:
 	health -= 1
+	_hits_taken += 1
+	_damage_flash_timer = DAMAGE_FLASH_DURATION
+	# Addon drop on 2nd hit: only if tank started with hp>2 and has addon(s)
+	if _hits_taken == 2 and max_health > 2 and not addons.is_empty():
+		_drop_addon_cookie()
 	if health <= 0:
 		destroy()
 
 func destroy() -> void:
 	Events.enemy_destroyed.emit(self, points_value)
-	if has_powerup:
-		_spawn_powerup()
+	# Death drop: any tank with max_health>1 has 60% chance to drop a cookie
+	if max_health > 1:
+		var cookie_type: int = CookieData.roll_death_drop(tank_type_id)
+		if cookie_type >= 0:
+			_spawn_cookie_at_position(cookie_type)
 	_spawn_explosion()
 	queue_free()
 
-func _spawn_powerup() -> void:
-	var powerup_scene := preload("res://scenes/powerups/powerup.tscn")
-	var powerup := powerup_scene.instantiate()
+func _drop_addon_cookie() -> void:
+	if addons.is_empty():
+		return
+	var addon_name: String = addons[0]
+	var cookie_type: int = CookieData.ADDON_TO_COOKIE.get(addon_name, -1)
+	if cookie_type == -1:
+		return
+	_remove_addon(addon_name)
+	_spawn_cookie_at_position(cookie_type)
+
+func _remove_addon(addon_name: String) -> void:
+	addons.erase(addon_name)
+	match addon_name:
+		ADDON_MOON_SHIELD:
+			has_moon_shield = false
+			if _shield_sprite and is_instance_valid(_shield_sprite):
+				_shield_sprite.queue_free()
+				_addon_sprites.erase(_shield_sprite)
+				_shield_sprite = null
+		ADDON_ANTI_WATER:
+			set_collision_mask_value(2, true)  # Re-enable water collision
+		ADDON_ANTI_ICE:
+			has_anti_ice = false
+	# Remove the addon sprite
+	if not _addon_sprites.is_empty():
+		var spr: Sprite2D = _addon_sprites.pop_back()
+		if spr and is_instance_valid(spr):
+			spr.queue_free()
+
+func _spawn_cookie_at_position(cookie_type: int) -> void:
+	var cookie_scene := preload("res://scenes/powerups/powerup.tscn")
+	var cookie: Node2D = cookie_scene.instantiate()
 	# Random position on the playfield (40x30 grid, offset 160,16)
-	powerup.global_position = Vector2(
+	var spawn_pos := Vector2(
 		randf_range(160, 160 + 40 * 32),
 		randf_range(16, 16 + 30 * 32)
-	)
-	powerup.global_position = powerup.global_position.snapped(Vector2(32, 32))
+	).snapped(Vector2(32, 32))
+	# Check if any player is at the spawn position (overlapping)
+	var delay: float = 0.0
+	var players := get_tree().get_nodes_in_group("players")
+	for player in players:
+		if player is PlayerTank and is_instance_valid(player):
+			if spawn_pos.distance_to(player.global_position) < 48.0:
+				delay = 1.0
+				break
+	cookie.setup(cookie_type, delay)
+	cookie.global_position = spawn_pos
 	var container = get_tree().get_first_node_in_group("powerups_container")
 	if container:
-		container.add_child(powerup)
+		container.add_child(cookie)
 	else:
-		get_tree().current_scene.add_child(powerup)
+		get_tree().current_scene.add_child(cookie)

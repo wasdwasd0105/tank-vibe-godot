@@ -157,6 +157,9 @@ func _on_body_entered(body: Node2D) -> void:
 		body.take_damage()
 		_destroy()
 	elif not is_player_bullet and body is PlayerTank:
+		if body.is_bullet_blocked(direction):
+			_destroy()
+			return
 		if not body.is_invincible:
 			body.take_damage()
 		_destroy()

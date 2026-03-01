@@ -71,7 +71,6 @@ func _spawn_enemy() -> void:
 	var enemy_scene := preload("res://scenes/tanks/enemy_tank.tscn")
 	var enemy: EnemyTank = enemy_scene.instantiate()
 	enemy.tank_type_id = type_id
-	enemy.has_powerup = _total_spawned in LevelData.POWERUP_CARRIERS
 
 	var enemies_container = get_tree().get_first_node_in_group("enemies_container")
 	if enemies_container:

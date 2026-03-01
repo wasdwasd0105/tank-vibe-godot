@@ -12,9 +12,9 @@ signal stage_cleared
 signal game_over
 signal base_destroyed
 
-# Power-ups
-signal powerup_spawned(powerup: Node2D)
-signal powerup_collected(type: int, player_id: int)
+# Cookies
+signal cookie_spawned(cookie: Node2D)
+signal cookie_collected(type: int, player_id: int)
 signal freeze_enemies(duration: float)
 signal bomb_all_enemies
 signal fortify_base(duration: float)
