@@ -181,10 +181,16 @@ func _add_addon_sprite(addon_name: String) -> void:
 		var addon_size: float = TANK_SIZE * cfg["scale"]
 		addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
 		add_child(addon_sprite)
-		move_child(addon_sprite, 0)  # Insert before Sprite2D so addon draws behind tank body
-		_addon_sprites[addon_name] = addon_sprite
 		if addon_name == "moon-shield":
+			# Moon-shield renders above utility addons but below tank body:
+			# insert just before the Sprite2D child
+			var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
+			move_child(addon_sprite, sprite_idx)
 			_shield_sprite = addon_sprite
+		else:
+			# Utility addons render at the bottom (behind everything)
+			move_child(addon_sprite, 0)
+		_addon_sprites[addon_name] = addon_sprite
 		_update_addon_directions()
 
 func is_bullet_blocked(bullet_direction: Vector2) -> bool:
