@@ -288,9 +288,10 @@ func _spawn_cookie_at_position(cookie_type: int) -> void:
 	var cookie_scene := preload("res://scenes/powerups/powerup.tscn")
 	var cookie: Node2D = cookie_scene.instantiate()
 	# Random position on the playfield (40x30 grid, offset 160,16)
+	# Inset by 32px (half cookie size) so the 64px cookie stays fully inside
 	var spawn_pos := Vector2(
-		randf_range(160, 160 + 40 * 32),
-		randf_range(16, 16 + 30 * 32)
+		randf_range(160 + 32, 160 + 40 * 32 - 32),
+		randf_range(16 + 32, 16 + 30 * 32 - 32)
 	).snapped(Vector2(32, 32))
 	# Check if any player is at the spawn position (overlapping)
 	var delay: float = 0.0
@@ -300,7 +301,7 @@ func _spawn_cookie_at_position(cookie_type: int) -> void:
 			if spawn_pos.distance_to(player.global_position) < 48.0:
 				delay = 1.0
 				break
-	cookie.setup(cookie_type, delay)
+	cookie.setup(cookie_type, delay, global_position)
 	cookie.global_position = spawn_pos
 	var container = get_tree().get_first_node_in_group("powerups_container")
 	if container:

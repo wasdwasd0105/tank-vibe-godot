@@ -9,14 +9,27 @@ var _despawn_time: float = 40.0
 var _pickup_delay: float = 0.0
 var _delay_just_expired: bool = false
 
+# Spray animation
+var _spray_origin: Vector2 = Vector2.ZERO
+var _spray_target: Vector2 = Vector2.ZERO
+var _spray_timer: float = 0.0
+var _spray_duration: float = 0.0
+var _is_spraying: bool = false
+const SPRAY_ARC_HEIGHT: float = 80.0  # Peak height of the arc in pixels
+const SPRAY_SPEED: float = 400.0  # Pixels per second (determines duration from distance)
+const SPRAY_MIN_DURATION: float = 0.1
+const SPRAY_MAX_DURATION: float = 0.4
+
 const S: int = 64  # sprite size (2x2 tiles)
 
-func setup(type: int, delay: float = 0.0) -> void:
+func setup(type: int, delay: float = 0.0, origin: Vector2 = Vector2.ZERO) -> void:
 	cookie_type = type
 	_pickup_delay = delay
 	var info: Dictionary = CookieData.COOKIE_INFO.get(cookie_type, {})
 	if not info.is_empty():
 		_despawn_time = info["despawn_time"]
+	if origin != Vector2.ZERO:
+		_spray_origin = origin
 
 func _ready() -> void:
 	add_to_group("cookies")
@@ -38,8 +51,43 @@ func _ready() -> void:
 			var tex_size := tex.get_size()
 			$Sprite2D.scale = Vector2(S / tex_size.x, S / tex_size.y)
 		$Sprite2D.modulate = Color.WHITE
+	# Start spray animation if origin was set
+	if _spray_origin != Vector2.ZERO:
+		_spray_target = global_position
+		global_position = _spray_origin
+		var dist := _spray_origin.distance_to(_spray_target)
+		_spray_duration = clampf(dist / SPRAY_SPEED, SPRAY_MIN_DURATION, SPRAY_MAX_DURATION)
+		_spray_timer = 0.0
+		_is_spraying = true
+		# Start small and grow during flight
+		scale = Vector2(0.3, 0.3)
+		# Disable collision during spray
+		set_deferred("monitoring", false)
 
 func _process(delta: float) -> void:
+	# Spray animation: arc from origin to target
+	if _is_spraying:
+		_spray_timer += delta
+		var t: float = clampf(_spray_timer / _spray_duration, 0.0, 1.0)
+		# Ease-out for smooth landing
+		var ease_t: float = 1.0 - (1.0 - t) * (1.0 - t)
+		# Horizontal position: lerp from origin to target
+		var pos := _spray_origin.lerp(_spray_target, ease_t)
+		# Vertical arc: parabola peaking at t=0.5
+		var arc: float = -4.0 * SPRAY_ARC_HEIGHT * t * (t - 1.0)
+		pos.y -= arc
+		global_position = pos
+		# Scale: grow from 0.3 to 1.0
+		var s: float = lerpf(0.3, 1.0, ease_t)
+		scale = Vector2(s, s)
+		if t >= 1.0:
+			_is_spraying = false
+			global_position = _spray_target
+			scale = Vector2.ONE
+			# Re-enable collision after landing
+			set_deferred("monitoring", true)
+		return  # Don't tick lifetime or fade during spray
+
 	# Tick pickup delay
 	if _pickup_delay > 0.0:
 		_pickup_delay -= delta

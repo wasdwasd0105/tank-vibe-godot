@@ -68,7 +68,7 @@ text = ">"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OptionTheme" type="Label" parent="."]
+[node name="OptionTheme" type="Label" parent="." unique_id=677976449]
 layout_mode = 1
 offset_left = 600.0
 offset_top = 560.0
