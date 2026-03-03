@@ -109,6 +109,15 @@ const WEAPON_TO_COOKIE: Dictionary = {
 	"mine":      CookieType.MINE_COOKIE,
 }
 
+## Secondary weapon data: reload_count (given on pickup/refill), max_count (bullets_max cap)
+const WEAPON_DATA: Dictionary = {
+	"rapid":     { "reload_count": 50, "max_count": 200 },
+	"fire":      { "reload_count": 30, "max_count": 150 },
+	"ap":        { "reload_count": 10, "max_count": 50 },
+	"explosion": { "reload_count": 20, "max_count": 60 },
+	"mine":      { "reload_count": 25, "max_count": 75 },
+}
+
 const COOKIE_TEXTURES_DIR: String = "res://assets/sprites/cookies/"
 
 # Magenta background key color used in cookie PNGs (RGB 248,0,248)

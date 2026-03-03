@@ -40,8 +40,17 @@ class StageData:
 	var enemy_count: Array = []  # parsed from EnemyCount line
 	var max_count: int = 4
 
-# --- Cached stages ---
+# --- Map Pool ---
+class MapPool:
+	var id: String = ""            # unique identifier (filename or folder name)
+	var display_name: String = ""  # user-facing name
+	var type: String = ""          # "dat" or "folder"
+	var path: String = ""          # full res:// path to .dat file or folder
+
+# --- Cached stages & pools ---
 static var _loaded_stages: Array = []
+static var _available_pools: Array = []  # Array of MapPool
+static var _current_pool_id: String = ""
 
 # =====================================================================
 # Tile Classification Functions
@@ -341,18 +350,80 @@ static func load_stages_from_file(path: String) -> Array:
 	file.close()
 	return stages
 
-## Load all map files from the maps directory
-static func _load_all_maps() -> Array:
-	# Prefer Stage.dat binary format (supports dynamic stage count)
-	var dat_path := MAP_DIR + "Stage.dat"
-	if FileAccess.file_exists(dat_path):
-		return load_stages_from_dat(dat_path)
+# =====================================================================
+# Map Pool Scanning & Loading
+# =====================================================================
 
-	# Fallback to .txt files
-	var all_stages: Array = []
+## Scan the maps/ directory for available map pools.
+## A .dat file = one pool. A subfolder with .txt files = one pool.
+static func scan_map_pools() -> Array:
+	_available_pools.clear()
 	var dir := DirAccess.open(MAP_DIR)
 	if not dir:
 		push_error("LevelData: Failed to open maps directory: " + MAP_DIR)
+		return _available_pools
+
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while not entry.is_empty():
+		if dir.current_is_dir():
+			if not entry.begins_with("."):
+				# Check if folder contains at least one .txt file
+				var sub_dir := DirAccess.open(MAP_DIR + entry)
+				if sub_dir:
+					var has_txt := false
+					sub_dir.list_dir_begin()
+					var sub_entry := sub_dir.get_next()
+					while not sub_entry.is_empty():
+						if not sub_dir.current_is_dir() and sub_entry.ends_with(".txt"):
+							has_txt = true
+							break
+						sub_entry = sub_dir.get_next()
+					sub_dir.list_dir_end()
+					if has_txt:
+						var pool := MapPool.new()
+						pool.id = entry
+						pool.display_name = entry
+						pool.type = "folder"
+						pool.path = MAP_DIR + entry + "/"
+						_available_pools.append(pool)
+		else:
+			if entry.ends_with(".dat"):
+				var pool := MapPool.new()
+				pool.id = entry.get_basename()
+				pool.display_name = entry.get_basename()
+				pool.type = "dat"
+				pool.path = MAP_DIR + entry
+				_available_pools.append(pool)
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+	_available_pools.sort_custom(func(a, b): return a.id.naturalcasecmp_to(b.id) < 0)
+	print("LevelData: Found %d map pools" % _available_pools.size())
+	return _available_pools
+
+## Get available pools (lazy-scan on first call)
+static func get_available_pools() -> Array:
+	if _available_pools.is_empty():
+		scan_map_pools()
+	return _available_pools
+
+## Load stages from a specific map pool
+static func load_pool(pool: MapPool) -> void:
+	_loaded_stages.clear()
+	_current_pool_id = pool.id
+	if pool.type == "dat":
+		_loaded_stages = load_stages_from_dat(pool.path)
+	elif pool.type == "folder":
+		_loaded_stages = _load_folder_pool(pool.path)
+	print("LevelData: Pool '%s' loaded with %d stages" % [pool.id, _loaded_stages.size()])
+
+## Load all .txt stages from a folder pool (sorted alphabetically)
+static func _load_folder_pool(folder_path: String) -> Array:
+	var all_stages: Array = []
+	var dir := DirAccess.open(folder_path)
+	if not dir:
+		push_error("LevelData: Failed to open pool folder: " + folder_path)
 		return all_stages
 
 	var files: Array[String] = []
@@ -366,15 +437,16 @@ static func _load_all_maps() -> Array:
 	files.sort()
 
 	for f in files:
-		var stages := load_stages_from_file(MAP_DIR + f)
+		var stages := load_stages_from_file(folder_path + f)
 		all_stages.append_array(stages)
-
 	return all_stages
 
-## Get all loaded stages (lazy load on first call)
+## Get all loaded stages (lazy load — auto-loads first pool if none loaded)
 static func get_stages() -> Array:
 	if _loaded_stages.is_empty():
-		_loaded_stages = _load_all_maps()
+		var pools := get_available_pools()
+		if not pools.is_empty():
+			load_pool(pools[0])
 	return _loaded_stages
 
 ## Get the total number of stages

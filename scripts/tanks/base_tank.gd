@@ -68,8 +68,8 @@ func shoot() -> void:
 	bullet.speed = bullet_speed
 	bullet.owner_tank = self
 	bullet.is_player_bullet = is_in_group("players")
-	# 3-star player tanks can destroy steel
-	if self is PlayerTank and self.star_level >= 3:
+	# Weapon level 3 player tanks can destroy steel
+	if self is PlayerTank and self.weapon_level >= 3:
 		bullet.can_destroy_steel = true
 	bullet.global_position = global_position + current_direction * (TANK_SIZE * 0.5)
 

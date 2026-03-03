@@ -83,6 +83,8 @@ func _on_all_enemies_defeated() -> void:
 		return
 	_stage_clear_pending = true
 	Events.stage_cleared.emit()
+	# Save live player HP and addons before leaving stage
+	GameManager.save_player_states()
 	# Wait a moment then go to next stage
 	await get_tree().create_timer(2.0).timeout
 	GameManager.next_stage()

@@ -3,7 +3,18 @@ extends BaseTank
 
 @export var player_id: int = 0  # 0 or 1
 
-var star_level: int = 0
+# --- HP system ---
+const MAX_HP: int = 8
+const DEFAULT_HP: int = 4
+
+# --- Speed & weapon levels (0-3, default 1) ---
+var speed_level: int = 1
+var weapon_level: int = 1
+
+# --- Secondary weapon ---
+var secondary_weapon_type: String = "rapid"
+var secondary_weapon_count: int = 50
+
 var has_boat: bool = false
 var is_invincible: bool = false
 var invincible_timer: float = 0.0
@@ -37,13 +48,37 @@ const PLAYER_COLORS: Array[Color] = [
 	Color(0.3, 0.85, 0.3),   # Player 2: Green
 ]
 
+# Speed mapping: speed_level -> pixels/sec
+const SPEED_MAP: Dictionary = {
+	0: 96.0,
+	1: 128.0,
+	2: 160.0,
+	3: 192.0,
+}
+
 func _ready() -> void:
 	super._ready()
 	_input_prefix = "p%d_" % (player_id + 1)
 	add_to_group("players")
-	star_level = GameManager.get_star_level(player_id)
-	_apply_star_upgrades()
+
+	# Load persisted stats from GameManager
+	speed_level = GameManager.get_speed_level(player_id)
+	weapon_level = GameManager.get_weapon_level(player_id)
+	secondary_weapon_type = GameManager.get_secondary_weapon_type(player_id)
+	secondary_weapon_count = GameManager.get_secondary_weapon_count(player_id)
+
+	# Apply HP: max is always MAX_HP, load persisted HP from GameManager
+	max_health = MAX_HP
+	health = clampi(GameManager.player_hp[player_id], 1, MAX_HP)
+
+	_apply_speed_upgrade()
+	_apply_weapon_upgrade()
 	_activate_invincibility(SPAWN_INVINCIBILITY)
+
+	# Restore persisted addons from GameManager
+	var saved_addons: Array = GameManager.player_addons[player_id]
+	for addon_name in saved_addons:
+		apply_addon(addon_name)
 	# Set collision layers
 	set_collision_layer_value(1, false)
 	set_collision_layer_value(3, true)  # player_tanks
@@ -95,10 +130,32 @@ func _physics_process(delta: float) -> void:
 
 	if Input.is_action_just_pressed(_input_prefix + "shoot"):
 		shoot()
+	if Input.is_action_just_pressed(_input_prefix + "shoot2"):
+		shoot_secondary()
 
 func _update_sprite_direction() -> void:
 	super._update_sprite_direction()
 	_update_addon_directions()
+
+# --- Speed & weapon upgrade application ---
+
+func _apply_speed_upgrade() -> void:
+	move_speed = SPEED_MAP.get(speed_level, 128.0)
+
+func _apply_weapon_upgrade() -> void:
+	match weapon_level:
+		0:
+			bullet_speed = 256.0
+			max_bullets = 1
+		1:
+			bullet_speed = 384.0
+			max_bullets = 1
+		2:
+			bullet_speed = 384.0
+			max_bullets = 2
+		3:
+			bullet_speed = 384.0
+			max_bullets = 2
 
 # --- Cookie effect methods ---
 
@@ -108,16 +165,17 @@ func activate_pickup_invincibility() -> void:
 	_activate_invincibility(COOKIE_PICKUP_INVINCIBILITY)
 
 func apply_cookie_speed_up() -> void:
-	move_speed = minf(move_speed + 32.0, 192.0)
+	speed_level = mini(speed_level + 1, 3)
+	GameManager.set_speed_level(player_id, speed_level)
+	_apply_speed_upgrade()
 
 func apply_cookie_hp_up() -> void:
-	max_health += 1
-	health = mini(health + 1, max_health)
+	health = mini(health + 1, MAX_HP)
 
 func apply_cookie_weapons_up() -> void:
-	star_level = mini(star_level + 1, 3)
-	GameManager.set_star_level(player_id, star_level)
-	_apply_star_upgrades()
+	weapon_level = mini(weapon_level + 1, 3)
+	GameManager.set_weapon_level(player_id, weapon_level)
+	_apply_weapon_upgrade()
 
 func apply_cookie_star_up() -> void:
 	apply_cookie_speed_up()
@@ -125,12 +183,13 @@ func apply_cookie_star_up() -> void:
 	apply_cookie_weapons_up()
 
 func apply_cookie_max_up() -> void:
-	move_speed = 192.0
-	max_health = 4
-	health = max_health
-	star_level = 3
-	GameManager.set_star_level(player_id, star_level)
-	_apply_star_upgrades()
+	speed_level = 3
+	weapon_level = 3
+	health = MAX_HP
+	GameManager.set_speed_level(player_id, speed_level)
+	GameManager.set_weapon_level(player_id, weapon_level)
+	_apply_speed_upgrade()
+	_apply_weapon_upgrade()
 
 func apply_addon(addon_name: String) -> void:
 	# If it's a utility addon (anti-water/anti-ice/memory-save), remove the old one first
@@ -214,33 +273,48 @@ func _update_addon_directions() -> void:
 		var offset: float = ADDON_CONFIG.get("moon-shield", {}).get("offset", 5.0)
 		_shield_sprite.position = current_direction * offset
 
+# --- Secondary weapon system ---
+
+func set_secondary_weapon(weapon_type: String) -> void:
+	var weapon_data: Dictionary = CookieData.WEAPON_DATA.get(weapon_type, {})
+	if weapon_data.is_empty():
+		return
+	if weapon_type == secondary_weapon_type:
+		# Same weapon: refill by reload_count (capped at max)
+		secondary_weapon_count = mini(
+			secondary_weapon_count + weapon_data["reload_count"],
+			weapon_data["max_count"]
+		)
+	else:
+		# Different weapon: switch and set to reload_count
+		secondary_weapon_type = weapon_type
+		secondary_weapon_count = weapon_data["reload_count"]
+	# Persist to GameManager
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+
 func apply_cookie_bullets_max() -> void:
-	pass  # TODO: secondary weapon system
+	var weapon_data: Dictionary = CookieData.WEAPON_DATA.get(secondary_weapon_type, {})
+	if weapon_data.is_empty():
+		return
+	secondary_weapon_count = weapon_data["max_count"]
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
 func apply_cookie_bullet_refill() -> void:
-	pass  # TODO: secondary weapon system
+	var weapon_data: Dictionary = CookieData.WEAPON_DATA.get(secondary_weapon_type, {})
+	if weapon_data.is_empty():
+		return
+	secondary_weapon_count = mini(
+		secondary_weapon_count + weapon_data["reload_count"],
+		weapon_data["max_count"]
+	)
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
-func set_secondary_weapon(_weapon_type: String) -> void:
-	pass  # TODO: secondary weapon system
-
-func _apply_star_upgrades() -> void:
-	match star_level:
-		0:
-			bullet_speed = 256.0
-			max_bullets = 1
-			move_speed = 128.0
-		1:
-			bullet_speed = 384.0
-			max_bullets = 1
-			move_speed = 128.0
-		2:
-			bullet_speed = 384.0
-			max_bullets = 2
-			move_speed = 128.0
-		3:
-			bullet_speed = 384.0
-			max_bullets = 2
-			move_speed = 160.0
+func shoot_secondary() -> void:
+	if secondary_weapon_count <= 0:
+		return
+	secondary_weapon_count -= 1
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	shoot()
 
 func _check_ice() -> void:
 	var game = get_tree().get_first_node_in_group("game")
