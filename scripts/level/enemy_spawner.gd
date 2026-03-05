@@ -31,7 +31,7 @@ func start_stage(stage_num: int) -> void:
 	GameManager.enemies_remaining = _spawn_queue.size()
 
 	max_concurrent_enemies = LevelData.get_max_concurrent(stage_num)
-	if GameManager.is_two_player:
+	if GameManager.get_active_player_count() >= 2:
 		max_concurrent_enemies = maxi(max_concurrent_enemies, 6)
 
 	spawn_timer.wait_time = spawn_interval

@@ -12,6 +12,11 @@ extends Node2D
 
 var _game_over_pending: bool = false
 var _stage_clear_pending: bool = false
+var _game_over_countdown: float = -1.0
+var _base_destroyed: bool = false
+var _player_dead_timers: Array[float] = [0.0, 0.0]  # Time since each player died (lives < 0)
+const GAME_OVER_COUNTDOWN_DURATION: float = 15.0
+const PLAYER_HUD_CLEAR_TIME: float = 15.0
 
 func _ready() -> void:
 	add_to_group("game")
@@ -36,10 +41,10 @@ func _start_stage() -> void:
 	# Load level
 	level_manager.load_stage(GameManager.current_stage)
 
-	# Spawn players
-	_spawn_player(0)
-	if GameManager.is_two_player:
-		_spawn_player(1)
+	# Spawn active players
+	for pid in range(2):
+		if GameManager.player_active[pid]:
+			_spawn_player(pid)
 
 	# Start enemy spawning
 	enemy_spawner.start_stage(GameManager.current_stage)
@@ -68,9 +73,48 @@ func _spawn_player(player_id: int) -> void:
 func get_level_manager() -> LevelManager:
 	return level_manager
 
-func _process(_delta: float) -> void:
+func _unhandled_key_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_QUOTELEFT:  # ` backtick
+			Events.bomb_all_enemies.emit()
+
+func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("pause"):
 		get_tree().paused = not get_tree().paused
+
+	if _game_over_pending or _stage_clear_pending:
+		return
+
+	# Mid-game join: inactive or dead player can join by pressing fire
+	for pid in range(2):
+		if not GameManager.player_active[pid] or GameManager.player_lives[pid] < 0:
+			var prefix: String = "p1_" if pid == 0 else "p2_"
+			if Input.is_action_just_pressed(prefix + "shoot") or Input.is_action_just_pressed(prefix + "shoot2"):
+				if GameManager.rejoin_player(pid):
+					GameManager.player_active[pid] = true
+					_player_dead_timers[pid] = 0.0
+					_spawn_player(pid)
+					# Restore base if it was destroyed
+					if _base_destroyed:
+						_restore_base()
+					if _game_over_countdown >= 0:
+						_game_over_countdown = -1.0  # Cancel countdown
+						_update_hud()
+
+	# Track per-player dead timers
+	for pid in range(2):
+		if GameManager.player_active[pid] and GameManager.player_lives[pid] < 0:
+			_player_dead_timers[pid] += delta
+		else:
+			_player_dead_timers[pid] = 0.0
+
+	# Game over countdown
+	if _game_over_countdown >= 0:
+		_game_over_countdown -= delta
+		_update_hud()
+		if _game_over_countdown <= 0:
+			_game_over_countdown = -1.0
+			GameManager.trigger_game_over()
 
 func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	GameManager.enemies_remaining -= 1
@@ -90,6 +134,9 @@ func _on_all_enemies_defeated() -> void:
 	GameManager.next_stage()
 
 func _on_base_destroyed() -> void:
+	if _base_destroyed:
+		return
+	_base_destroyed = true
 	# Destroy eagle visual
 	if eagle and eagle.has_node("Sprite2D"):
 		eagle.get_node("Sprite2D").modulate = Color.RED
@@ -99,7 +146,25 @@ func _on_base_destroyed() -> void:
 	explosion.global_position = eagle.global_position
 	explosion.scale = Vector2(5, 5)
 	effects_container.add_child(explosion)
-	GameManager.trigger_game_over()
+	# Wipe all active players' lives so they can't respawn
+	for pid in range(2):
+		if GameManager.player_active[pid]:
+			GameManager.player_lives[pid] = -1
+			GameManager.player_speed_levels[pid] = 1
+			GameManager.player_weapon_levels[pid] = 1
+			GameManager.player_secondary_weapon_types[pid] = "rapid"
+			GameManager.player_secondary_weapon_counts[pid] = CookieData.WEAPON_DATA["rapid"]["reload_count"]
+			GameManager.player_hp[pid] = 4
+			GameManager.player_addons[pid] = []
+	# Remove all player tanks visually (explosion + free) without going through
+	# destroy() which would trigger respawn timers via _on_player_died
+	for tank in get_tree().get_nodes_in_group("players"):
+		if is_instance_valid(tank) and tank is PlayerTank:
+			tank._spawn_explosion()
+			tank.queue_free()
+	# Start countdown for rejoin
+	if _game_over_countdown < 0 and not _game_over_pending:
+		_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
 
 func _on_game_over() -> void:
 	if _game_over_pending:  
@@ -114,6 +179,10 @@ func _on_player_died(player_id: int) -> void:
 		await get_tree().create_timer(1.0).timeout
 		if not _game_over_pending:
 			_spawn_player(player_id)
+	else:
+		# Player is out of lives — check if all active players are dead
+		if GameManager.all_active_players_dead() and _game_over_countdown < 0 and not _game_over_pending:
+			_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
 
 func _on_bomb_all_enemies() -> void:
 	enemy_spawner.destroy_all_enemies()
@@ -123,6 +192,20 @@ func _on_freeze_enemies(duration: float) -> void:
 
 func _on_fortify_base(duration: float) -> void:
 	level_manager.fortify_base(duration)
+
+func _restore_base() -> void:
+	_base_destroyed = false
+	# Restore eagle visual
+	if eagle and eagle.has_node("Sprite2D"):
+		eagle.get_node("Sprite2D").modulate = Color.WHITE
+	# Fortify the base walls
+	level_manager.fortify_base(30.0)
+
+func get_game_over_countdown() -> float:
+	return _game_over_countdown
+
+func get_player_dead_timer(pid: int) -> float:
+	return _player_dead_timers[pid]
 
 func _update_hud() -> void:
 	if hud and hud.has_method("update_display"):

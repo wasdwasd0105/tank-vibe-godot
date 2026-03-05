@@ -88,10 +88,10 @@ theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 [node name="StageHeader" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 30.0
+offset_top = 40.0
 offset_right = 150.0
-offset_bottom = 60.0
-theme_override_font_sizes/font_size = 22
+offset_bottom = 80.0
+theme_override_font_sizes/font_size = 24
 theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
 text = "STAGE"
 horizontal_alignment = 1
@@ -99,11 +99,22 @@ horizontal_alignment = 1
 [node name="StageLabel" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 65.0
+offset_top = 90.0
 offset_right = 150.0
 offset_bottom = 130.0
-theme_override_font_sizes/font_size = 48
+theme_override_font_sizes/font_size = 32
 text = "1"
+horizontal_alignment = 1
+
+[node name="GamesPlayed" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 150.0
+offset_right = 154.0
+offset_bottom = 170.0
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(0.5, 0.5, 0.5, 1)
+text = "Played: 0"
 horizontal_alignment = 1
 
 [node name="P1Header" type="Label" parent="HUD/LeftPanel"]
@@ -140,24 +151,12 @@ text = "Spd:1 Wpn:1
 2nd:rapid(50)"
 autowrap_mode = 3
 
-[node name="CreditLabel" type="Label" parent="HUD/LeftPanel"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 335.0
-offset_right = 154.0
-offset_bottom = 360.0
-theme_override_font_sizes/font_size = 16
-theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
-text = "Credit: 3"
-horizontal_alignment = 1
-clip_text = true
-
 [node name="P1Score" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 365.0
+offset_top = 335.0
 offset_right = 150.0
-offset_bottom = 400.0
+offset_bottom = 370.0
 theme_override_font_sizes/font_size = 20
 text = "0"
 horizontal_alignment = 1
@@ -189,6 +188,18 @@ offset_bottom = 130.0
 theme_override_font_sizes/font_size = 32
 text = "20"
 horizontal_alignment = 1
+
+[node name="CreditLabel" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 155.0
+offset_right = 154.0
+offset_bottom = 170.0
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
+text = "Credit: 3"
+horizontal_alignment = 1
+clip_text = true
 
 [node name="P2Header" type="Label" parent="HUD/RightPanel"]
 layout_mode = 0
@@ -236,4 +247,17 @@ offset_bottom = 370.0
 theme_override_font_sizes/font_size = 20
 text = "0"
 horizontal_alignment = 1
+visible = false
+
+[node name="CountdownLabel" type="Label" parent="HUD"]
+layout_mode = 0
+offset_left = 500.0
+offset_top = 900.0
+offset_right = 1100.0
+offset_bottom = 960.0
+theme_override_font_sizes/font_size = 40
+theme_override_colors/font_color = Color(1.0, 0.3, 0.3, 1)
+text = "REJOIN: 15s"
+horizontal_alignment = 1
+vertical_alignment = 1
 visible = false

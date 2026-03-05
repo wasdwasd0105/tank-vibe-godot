@@ -173,3 +173,29 @@ func get_saved_theme() -> String:
 
 func get_saved_map_pool() -> String:
 	return _config.get_value("game", "map_pool", "")
+
+func save_max_credits(value: int) -> void:
+	_config.set_value("game", "max_credits", clampi(value, 1, 50))
+	_config.save(SAVE_PATH)
+
+func get_saved_max_credits() -> int:
+	return _config.get_value("game", "max_credits", 3)
+
+func save_difficulty(value: int) -> void:
+	_config.set_value("game", "difficulty", clampi(value, 1, 5))
+	_config.save(SAVE_PATH)
+
+func get_saved_difficulty() -> int:
+	return _config.get_value("game", "difficulty", 1)
+
+# =====================================================================
+# Stats persistence
+# =====================================================================
+
+func get_games_played() -> int:
+	return _config.get_value("stats", "games_played", 0)
+
+func increment_games_played() -> void:
+	var count: int = get_games_played() + 1
+	_config.set_value("stats", "games_played", count)
+	_config.save(SAVE_PATH)

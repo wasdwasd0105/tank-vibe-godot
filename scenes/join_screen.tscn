@@ -1,0 +1,79 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/join_screen.gd" id="1_join"]
+
+[node name="JoinScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_join")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 1)
+
+[node name="Title" type="Label" parent="."]
+layout_mode = 1
+offset_left = 300.0
+offset_top = 200.0
+offset_right = 1300.0
+offset_bottom = 300.0
+theme_override_font_sizes/font_size = 48
+text = "PRESS FIRE TO JOIN"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="P1Status" type="Label" parent="."]
+layout_mode = 1
+offset_left = 400.0
+offset_top = 400.0
+offset_right = 1200.0
+offset_bottom = 460.0
+theme_override_font_sizes/font_size = 36
+text = "P1: press T"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="P2Status" type="Label" parent="."]
+layout_mode = 1
+offset_left = 400.0
+offset_top = 500.0
+offset_right = 1200.0
+offset_bottom = 560.0
+theme_override_font_sizes/font_size = 36
+text = "P2: press ["
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="CreditsLabel" type="Label" parent="."]
+layout_mode = 1
+offset_left = 400.0
+offset_top = 650.0
+offset_right = 1200.0
+offset_bottom = 700.0
+theme_override_font_sizes/font_size = 32
+theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
+text = "Credits: 3"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Instruction" type="Label" parent="."]
+layout_mode = 1
+offset_left = 400.0
+offset_top = 750.0
+offset_right = 1200.0
+offset_bottom = 800.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1.0, 1.0, 0.3, 1)
+text = "Fire again to start"
+horizontal_alignment = 1
+vertical_alignment = 1
+visible = false

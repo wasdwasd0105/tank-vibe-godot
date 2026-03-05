@@ -1,7 +1,7 @@
 extends Node
 
 var current_stage: int = 1
-var is_two_player: bool = false
+var player_active: Array[bool] = [false, false]
 var is_game_over: bool = false
 var enemies_frozen: bool = false
 var current_map_pool_id: String = ""
@@ -9,6 +9,9 @@ var current_map_pool_id: String = ""
 # --- Credits (shared between both players) ---
 var credits: int = 3
 var max_credits: int = 3
+
+# --- Difficulty ---
+var difficulty: int = 1  # 1-5
 
 # --- Per-player persistent data ---
 # Starting at 3: first game start is treated as a "revive" (4 lives, use 1 = 3)
@@ -41,6 +44,7 @@ func reset() -> void:
 	is_game_over = false
 	enemies_frozen = false
 	credits = max_credits
+	player_active = [false, false]
 	player_lives = [3, 3]
 	player_scores = [0, 0]
 	player_speed_levels = [1, 1]
@@ -52,10 +56,10 @@ func reset() -> void:
 	player_kills = [{}, {}]
 	enemies_remaining = 20
 
-func start_game(two_player: bool) -> void:
-	is_two_player = two_player
+func start_game() -> void:
 	reset()
-	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
+	InputSettings.increment_games_played()
+	get_tree().change_scene_to_file("res://scenes/join_screen.tscn")
 
 func next_stage() -> void:
 	current_stage += 1
@@ -90,20 +94,6 @@ func lose_life(player_id: int) -> void:
 	player_hp[player_id] = 4  # DEFAULT_HP
 	player_addons[player_id] = []
 
-	if player_lives[player_id] < 0:
-		# Try to use a shared credit
-		if credits > 0:
-			credits -= 1
-			# 1 credit = 4 new lives, use 1 to revive = 3 left
-			player_lives[player_id] = 3
-		else:
-			# Player is out of lives and credits
-			if is_two_player:
-				if player_lives[0] < 0 and player_lives[1] < 0:
-					trigger_game_over()
-			else:
-				trigger_game_over()
-
 func add_score_direct(player_id: int, points: int) -> void:
 	var old_score := player_scores[player_id]
 	player_scores[player_id] += points
@@ -112,6 +102,43 @@ func add_score_direct(player_id: int, points: int) -> void:
 
 func add_life(player_id: int) -> void:
 	player_lives[player_id] += 1
+
+func join_player(player_id: int) -> bool:
+	if credits <= 0:
+		return false
+	credits -= 1
+	player_active[player_id] = true
+	player_lives[player_id] = 3
+	return true
+
+func rejoin_player(player_id: int) -> bool:
+	if credits <= 0:
+		return false
+	credits -= 1
+	player_lives[player_id] = 3
+	player_speed_levels[player_id] = 1
+	player_weapon_levels[player_id] = 1
+	player_secondary_weapon_types[player_id] = "rapid"
+	player_secondary_weapon_counts[player_id] = CookieData.WEAPON_DATA["rapid"]["reload_count"]
+	player_hp[player_id] = 4
+	player_addons[player_id] = []
+	Events.player_joined.emit(player_id)
+	return true
+
+func is_any_player_active() -> bool:
+	return player_active[0] or player_active[1]
+
+func get_active_player_count() -> int:
+	var count := 0
+	if player_active[0]: count += 1
+	if player_active[1]: count += 1
+	return count
+
+func all_active_players_dead() -> bool:
+	for pid in range(2):
+		if player_active[pid] and player_lives[pid] >= 0:
+			return false
+	return true
 
 # --- Speed level ---
 func get_speed_level(player_id: int) -> int:

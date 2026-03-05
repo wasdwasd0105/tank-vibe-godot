@@ -4,14 +4,15 @@ enum MenuMode { MAIN, SETTINGS, KEYBIND }
 
 # --- Main menu labels ---
 @onready var cursor: Label = $Cursor
-@onready var option_1p: Label = $Option1P
-@onready var option_2p: Label = $Option2P
+@onready var option_new_game: Label = $OptionNewGame
 @onready var option_settings: Label = $OptionSettings
 
 # --- Settings sub-menu labels ---
 @onready var settings_title: Label = $SettingsTitle
 @onready var settings_map: Label = $SettingsMap
 @onready var settings_theme: Label = $SettingsTheme
+@onready var settings_credits: Label = $SettingsCredits
+@onready var settings_difficulty: Label = $SettingsDifficulty
 @onready var settings_p1_keys: Label = $SettingsP1Keys
 @onready var settings_p2_keys: Label = $SettingsP2Keys
 @onready var settings_back: Label = $SettingsBack
@@ -85,8 +86,14 @@ func _ready() -> void:
 			_pool_index = 0
 			GameManager.set_map_pool(_available_pools[0].id)
 
+	# Load saved credits / difficulty
+	GameManager.max_credits = InputSettings.get_saved_max_credits()
+	GameManager.difficulty = InputSettings.get_saved_difficulty()
+
 	_update_pool_label()
 	_update_theme_label()
+	_update_credits_label()
+	_update_difficulty_label()
 	_update_controls_label()
 	_update_cursor()
 
@@ -127,7 +134,7 @@ func _input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 # =====================================================================
-# Main Menu Mode: 1P(0), 2P(1), SETTINGS(2)
+# Main Menu Mode: NEW GAME(0), SETTINGS(1)
 # =====================================================================
 
 func _process_main() -> void:
@@ -135,16 +142,17 @@ func _process_main() -> void:
 		_selected = maxi(_selected - 1, 0)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_down") or Input.is_action_just_pressed("p2_down"):
-		_selected = mini(_selected + 1, 2)
+		_selected = mini(_selected + 1, 1)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_shoot") or Input.is_action_just_pressed("p2_shoot") or Input.is_action_just_pressed("ui_select"):
-		if _selected == 2:
-			_enter_settings()
-		else:
+		if _selected == 0:
 			_start_game()
+		elif _selected == 1:
+			_enter_settings()
 
 # =====================================================================
-# Settings Mode: MAP(0), THEME(1), P1 KEYS(2), P2 KEYS(3), BACK(4)
+# Settings Mode: MAP(0), THEME(1), CREDITS(2), DIFFICULTY(3),
+#                P1 KEYS(4), P2 KEYS(5), BACK(6)
 # =====================================================================
 
 func _process_settings() -> void:
@@ -152,30 +160,29 @@ func _process_settings() -> void:
 		_selected = maxi(_selected - 1, 0)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_down") or Input.is_action_just_pressed("p2_down"):
-		_selected = mini(_selected + 1, 4)
+		_selected = mini(_selected + 1, 6)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_left") or Input.is_action_just_pressed("p2_left"):
-		if _selected == 0:
-			_cycle_pool(-1)
-		elif _selected == 1:
-			_cycle_theme(-1)
+		match _selected:
+			0: _cycle_pool(-1)
+			1: _cycle_theme(-1)
+			2: _cycle_credits(-1)
+			3: _cycle_difficulty(-1)
 	elif Input.is_action_just_pressed("p1_right") or Input.is_action_just_pressed("p2_right"):
-		if _selected == 0:
-			_cycle_pool(1)
-		elif _selected == 1:
-			_cycle_theme(1)
+		match _selected:
+			0: _cycle_pool(1)
+			1: _cycle_theme(1)
+			2: _cycle_credits(1)
+			3: _cycle_difficulty(1)
 	elif Input.is_action_just_pressed("p1_shoot") or Input.is_action_just_pressed("p2_shoot") or Input.is_action_just_pressed("ui_select"):
 		match _selected:
-			0:
-				_cycle_pool(1)
-			1:
-				_cycle_theme(1)
-			2:
-				_enter_keybind("p1")
-			3:
-				_enter_keybind("p2")
-			4:
-				_exit_settings()
+			0: _cycle_pool(1)
+			1: _cycle_theme(1)
+			2: _cycle_credits(1)
+			3: _cycle_difficulty(1)
+			4: _enter_keybind("p1")
+			5: _enter_keybind("p2")
+			6: _exit_settings()
 
 # =====================================================================
 # Keybind Mode: UP(0), DOWN(1), LEFT(2), RIGHT(3), FIRE1(4), FIRE2(5), RESET(6), BACK(7)
@@ -204,19 +211,22 @@ func _process_keybind() -> void:
 func _enter_settings() -> void:
 	_mode = MenuMode.SETTINGS
 	# Hide main menu options
-	option_1p.visible = false
-	option_2p.visible = false
+	option_new_game.visible = false
 	option_settings.visible = false
 	controls_label.visible = false
 	# Show settings sub-menu
 	settings_title.visible = true
 	settings_map.visible = true
 	settings_theme.visible = true
+	settings_credits.visible = true
+	settings_difficulty.visible = true
 	settings_p1_keys.visible = true
 	settings_p2_keys.visible = true
 	settings_back.visible = true
 	_update_p1_keys_label()
 	_update_p2_keys_label()
+	_update_credits_label()
+	_update_difficulty_label()
 	# Reset cursor to first settings option
 	_selected = 0
 	_update_cursor()
@@ -224,21 +234,22 @@ func _enter_settings() -> void:
 func _exit_settings() -> void:
 	_mode = MenuMode.MAIN
 	# Show main menu options
-	option_1p.visible = true
-	option_2p.visible = true
+	option_new_game.visible = true
 	option_settings.visible = true
 	controls_label.visible = true
 	# Hide settings sub-menu
 	settings_title.visible = false
 	settings_map.visible = false
 	settings_theme.visible = false
+	settings_credits.visible = false
+	settings_difficulty.visible = false
 	settings_p1_keys.visible = false
 	settings_p2_keys.visible = false
 	settings_back.visible = false
 	# Update controls label with latest bindings
 	_update_controls_label()
 	# Return cursor to SETTINGS option
-	_selected = 2
+	_selected = 1
 	_update_cursor()
 
 func _enter_keybind(player: String) -> void:
@@ -252,6 +263,8 @@ func _enter_keybind(player: String) -> void:
 	settings_title.visible = false
 	settings_map.visible = false
 	settings_theme.visible = false
+	settings_credits.visible = false
+	settings_difficulty.visible = false
 	settings_p1_keys.visible = false
 	settings_p2_keys.visible = false
 	settings_back.visible = false
@@ -282,13 +295,15 @@ func _exit_keybind() -> void:
 	settings_title.visible = true
 	settings_map.visible = true
 	settings_theme.visible = true
+	settings_credits.visible = true
+	settings_difficulty.visible = true
 	settings_p1_keys.visible = true
 	settings_p2_keys.visible = true
 	settings_back.visible = true
 	_update_p1_keys_label()
 	_update_p2_keys_label()
 	# Return cursor to the P1/P2 KEYS option
-	_selected = 2 if _keybind_player == "p1" else 3
+	_selected = 4 if _keybind_player == "p1" else 5
 	_update_cursor()
 
 # =====================================================================
@@ -335,10 +350,8 @@ func _update_cursor() -> void:
 		MenuMode.MAIN:
 			match _selected:
 				0:
-					cursor.position.y = option_1p.position.y
+					cursor.position.y = option_new_game.position.y
 				1:
-					cursor.position.y = option_2p.position.y
-				2:
 					cursor.position.y = option_settings.position.y
 		MenuMode.SETTINGS:
 			match _selected:
@@ -347,10 +360,14 @@ func _update_cursor() -> void:
 				1:
 					cursor.position.y = settings_theme.position.y
 				2:
-					cursor.position.y = settings_p1_keys.position.y
+					cursor.position.y = settings_credits.position.y
 				3:
-					cursor.position.y = settings_p2_keys.position.y
+					cursor.position.y = settings_difficulty.position.y
 				4:
+					cursor.position.y = settings_p1_keys.position.y
+				5:
+					cursor.position.y = settings_p2_keys.position.y
+				6:
 					cursor.position.y = settings_back.position.y
 		MenuMode.KEYBIND:
 			if _selected < 6:
@@ -359,6 +376,32 @@ func _update_cursor() -> void:
 				cursor.position.y = keybind_reset.position.y
 			elif _selected == 7:
 				cursor.position.y = keybind_back.position.y
+
+# =====================================================================
+# Credits cycling (1-50)
+# =====================================================================
+
+func _cycle_credits(direction: int) -> void:
+	GameManager.max_credits = clampi(GameManager.max_credits + direction, 1, 50)
+	InputSettings.save_max_credits(GameManager.max_credits)
+	_update_credits_label()
+
+func _update_credits_label() -> void:
+	if settings_credits:
+		settings_credits.text = "CREDITS: %d" % GameManager.max_credits
+
+# =====================================================================
+# Difficulty cycling (1-5)
+# =====================================================================
+
+func _cycle_difficulty(direction: int) -> void:
+	GameManager.difficulty = clampi(GameManager.difficulty + direction, 1, 5)
+	InputSettings.save_difficulty(GameManager.difficulty)
+	_update_difficulty_label()
+
+func _update_difficulty_label() -> void:
+	if settings_difficulty:
+		settings_difficulty.text = "DIFFICULTY: %d" % GameManager.difficulty
 
 # =====================================================================
 # Map pool cycling
@@ -406,4 +449,4 @@ func _update_theme_label() -> void:
 # =====================================================================
 
 func _start_game() -> void:
-	GameManager.start_game(_selected == 1)
+	GameManager.start_game()

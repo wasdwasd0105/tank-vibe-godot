@@ -11,6 +11,7 @@ signal stage_started(stage_num: int)
 signal stage_cleared
 signal game_over
 signal base_destroyed
+signal player_joined(player_id: int)
 
 # Cookies
 signal cookie_spawned(cookie: Node2D)
