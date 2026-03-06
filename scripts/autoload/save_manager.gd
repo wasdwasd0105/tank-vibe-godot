@@ -63,6 +63,16 @@ func load_game(filepath: String) -> void:
 	# Go directly to stage intro (skip join screen)
 	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
 
+## Delete a save file by path.
+func delete_save(filepath: String) -> bool:
+	if FileAccess.file_exists(filepath):
+		var err := DirAccess.remove_absolute(filepath)
+		if err == OK:
+			return true
+		else:
+			push_warning("SaveManager: Failed to delete save file: " + filepath)
+	return false
+
 ## Get list of save files with metadata for the load screen.
 ## Returns Array of Dictionaries sorted by saved_iso (newest first).
 func get_save_list() -> Array:

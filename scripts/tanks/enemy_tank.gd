@@ -14,11 +14,14 @@ var _collision_cooldown: float = 0.0  # Prevents eagle bias right after a collis
 var _near_eagle: bool = false  # True when within attack range of eagle
 var _water_avoid_dir: Vector2 = Vector2.ZERO  # Direction blocked by water (avoid it)
 var _water_avoid_timer: float = 0.0  # How long to avoid the water-blocked direction
+var _attack_wall_dir: Vector2 = Vector2.ZERO  # Direction of wall we're shooting to break
+var _attack_wall_timer: float = 0.0  # Time left to keep attacking a wall
 const DAMAGE_FLASH_DURATION: float = 0.15
 const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
 const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias after collision
 const EAGLE_ATTACK_RANGE: float = 192.0  # ~6 tiles — enter attack mode
 const WATER_AVOID_DURATION: float = 4.0  # Seconds to commit to going around water
+const ATTACK_WALL_DURATION: float = 3.0  # Seconds to commit to shooting a wall
 
 # --- Addon system ---
 const ADDON_MOON_SHIELD := "moon-shield"
@@ -134,8 +137,11 @@ func _physics_process(delta: float) -> void:
 	var collided := move_and_slide()
 	clamp_to_playfield()
 	if collided:
-		_collision_cooldown = COLLISION_COOLDOWN_DURATION
-		_change_direction()
+		if _attack_wall_timer > 0:
+			pass  # Stay committed — keep shooting the wall
+		else:
+			_collision_cooldown = COLLISION_COOLDOWN_DURATION
+			_change_direction()
 
 	# Damage flash effect (any tank that was recently hit)
 	if _damage_flash_timer > 0:
@@ -160,6 +166,70 @@ func _is_water_ahead(dir: Vector2) -> bool:
 	set_collision_mask_value(2, true)
 	return not still_blocked  # True = water was the only thing blocking
 
+func _has_indestructible_ahead(dir: Vector2) -> bool:
+	## Check if indestructible tiles (iron/steel, super block) are ahead in the given direction.
+	## These can't be destroyed by enemy bullets, so we must go around.
+	var game = get_tree().get_first_node_in_group("game")
+	if not game or not game.has_method("get_level_manager"):
+		return false
+	var lm = game.get_level_manager()
+	if not lm:
+		return false
+	# Check the 2 tiles directly ahead of the tank (tank is 2x2, so 2 tiles wide)
+	var ahead_center: Vector2 = global_position + dir * (HALF_TANK + HALF_TILE)
+	var perp := Vector2(dir.y, dir.x)  # perpendicular direction
+	for offset in [-0.5, 0.5]:  # Check both lanes of the 2-tile-wide tank
+		var check_pos: Vector2 = ahead_center + perp * (HALF_TILE * offset * 2)
+		var tile_pos: Vector2i = lm.world_to_tile(check_pos)
+		if lm._fg_tile_data.has(tile_pos):
+			var code: int = lm._fg_tile_data[tile_pos].get("code", 0)
+			var cat := LevelData.get_tile_category(code)
+			if cat == LevelData.TileCategory.IRON_BLOCK or cat == LevelData.TileCategory.SUPER_BLOCK:
+				return true
+	return false
+
+func _is_impassable_ahead(dir: Vector2) -> bool:
+	## Check if a direction is blocked by something the tank can never get through
+	## (water without addon, iron block, super block).
+	if _is_water_ahead(dir):
+		return true
+	if _has_indestructible_ahead(dir):
+		return true
+	return false
+
+func _try_direct_eagle_attack() -> bool:
+	## When very close to the eagle, check if we're aligned on an axis.
+	## If so, face the eagle directly and shoot — highest priority action.
+	var eagle = get_tree().get_first_node_in_group("eagle")
+	if not eagle:
+		return false
+	var diff: Vector2 = eagle.global_position - global_position
+	var dist: float = diff.length()
+	if dist > TANK_SIZE * 3:  # Only within ~3 tank-widths (~192px)
+		return false
+
+	# Determine which axis we're aligned on (within half-tank tolerance)
+	var face_dir := Vector2.ZERO
+	if absf(diff.x) < HALF_TANK:
+		# Vertically aligned — eagle is above or below
+		face_dir = Vector2.DOWN if diff.y > 0 else Vector2.UP
+	elif absf(diff.y) < HALF_TANK:
+		# Horizontally aligned — eagle is left or right
+		face_dir = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
+
+	if face_dir == Vector2.ZERO:
+		return false  # Not aligned on either axis
+
+	# Face the eagle and shoot
+	if current_direction != face_dir:
+		current_direction = face_dir
+		_snap_and_update()
+	# Rapid fire at the eagle
+	if _shoot_cooldown <= 0:
+		_shoot_cooldown = randf_range(0.1, 0.25)
+		shoot()
+	return true
+
 func _ai_update(delta: float) -> void:
 	_alive_time += delta
 	_direction_change_timer -= delta
@@ -171,6 +241,32 @@ func _ai_update(delta: float) -> void:
 
 	# Check proximity to eagle
 	_near_eagle = _check_near_eagle()
+
+	# --- HIGHEST PRIORITY: Direct eagle attack when aligned ---
+	if _near_eagle and _try_direct_eagle_attack():
+		_attack_wall_timer = 0.0  # Cancel wall attack if we can hit the eagle
+		return
+
+	# --- Wall attack mode: keep shooting until the wall breaks or timer expires ---
+	if _attack_wall_timer > 0:
+		_attack_wall_timer -= delta
+		# Check if the wall is now cleared — if so, advance through it
+		if not test_move(global_transform, _attack_wall_dir * HALF_TILE * 2):
+			_attack_wall_timer = 0.0
+			current_direction = _attack_wall_dir
+			_snap_and_update()
+			_attack_wall_dir = Vector2.ZERO
+			return
+		# Timer expired but wall still there — give up, try another way
+		if _attack_wall_timer <= 0:
+			_attack_wall_dir = Vector2.ZERO
+			_change_direction()
+			return
+		# Keep shooting rapidly at the wall
+		if _shoot_cooldown <= 0:
+			_shoot_cooldown = randf_range(0.15, 0.3)
+			shoot()
+		return  # Skip normal AI while attacking wall
 
 	# Periodically reconsider direction
 	if _direction_change_timer <= 0:
@@ -210,6 +306,24 @@ func _get_clear_dirs(exclude: Vector2 = Vector2.ZERO) -> Array[Vector2]:
 			result.append(d)
 	return result
 
+func _get_shootable_dirs(exclude: Vector2 = Vector2.ZERO) -> Array[Vector2]:
+	## Return directions blocked by a BREAKABLE wall (not water, iron, or super block).
+	var result: Array[Vector2] = []
+	for d in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
+		if d == exclude:
+			continue
+		# Must be blocked, and NOT by something impassable
+		if test_move(global_transform, d * HALF_TILE * 2) and not _is_impassable_ahead(d):
+			result.append(d)
+	return result
+
+func _start_wall_attack(dir: Vector2) -> void:
+	## Face a wall and shoot it to break through.
+	_attack_wall_dir = dir
+	_attack_wall_timer = ATTACK_WALL_DURATION
+	current_direction = dir
+	_snap_and_update()
+
 func _change_direction() -> void:
 	# During initial spawn phase, prefer DOWN if clear
 	if _alive_time < INITIAL_DOWN_DURATION and current_direction != Vector2.DOWN:
@@ -222,45 +336,55 @@ func _change_direction() -> void:
 	var clear_dirs := _get_clear_dirs(current_direction)
 	if clear_dirs.is_empty():
 		clear_dirs = _get_clear_dirs()
-		if clear_dirs.is_empty():
-			return  # Completely boxed in
 
 	# Remove the water-avoided direction while the timer is active
 	if _water_avoid_timer > 0 and _water_avoid_dir != Vector2.ZERO:
 		clear_dirs.erase(_water_avoid_dir)
-		if clear_dirs.is_empty():
-			clear_dirs = _get_clear_dirs(current_direction)
-			if clear_dirs.is_empty():
-				clear_dirs = _get_clear_dirs()
 
 	# Get primary & secondary eagle directions
 	var eagle_dirs := _get_eagle_directions()
 	var eagle_primary: Vector2 = eagle_dirs[0]
 	var eagle_secondary: Vector2 = eagle_dirs[1]
 
-	# Check if eagle directions are blocked by water (can't shoot through water)
-	var primary_water := _is_water_ahead(eagle_primary)
-	var secondary_water := eagle_secondary != Vector2.ZERO and _is_water_ahead(eagle_secondary)
+	# Check if eagle directions are blocked by impassable obstacles (water, iron, super block)
+	var primary_impassable := _is_impassable_ahead(eagle_primary)
+	var secondary_impassable := eagle_secondary != Vector2.ZERO and _is_impassable_ahead(eagle_secondary)
 
-	# If water blocks the eagle path, remember it and commit to going around
-	if primary_water and _water_avoid_timer <= 0:
+	# If impassable obstacle blocks the eagle path, remember it and commit to going around
+	if primary_impassable and _water_avoid_timer <= 0:
 		_water_avoid_dir = eagle_primary
 		_water_avoid_timer = WATER_AVOID_DURATION
 
 	# Near eagle: 95% seek eagle aggressively; Normal: 75%
 	var seek_chance: float = 0.95 if _near_eagle else 0.75
 	if randf() < seek_chance:
-		# Try primary eagle direction (skip if water-blocked)
-		if not primary_water and eagle_primary in clear_dirs:
+		# Try primary eagle direction if clear (skip if impassable)
+		if not primary_impassable and eagle_primary in clear_dirs:
 			current_direction = eagle_primary
 			_snap_and_update()
 			return
-		# Try secondary eagle direction (skip if water-blocked)
-		if not secondary_water and eagle_secondary != Vector2.ZERO and eagle_secondary in clear_dirs:
+		# Try secondary eagle direction if clear (skip if impassable)
+		if not secondary_impassable and eagle_secondary != Vector2.ZERO and eagle_secondary in clear_dirs:
 			current_direction = eagle_secondary
 			_snap_and_update()
 			return
-		# Eagle directions blocked — go perpendicular to navigate around
+
+		# Eagle directions not clear — check if we can SHOOT through a breakable wall
+		var shootable := _get_shootable_dirs()
+		# Prefer shooting toward eagle direction, then perpendicular toward eagle
+		if not primary_impassable and eagle_primary in shootable:
+			_start_wall_attack(eagle_primary)
+			return
+		if not secondary_impassable and eagle_secondary != Vector2.ZERO and eagle_secondary in shootable:
+			_start_wall_attack(eagle_secondary)
+			return
+		# Shoot any perpendicular wall (not away from eagle)
+		for d in shootable:
+			if d != -eagle_primary:
+				_start_wall_attack(d)
+				return
+
+		# No shootable walls — go perpendicular if any clear direction exists
 		var perpendicular: Array[Vector2] = []
 		for d in clear_dirs:
 			if d != -eagle_primary:  # Avoid going directly away from eagle
@@ -270,10 +394,17 @@ func _change_direction() -> void:
 			_snap_and_update()
 			return
 
-	# 25% random exploration — keeps tanks from all taking the same route
-	clear_dirs.shuffle()
-	current_direction = clear_dirs[0]
-	_snap_and_update()
+	# Fallback: pick any clear direction, or if completely stuck try shooting any wall
+	if not clear_dirs.is_empty():
+		clear_dirs.shuffle()
+		current_direction = clear_dirs[0]
+		_snap_and_update()
+	else:
+		# Completely boxed in by walls — shoot one to escape
+		var shootable := _get_shootable_dirs()
+		if not shootable.is_empty():
+			_start_wall_attack(shootable[randi() % shootable.size()])
+		# else: truly stuck (surrounded by water/steel) — do nothing
 
 func _snap_and_update() -> void:
 	# Snap to grid when changing direction
@@ -311,14 +442,14 @@ func _get_eagle_direction() -> Vector2:
 
 func _bias_toward_eagle() -> void:
 	var eagle_dirs := _get_eagle_directions()
-	# Try primary, then secondary — skip water-blocked directions
+	# Try primary, then secondary — skip impassable directions (water, iron, super)
 	for dir in eagle_dirs:
 		if dir == Vector2.ZERO or dir == current_direction:
 			continue
 		if _water_avoid_timer > 0 and dir == _water_avoid_dir:
-			continue  # Don't bias into water we're trying to go around
-		if _is_water_ahead(dir):
-			continue  # Don't turn toward water
+			continue  # Don't bias into obstacle we're trying to go around
+		if _is_impassable_ahead(dir):
+			continue  # Don't turn toward impassable obstacles
 		if not test_move(global_transform, dir * HALF_TILE * 2):
 			current_direction = dir
 			_snap_and_update()

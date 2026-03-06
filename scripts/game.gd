@@ -45,10 +45,6 @@ func _ready() -> void:
 	# Snapshot state at stage start (for restart)
 	GameManager.save_stage_start_snapshot()
 
-	# Create save file on first stage of a new game (if not loaded from save)
-	if GameManager.current_save_file.is_empty():
-		SaveManager.create_new_save()
-
 	_start_stage()
 
 func _start_stage() -> void:

@@ -14,6 +14,7 @@ var _entry_labels: Array[Label] = []
 var _save_list: Array = []  # Array of save info dictionaries
 var _selected: int = 0
 var _scroll_offset: int = 0  # For scrolling when more saves than MAX_VISIBLE
+var _delete_pending: bool = false  # True when selected save is marked for deletion
 
 func _ready() -> void:
 	_save_list = SaveManager.get_save_list()
@@ -25,19 +26,36 @@ func _process(_delta: float) -> void:
 	var total_items := _save_list.size() + 1  # saves + BACK
 
 	if Input.is_action_just_pressed("p1_up") or Input.is_action_just_pressed("p2_up"):
+		_cancel_delete()
 		_selected = maxi(_selected - 1, 0)
 		_ensure_visible()
 		_update_display()
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_down") or Input.is_action_just_pressed("p2_down"):
+		_cancel_delete()
 		_selected = mini(_selected + 1, total_items - 1)
 		_ensure_visible()
 		_update_display()
 		_update_cursor()
+	elif Input.is_action_just_pressed("p1_right") or Input.is_action_just_pressed("p2_right"):
+		if _selected < _save_list.size() and not _delete_pending:
+			_delete_pending = true
+			_update_display()
+	elif Input.is_action_just_pressed("p1_left") or Input.is_action_just_pressed("p2_left"):
+		if _delete_pending:
+			_cancel_delete()
+			_update_display()
 	elif Input.is_action_just_pressed("p1_shoot") or Input.is_action_just_pressed("p2_shoot") or Input.is_action_just_pressed("ui_select"):
-		_select_item()
+		if _delete_pending:
+			_confirm_delete()
+		else:
+			_select_item()
 	elif Input.is_action_just_pressed("pause"):
-		_go_back()
+		if _delete_pending:
+			_cancel_delete()
+			_update_display()
+		else:
+			_go_back()
 
 func _select_item() -> void:
 	if _selected < _save_list.size():
@@ -47,6 +65,25 @@ func _select_item() -> void:
 	else:
 		# BACK option
 		_go_back()
+
+func _cancel_delete() -> void:
+	_delete_pending = false
+
+func _confirm_delete() -> void:
+	var info: Dictionary = _save_list[_selected]
+	SaveManager.delete_save(info["filepath"])
+	_delete_pending = false
+	_save_list = SaveManager.get_save_list()
+	# Rebuild UI
+	for label in _entry_labels:
+		label.queue_free()
+	_entry_labels.clear()
+	_selected = mini(_selected, _save_list.size())  # Clamp (may land on BACK)
+	_scroll_offset = 0
+	_build_entry_labels()
+	_ensure_visible()
+	_update_display()
+	_update_cursor()
 
 func _go_back() -> void:
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
@@ -91,7 +128,13 @@ func _update_display() -> void:
 	for i in range(_entry_labels.size()):
 		var save_idx := _scroll_offset + i
 		if save_idx < _save_list.size():
-			_entry_labels[i].text = _format_save_entry(_save_list[save_idx])
+			if _delete_pending and save_idx == _selected:
+				var name_str: String = _save_list[save_idx].get("save_name", "???")
+				_entry_labels[i].text = "%s  -- DELETE? CONFIRM / LEFT TO CANCEL --" % name_str
+				_entry_labels[i].add_theme_color_override("font_color", Color.RED)
+			else:
+				_entry_labels[i].text = _format_save_entry(_save_list[save_idx])
+				_entry_labels[i].remove_theme_color_override("font_color")
 			_entry_labels[i].visible = true
 		else:
 			_entry_labels[i].visible = false
