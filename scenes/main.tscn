@@ -57,12 +57,23 @@ text = "NEW GAME"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OptionSettings" type="Label" parent="."]
+[node name="OptionLoadGame" type="Label" parent="."]
 layout_mode = 1
 offset_left = 600.0
 offset_top = 480.0
 offset_right = 1000.0
 offset_bottom = 540.0
+theme_override_font_sizes/font_size = 36
+text = "LOAD GAME"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="OptionSettings" type="Label" parent="."]
+layout_mode = 1
+offset_left = 600.0
+offset_top = 560.0
+offset_right = 1000.0
+offset_bottom = 620.0
 theme_override_font_sizes/font_size = 36
 text = "SETTINGS"
 horizontal_alignment = 1
@@ -290,9 +301,9 @@ visible = false
 [node name="Controls" type="Label" parent="." unique_id=1639186135]
 layout_mode = 1
 offset_left = 350.0
-offset_top = 650.0
+offset_top = 720.0
 offset_right = 1250.0
-offset_bottom = 800.0
+offset_bottom = 870.0
 theme_override_font_sizes/font_size = 28
 text = "P1: WASD + T + Y
 P2: ARROWS + [ + ]

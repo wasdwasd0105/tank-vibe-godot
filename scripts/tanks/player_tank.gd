@@ -75,11 +75,7 @@ func _ready() -> void:
 	_apply_weapon_upgrade()
 	_activate_invincibility(SPAWN_INVINCIBILITY)
 
-	# Restore persisted addons from GameManager
-	var saved_addons: Array = GameManager.player_addons[player_id]
-	for addon_name in saved_addons:
-		apply_addon(addon_name)
-	# Set collision layers
+	# Set collision layers (before addon restore, so addons can override)
 	set_collision_layer_value(1, false)
 	set_collision_layer_value(3, true)  # player_tanks
 	set_collision_mask_value(1, true)   # walls
@@ -87,6 +83,11 @@ func _ready() -> void:
 	set_collision_mask_value(4, true)   # enemy_tanks
 	set_collision_mask_value(6, true)   # enemy_bullets
 	set_collision_mask_value(7, true)   # powerups
+
+	# Restore persisted addons from GameManager (after collision setup so addons like anti-water can override)
+	var saved_addons: Array = GameManager.player_addons[player_id]
+	for addon_name in saved_addons:
+		apply_addon(addon_name)
 	# Apply theme sprite and color
 	if sprite:
 		var tank_key := "p1" if player_id == 0 else "p2"
@@ -127,6 +128,7 @@ func _physics_process(delta: float) -> void:
 			stop_moving()
 
 	move_and_slide()
+	clamp_to_playfield()
 
 	if Input.is_action_just_pressed(_input_prefix + "shoot"):
 		shoot()

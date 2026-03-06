@@ -68,6 +68,13 @@ func _spawn_enemy() -> void:
 
 	var type_id: int = _spawn_queue.pop_front()
 
+	# Clear any wall/brick tiles at the spawn area so the tank doesn't get stuck
+	var game = get_tree().get_first_node_in_group("game")
+	if game and game.has_method("get_level_manager"):
+		var lm = game.get_level_manager()
+		if lm:
+			lm.clear_spawn_area(spawn_pos)
+
 	var enemy_scene := preload("res://scenes/tanks/enemy_tank.tscn")
 	var enemy: EnemyTank = enemy_scene.instantiate()
 	enemy.tank_type_id = type_id

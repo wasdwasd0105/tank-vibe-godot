@@ -25,6 +25,7 @@ GameManager="*res://scripts/autoload/game_manager.gd"
 ThemeManager="*res://scripts/autoload/theme_manager.gd"
 InputSettings="*res://scripts/autoload/input_settings.gd"
 WindowManager="*res://scripts/autoload/window_manager.gd"
+SaveManager="*res://scripts/autoload/save_manager.gd"
 
 [display]
 

@@ -5,6 +5,7 @@ enum MenuMode { MAIN, SETTINGS, KEYBIND }
 # --- Main menu labels ---
 @onready var cursor: Label = $Cursor
 @onready var option_new_game: Label = $OptionNewGame
+@onready var option_load_game: Label = $OptionLoadGame
 @onready var option_settings: Label = $OptionSettings
 
 # --- Settings sub-menu labels ---
@@ -134,7 +135,7 @@ func _input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 # =====================================================================
-# Main Menu Mode: NEW GAME(0), SETTINGS(1)
+# Main Menu Mode: NEW GAME(0), LOAD GAME(1), SETTINGS(2)
 # =====================================================================
 
 func _process_main() -> void:
@@ -142,12 +143,14 @@ func _process_main() -> void:
 		_selected = maxi(_selected - 1, 0)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_down") or Input.is_action_just_pressed("p2_down"):
-		_selected = mini(_selected + 1, 1)
+		_selected = mini(_selected + 1, 2)
 		_update_cursor()
 	elif Input.is_action_just_pressed("p1_shoot") or Input.is_action_just_pressed("p2_shoot") or Input.is_action_just_pressed("ui_select"):
 		if _selected == 0:
 			_start_game()
 		elif _selected == 1:
+			_enter_load_screen()
+		elif _selected == 2:
 			_enter_settings()
 
 # =====================================================================
@@ -208,10 +211,14 @@ func _process_keybind() -> void:
 # Mode Switching
 # =====================================================================
 
+func _enter_load_screen() -> void:
+	get_tree().change_scene_to_file("res://scenes/load_screen.tscn")
+
 func _enter_settings() -> void:
 	_mode = MenuMode.SETTINGS
 	# Hide main menu options
 	option_new_game.visible = false
+	option_load_game.visible = false
 	option_settings.visible = false
 	controls_label.visible = false
 	# Show settings sub-menu
@@ -235,6 +242,7 @@ func _exit_settings() -> void:
 	_mode = MenuMode.MAIN
 	# Show main menu options
 	option_new_game.visible = true
+	option_load_game.visible = true
 	option_settings.visible = true
 	controls_label.visible = true
 	# Hide settings sub-menu
@@ -249,7 +257,7 @@ func _exit_settings() -> void:
 	# Update controls label with latest bindings
 	_update_controls_label()
 	# Return cursor to SETTINGS option
-	_selected = 1
+	_selected = 2
 	_update_cursor()
 
 func _enter_keybind(player: String) -> void:
@@ -352,6 +360,8 @@ func _update_cursor() -> void:
 				0:
 					cursor.position.y = option_new_game.position.y
 				1:
+					cursor.position.y = option_load_game.position.y
+				2:
 					cursor.position.y = option_settings.position.y
 		MenuMode.SETTINGS:
 			match _selected:

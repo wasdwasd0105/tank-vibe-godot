@@ -12,6 +12,12 @@ var max_credits: int = 3
 
 # --- Difficulty ---
 var difficulty: int = 1  # 1-5
+var start_difficulty: int = 1  # Difficulty when game started (saved)
+
+# --- Save system ---
+var current_save_file: String = ""  # Path to active .tsave file (empty if no save yet)
+var save_counter: int = 0  # Total stages won in this save
+var save_created_iso: String = ""  # ISO timestamp when save was first created
 
 # --- Per-player persistent data ---
 # Starting at 3: first game start is treated as a "revive" (4 lives, use 1 = 3)
@@ -27,6 +33,7 @@ var player_kills: Array[Dictionary] = [{}, {}]  # kills by enemy type per player
 
 var enemies_remaining: int = 20
 var freeze_timer: float = 0.0
+var _stage_start_snapshot: Dictionary = {}
 
 const EXTRA_LIFE_SCORE: int = 20000
 
@@ -55,9 +62,16 @@ func reset() -> void:
 	player_addons = [[], []]
 	player_kills = [{}, {}]
 	enemies_remaining = 20
+	# Save system fields
+	current_save_file = ""
+	save_counter = 0
+	save_created_iso = ""
+	start_difficulty = difficulty
 
 func start_game() -> void:
 	reset()
+	start_difficulty = difficulty
+	save_created_iso = Time.get_datetime_string_from_system(false, true)
 	InputSettings.increment_games_played()
 	get_tree().change_scene_to_file("res://scenes/join_screen.tscn")
 
@@ -67,7 +81,10 @@ func next_stage() -> void:
 	enemies_frozen = false
 	player_kills = [{}, {}]
 	if current_stage > get_max_stages():
-		current_stage = 1  # Loop back
+		current_stage = 1  # Loop back to stage 1
+		difficulty += 1    # Increase difficulty on map loop
+	# Auto-save after stage number is updated so loaded game starts on the correct stage
+	SaveManager.save_game()
 	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
 
 func get_max_stages() -> int:
@@ -206,6 +223,46 @@ func set_map_pool(pool_id: String) -> void:
 func freeze_all_enemies(duration: float) -> void:
 	enemies_frozen = true
 	freeze_timer = duration
+
+## Save a snapshot of all player state at the start of a stage.
+## Used by "Restart Stage" in the pause menu to restore state.
+func save_stage_start_snapshot() -> void:
+	_stage_start_snapshot = {
+		"credits": credits,
+		"player_active": [player_active[0], player_active[1]],
+		"player_lives": [player_lives[0], player_lives[1]],
+		"player_scores": [player_scores[0], player_scores[1]],
+		"player_speed_levels": [player_speed_levels[0], player_speed_levels[1]],
+		"player_weapon_levels": [player_weapon_levels[0], player_weapon_levels[1]],
+		"player_secondary_weapon_types": [player_secondary_weapon_types[0], player_secondary_weapon_types[1]],
+		"player_secondary_weapon_counts": [player_secondary_weapon_counts[0], player_secondary_weapon_counts[1]],
+		"player_hp": [player_hp[0], player_hp[1]],
+		"player_addons": [player_addons[0].duplicate(), player_addons[1].duplicate()],
+	}
+
+## Restore the snapshot saved at stage start.
+func restore_stage_start_snapshot() -> void:
+	if _stage_start_snapshot.is_empty():
+		return
+	credits = _stage_start_snapshot["credits"]
+	player_active = [_stage_start_snapshot["player_active"][0], _stage_start_snapshot["player_active"][1]]
+	player_lives = [_stage_start_snapshot["player_lives"][0], _stage_start_snapshot["player_lives"][1]]
+	player_scores = [_stage_start_snapshot["player_scores"][0], _stage_start_snapshot["player_scores"][1]]
+	player_speed_levels = [_stage_start_snapshot["player_speed_levels"][0], _stage_start_snapshot["player_speed_levels"][1]]
+	player_weapon_levels = [_stage_start_snapshot["player_weapon_levels"][0], _stage_start_snapshot["player_weapon_levels"][1]]
+	player_secondary_weapon_types = [_stage_start_snapshot["player_secondary_weapon_types"][0], _stage_start_snapshot["player_secondary_weapon_types"][1]]
+	player_secondary_weapon_counts = [_stage_start_snapshot["player_secondary_weapon_counts"][0], _stage_start_snapshot["player_secondary_weapon_counts"][1]]
+	player_hp = [_stage_start_snapshot["player_hp"][0], _stage_start_snapshot["player_hp"][1]]
+	player_addons = [_stage_start_snapshot["player_addons"][0].duplicate(), _stage_start_snapshot["player_addons"][1].duplicate()]
+
+## Restart the current stage, restoring state from stage start.
+func restart_current_stage() -> void:
+	restore_stage_start_snapshot()
+	enemies_remaining = 20
+	enemies_frozen = false
+	player_kills = [{}, {}]
+	is_game_over = false
+	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
 
 func trigger_game_over() -> void:
 	is_game_over = true

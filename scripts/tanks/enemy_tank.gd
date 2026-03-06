@@ -9,7 +9,16 @@ var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
 var _damage_flash_timer: float = 0.0
+var _alive_time: float = 0.0  # Time since spawn (for initial downward push)
+var _collision_cooldown: float = 0.0  # Prevents eagle bias right after a collision
+var _near_eagle: bool = false  # True when within attack range of eagle
+var _water_avoid_dir: Vector2 = Vector2.ZERO  # Direction blocked by water (avoid it)
+var _water_avoid_timer: float = 0.0  # How long to avoid the water-blocked direction
 const DAMAGE_FLASH_DURATION: float = 0.15
+const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
+const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias after collision
+const EAGLE_ATTACK_RANGE: float = 192.0  # ~6 tiles — enter attack mode
+const WATER_AVOID_DURATION: float = 4.0  # Seconds to commit to going around water
 
 # --- Addon system ---
 const ADDON_MOON_SHIELD := "moon-shield"
@@ -123,7 +132,9 @@ func _physics_process(delta: float) -> void:
 	velocity = current_direction * move_speed
 
 	var collided := move_and_slide()
+	clamp_to_playfield()
 	if collided:
+		_collision_cooldown = COLLISION_COOLDOWN_DURATION
 		_change_direction()
 
 	# Damage flash effect (any tank that was recently hit)
@@ -137,27 +148,134 @@ func _physics_process(delta: float) -> void:
 		if _damage_flash_timer <= 0 and sprite:
 			sprite.modulate = Color.WHITE
 
+func _is_water_ahead(dir: Vector2) -> bool:
+	## Check if water specifically blocks movement in the given direction.
+	if not get_collision_mask_value(2):
+		return false  # Has anti-water addon, water is passable
+	if not test_move(global_transform, dir * HALF_TILE * 2):
+		return false  # Not blocked at all
+	# Temporarily disable water collision to check if water is the blocker
+	set_collision_mask_value(2, false)
+	var still_blocked := test_move(global_transform, dir * HALF_TILE * 2)
+	set_collision_mask_value(2, true)
+	return not still_blocked  # True = water was the only thing blocking
+
 func _ai_update(delta: float) -> void:
+	_alive_time += delta
 	_direction_change_timer -= delta
 	_shoot_cooldown -= delta
+	_collision_cooldown = maxf(_collision_cooldown - delta, 0.0)
+	_water_avoid_timer = maxf(_water_avoid_timer - delta, 0.0)
+	if _water_avoid_timer <= 0:
+		_water_avoid_dir = Vector2.ZERO
 
+	# Check proximity to eagle
+	_near_eagle = _check_near_eagle()
+
+	# Periodically reconsider direction
 	if _direction_change_timer <= 0:
-		_direction_change_timer = randf_range(1.0, 3.0)
-		if randf() < 0.4:
-			_change_direction()
+		# Near eagle: re-evaluate faster to stay locked on target
+		_direction_change_timer = randf_range(0.5, 1.5) if _near_eagle else randf_range(2.0, 4.0)
+		_change_direction()
 
 	if _shoot_cooldown <= 0:
-		_shoot_cooldown = randf_range(0.5, 2.0)
+		# Near eagle: shoot much faster to break through protective walls
+		_shoot_cooldown = randf_range(0.15, 0.4) if _near_eagle else randf_range(0.5, 2.0)
 		shoot()
 
-	# Occasional bias toward eagle
-	if randf() < 0.003:
-		_bias_toward_eagle()
+	# Near eagle: aggressively face toward it every frame (high chance)
+	if _near_eagle and _collision_cooldown <= 0:
+		if randf() < 0.05:  # ~3 times/sec at 60fps
+			_bias_toward_eagle()
+	elif _collision_cooldown <= 0:
+		# Normal eagle correction
+		var eagle_bias: float = 0.02 if _alive_time < INITIAL_DOWN_DURATION else 0.01
+		if randf() < eagle_bias:
+			_bias_toward_eagle()
+
+func _check_near_eagle() -> bool:
+	var eagle = get_tree().get_first_node_in_group("eagle")
+	if not eagle:
+		return false
+	return global_position.distance_to(eagle.global_position) < EAGLE_ATTACK_RANGE
+
+func _get_clear_dirs(exclude: Vector2 = Vector2.ZERO) -> Array[Vector2]:
+	## Return all 4 directions that are physically passable (1 tile ahead).
+	## Optionally exclude one direction (typically the current blocked one).
+	var result: Array[Vector2] = []
+	for d in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
+		if d == exclude:
+			continue
+		if not test_move(global_transform, d * HALF_TILE * 2):
+			result.append(d)
+	return result
 
 func _change_direction() -> void:
-	var dirs := [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]
-	dirs.erase(current_direction)
-	current_direction = dirs[randi() % dirs.size()]
+	# During initial spawn phase, prefer DOWN if clear
+	if _alive_time < INITIAL_DOWN_DURATION and current_direction != Vector2.DOWN:
+		if not test_move(global_transform, Vector2.DOWN * HALF_TILE * 2):
+			current_direction = Vector2.DOWN
+			_snap_and_update()
+			return
+
+	# Get clear directions excluding current (we want to change)
+	var clear_dirs := _get_clear_dirs(current_direction)
+	if clear_dirs.is_empty():
+		clear_dirs = _get_clear_dirs()
+		if clear_dirs.is_empty():
+			return  # Completely boxed in
+
+	# Remove the water-avoided direction while the timer is active
+	if _water_avoid_timer > 0 and _water_avoid_dir != Vector2.ZERO:
+		clear_dirs.erase(_water_avoid_dir)
+		if clear_dirs.is_empty():
+			clear_dirs = _get_clear_dirs(current_direction)
+			if clear_dirs.is_empty():
+				clear_dirs = _get_clear_dirs()
+
+	# Get primary & secondary eagle directions
+	var eagle_dirs := _get_eagle_directions()
+	var eagle_primary: Vector2 = eagle_dirs[0]
+	var eagle_secondary: Vector2 = eagle_dirs[1]
+
+	# Check if eagle directions are blocked by water (can't shoot through water)
+	var primary_water := _is_water_ahead(eagle_primary)
+	var secondary_water := eagle_secondary != Vector2.ZERO and _is_water_ahead(eagle_secondary)
+
+	# If water blocks the eagle path, remember it and commit to going around
+	if primary_water and _water_avoid_timer <= 0:
+		_water_avoid_dir = eagle_primary
+		_water_avoid_timer = WATER_AVOID_DURATION
+
+	# Near eagle: 95% seek eagle aggressively; Normal: 75%
+	var seek_chance: float = 0.95 if _near_eagle else 0.75
+	if randf() < seek_chance:
+		# Try primary eagle direction (skip if water-blocked)
+		if not primary_water and eagle_primary in clear_dirs:
+			current_direction = eagle_primary
+			_snap_and_update()
+			return
+		# Try secondary eagle direction (skip if water-blocked)
+		if not secondary_water and eagle_secondary != Vector2.ZERO and eagle_secondary in clear_dirs:
+			current_direction = eagle_secondary
+			_snap_and_update()
+			return
+		# Eagle directions blocked — go perpendicular to navigate around
+		var perpendicular: Array[Vector2] = []
+		for d in clear_dirs:
+			if d != -eagle_primary:  # Avoid going directly away from eagle
+				perpendicular.append(d)
+		if not perpendicular.is_empty():
+			current_direction = perpendicular[randi() % perpendicular.size()]
+			_snap_and_update()
+			return
+
+	# 25% random exploration — keeps tanks from all taking the same route
+	clear_dirs.shuffle()
+	current_direction = clear_dirs[0]
+	_snap_and_update()
+
+func _snap_and_update() -> void:
 	# Snap to grid when changing direction
 	if current_direction.x != 0:
 		position.y = round(position.y / HALF_TILE) * HALF_TILE
@@ -165,16 +283,46 @@ func _change_direction() -> void:
 		position.x = round(position.x / HALF_TILE) * HALF_TILE
 	_update_sprite_direction()
 
-func _bias_toward_eagle() -> void:
+func _get_eagle_directions() -> Array:
+	## Returns [primary, secondary] directions toward the eagle.
+	## Primary = axis with larger distance, Secondary = other axis.
 	var eagle = get_tree().get_first_node_in_group("eagle")
 	if not eagle:
-		return
+		return [Vector2.DOWN, Vector2.ZERO]
 	var diff: Vector2 = eagle.global_position - global_position
+	var primary: Vector2
+	var secondary: Vector2
 	if absf(diff.y) > absf(diff.x):
-		current_direction = Vector2.DOWN if diff.y > 0 else Vector2.UP
+		primary = Vector2.DOWN if diff.y > 0 else Vector2.UP
+		if absf(diff.x) > TILE_SIZE:  # Only suggest secondary if meaningful distance
+			secondary = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
+		else:
+			secondary = Vector2.ZERO
 	else:
-		current_direction = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
-	_update_sprite_direction()
+		primary = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
+		if absf(diff.y) > TILE_SIZE:
+			secondary = Vector2.DOWN if diff.y > 0 else Vector2.UP
+		else:
+			secondary = Vector2.ZERO
+	return [primary, secondary]
+
+func _get_eagle_direction() -> Vector2:
+	return _get_eagle_directions()[0]
+
+func _bias_toward_eagle() -> void:
+	var eagle_dirs := _get_eagle_directions()
+	# Try primary, then secondary — skip water-blocked directions
+	for dir in eagle_dirs:
+		if dir == Vector2.ZERO or dir == current_direction:
+			continue
+		if _water_avoid_timer > 0 and dir == _water_avoid_dir:
+			continue  # Don't bias into water we're trying to go around
+		if _is_water_ahead(dir):
+			continue  # Don't turn toward water
+		if not test_move(global_transform, dir * HALF_TILE * 2):
+			current_direction = dir
+			_snap_and_update()
+			return
 
 func _update_sprite_direction() -> void:
 	super._update_sprite_direction()

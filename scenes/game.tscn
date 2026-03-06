@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3 uid="uid://cgame01"]
+[gd_scene load_steps=10 format=3 uid="uid://cgame01"]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
 [ext_resource type="Script" path="res://scripts/level/level_manager.gd" id="2_level_mgr"]
@@ -7,6 +7,7 @@
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/tileset.png" id="5_tileset_tex"]
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/eagle.png" id="6_eagle_tex"]
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/tree.png" id="7_tree_tex"]
+[ext_resource type="Script" path="res://scripts/ui/pause_menu.gd" id="8_pause_menu"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 bg_color = Color(0.05, 0.05, 0.05, 1)
@@ -120,46 +121,140 @@ horizontal_alignment = 1
 [node name="P1Header" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 180.0
+offset_top = 644.0
 offset_right = 150.0
-offset_bottom = 220.0
+offset_bottom = 684.0
 theme_override_font_sizes/font_size = 28
 theme_override_colors/font_color = Color(0.9, 0.7, 0.1, 1)
 text = "I P"
 horizontal_alignment = 1
 
+[node name="P1Score" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 686.0
+offset_right = 150.0
+offset_bottom = 708.0
+theme_override_font_sizes/font_size = 20
+text = "0"
+horizontal_alignment = 1
+
 [node name="P1Lives" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 6.0
-offset_top = 225.0
+offset_top = 712.0
 offset_right = 154.0
-offset_bottom = 250.0
+offset_bottom = 734.0
 theme_override_font_sizes/font_size = 16
 text = "Lives: 3"
 horizontal_alignment = 1
 clip_text = true
 
-[node name="P1Stats" type="Label" parent="HUD/LeftPanel"]
+[node name="P1HpIcon" type="TextureRect" parent="HUD/LeftPanel"]
 layout_mode = 0
-offset_left = 6.0
-offset_top = 252.0
-offset_right = 154.0
-offset_bottom = 330.0
-theme_override_font_sizes/font_size = 13
-theme_override_colors/font_color = Color(0.75, 0.75, 0.75, 1)
-text = "Spd:1 Wpn:1
-2nd:rapid(50)"
-autowrap_mode = 3
+offset_left = 34.0
+offset_top = 754.0
+offset_right = 66.0
+offset_bottom = 786.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
 
-[node name="P1Score" type="Label" parent="HUD/LeftPanel"]
+[node name="P1HpVal" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
-offset_left = 10.0
-offset_top = 335.0
-offset_right = 150.0
-offset_bottom = 370.0
-theme_override_font_sizes/font_size = 20
-text = "0"
-horizontal_alignment = 1
+offset_left = 70.0
+offset_top = 758.0
+offset_right = 154.0
+offset_bottom = 782.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 4"
+vertical_alignment = 1
+
+[node name="P1SpdIcon" type="TextureRect" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 790.0
+offset_right = 66.0
+offset_bottom = 822.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+
+[node name="P1SpdVal" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 794.0
+offset_right = 154.0
+offset_bottom = 818.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 1"
+vertical_alignment = 1
+
+[node name="P1WpnIcon" type="TextureRect" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 826.0
+offset_right = 66.0
+offset_bottom = 858.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+
+[node name="P1WpnVal" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 830.0
+offset_right = 154.0
+offset_bottom = 854.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 1"
+vertical_alignment = 1
+
+[node name="P1CookieIcon" type="TextureRect" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 862.0
+offset_right = 66.0
+offset_bottom = 894.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+
+[node name="P1CookieCount" type="Label" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 866.0
+offset_right = 154.0
+offset_bottom = 890.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 50"
+vertical_alignment = 1
+
+[node name="P1Addon0" type="TextureRect" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 38.0
+offset_top = 898.0
+offset_right = 70.0
+offset_bottom = 930.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
+
+[node name="P1Addon1" type="TextureRect" parent="HUD/LeftPanel"]
+layout_mode = 0
+offset_left = 78.0
+offset_top = 898.0
+offset_right = 110.0
+offset_bottom = 930.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
 
 [node name="RightPanel" type="Panel" parent="HUD"]
 layout_mode = 0
@@ -204,49 +299,150 @@ clip_text = true
 [node name="P2Header" type="Label" parent="HUD/RightPanel"]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 180.0
+offset_top = 644.0
 offset_right = 150.0
-offset_bottom = 220.0
+offset_bottom = 684.0
 theme_override_font_sizes/font_size = 28
 theme_override_colors/font_color = Color(0.1, 0.8, 0.2, 1)
 text = "II P"
 horizontal_alignment = 1
 visible = false
 
+[node name="P2Score" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 686.0
+offset_right = 150.0
+offset_bottom = 708.0
+theme_override_font_sizes/font_size = 20
+text = "0"
+horizontal_alignment = 1
+visible = false
+
 [node name="P2Lives" type="Label" parent="HUD/RightPanel"]
 layout_mode = 0
 offset_left = 6.0
-offset_top = 225.0
+offset_top = 712.0
 offset_right = 154.0
-offset_bottom = 250.0
+offset_bottom = 734.0
 theme_override_font_sizes/font_size = 16
 text = "Lives: 3"
 horizontal_alignment = 1
 clip_text = true
 visible = false
 
-[node name="P2Stats" type="Label" parent="HUD/RightPanel"]
+[node name="P2HpIcon" type="TextureRect" parent="HUD/RightPanel"]
 layout_mode = 0
-offset_left = 6.0
-offset_top = 252.0
-offset_right = 154.0
-offset_bottom = 330.0
-theme_override_font_sizes/font_size = 13
-theme_override_colors/font_color = Color(0.75, 0.75, 0.75, 1)
-text = "Spd:1 Wpn:1
-2nd:rapid(50)"
-autowrap_mode = 3
+offset_left = 34.0
+offset_top = 754.0
+offset_right = 66.0
+offset_bottom = 786.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
 visible = false
 
-[node name="P2Score" type="Label" parent="HUD/RightPanel"]
+[node name="P2HpVal" type="Label" parent="HUD/RightPanel"]
 layout_mode = 0
-offset_left = 10.0
-offset_top = 335.0
-offset_right = 150.0
-offset_bottom = 370.0
-theme_override_font_sizes/font_size = 20
-text = "0"
-horizontal_alignment = 1
+offset_left = 70.0
+offset_top = 758.0
+offset_right = 154.0
+offset_bottom = 782.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 4"
+vertical_alignment = 1
+visible = false
+
+[node name="P2SpdIcon" type="TextureRect" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 790.0
+offset_right = 66.0
+offset_bottom = 822.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
+
+[node name="P2SpdVal" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 794.0
+offset_right = 154.0
+offset_bottom = 818.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 1"
+vertical_alignment = 1
+visible = false
+
+[node name="P2WpnIcon" type="TextureRect" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 826.0
+offset_right = 66.0
+offset_bottom = 858.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
+
+[node name="P2WpnVal" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 830.0
+offset_right = 154.0
+offset_bottom = 854.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 1"
+vertical_alignment = 1
+visible = false
+
+[node name="P2CookieIcon" type="TextureRect" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 862.0
+offset_right = 66.0
+offset_bottom = 894.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
+
+[node name="P2CookieCount" type="Label" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 70.0
+offset_top = 866.0
+offset_right = 154.0
+offset_bottom = 890.0
+theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.9, 0.9, 0.9, 1)
+text = ": 50"
+vertical_alignment = 1
+visible = false
+
+[node name="P2Addon0" type="TextureRect" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 38.0
+offset_top = 898.0
+offset_right = 70.0
+offset_bottom = 930.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
+visible = false
+
+[node name="P2Addon1" type="TextureRect" parent="HUD/RightPanel"]
+layout_mode = 0
+offset_left = 78.0
+offset_top = 898.0
+offset_right = 110.0
+offset_bottom = 930.0
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
 visible = false
 
 [node name="CountdownLabel" type="Label" parent="HUD"]
@@ -261,3 +457,83 @@ text = "REJOIN: 15s"
 horizontal_alignment = 1
 vertical_alignment = 1
 visible = false
+
+[node name="PauseLayer" type="CanvasLayer" parent="."]
+process_mode = 3
+layer = 100
+
+[node name="PauseMenu" type="Control" parent="PauseLayer"]
+process_mode = 3
+layout_mode = 0
+offset_right = 1600.0
+offset_bottom = 1000.0
+script = ExtResource("8_pause_menu")
+visible = false
+
+[node name="PauseBG" type="ColorRect" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_right = 1600.0
+offset_bottom = 1000.0
+color = Color(0, 0, 0, 0.85)
+
+[node name="PauseTitle" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 550.0
+offset_top = 340.0
+offset_right = 1050.0
+offset_bottom = 400.0
+theme_override_font_sizes/font_size = 40
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "PAUSED"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="PauseCursor" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 620.0
+offset_top = 430.0
+offset_right = 660.0
+offset_bottom = 470.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = ">"
+
+[node name="OptResume" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 660.0
+offset_top = 430.0
+offset_right = 1050.0
+offset_bottom = 470.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "RESUME"
+
+[node name="OptRestart" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 660.0
+offset_top = 480.0
+offset_right = 1050.0
+offset_bottom = 520.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "RESTART STAGE"
+
+[node name="OptMainMenu" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 660.0
+offset_top = 530.0
+offset_right = 1050.0
+offset_bottom = 570.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "MAIN MENU"
+
+[node name="OptExit" type="Label" parent="PauseLayer/PauseMenu"]
+layout_mode = 0
+offset_left = 660.0
+offset_top = 580.0
+offset_right = 1050.0
+offset_bottom = 620.0
+theme_override_font_sizes/font_size = 28
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "EXIT"

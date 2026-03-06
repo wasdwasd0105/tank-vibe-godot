@@ -4,6 +4,13 @@ extends CharacterBody2D
 const HALF_TILE: int = 16
 const TILE_SIZE: int = 32
 const TANK_SIZE: int = 64  # Tanks occupy 2x2 tiles
+const HALF_TANK: int = 32  # Half of tank size for boundary clamping
+
+# Playfield boundaries in global coordinates (Playfield at 160,16; grid 40x30 @ 32px)
+const PLAYFIELD_MIN_X: float = 192.0   # 160 + 32 (half tank inset)
+const PLAYFIELD_MAX_X: float = 1408.0  # 160 + 40*32 - 32
+const PLAYFIELD_MIN_Y: float = 48.0    # 16 + 32
+const PLAYFIELD_MAX_Y: float = 944.0   # 16 + 30*32 - 32
 
 @export var move_speed: float = 128.0
 @export var max_health: int = 1
@@ -115,6 +122,10 @@ func _spawn_explosion() -> void:
 		effects_container.add_child(explosion)
 	else:
 		get_tree().current_scene.add_child(explosion)
+
+func clamp_to_playfield() -> void:
+	global_position.x = clampf(global_position.x, PLAYFIELD_MIN_X, PLAYFIELD_MAX_X)
+	global_position.y = clampf(global_position.y, PLAYFIELD_MIN_Y, PLAYFIELD_MAX_Y)
 
 func _on_shoot_cooldown_timeout() -> void:
 	can_shoot = true

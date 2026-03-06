@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "save_name": "Tank1840"
+  },
+  "header": {
+    "game_mode": 0,
+    "created_iso": "2003-05-02T15:22:21.110",
+    "saved_iso": "2026-03-05T01:43:27.951",
+    "start_difficulty": 1,
+    "difficulty": 5,
+    "max_credits": 30,
+    "credit": 24,
+    "current_stage": 30,
+    "counter": 1840
+  },
+  "players": {
+    "player1": {
+      "player_name": "p1",
+      "score": 1280238,
+      "lives": 14,
+      "hp": 8,
+      "weapon_level": 3,
+      "speed_level": 3,
+      "special_weapon_count": 50,
+      "special_weapon_type": "rapid",
+      "defense_addon_type": "anti_water",
+      "defense_addon_type_2": "moon_shield"
+    },
+    "player2": {
+      "player_name": "p2",
+      "score": 30062670,
+      "lives": 82,
+      "stages_completed": 20,
+      "hp": 7,
+      "weapon_level": 3,
+      "speed_level": 3,
+      "special_weapon_count": 75,
+      "special_weapon_type": "fire",
+      "defense_addon_type": "anti_ice",
+      "defense_addon_type_2": ""
+    }
+  }
+}

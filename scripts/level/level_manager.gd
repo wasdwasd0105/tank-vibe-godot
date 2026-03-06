@@ -488,3 +488,17 @@ func world_to_tile(world_pos: Vector2) -> Vector2i:
 	var tx: int = floori(local.x / TILE_SIZE)
 	var ty: int = floori(local.y / TILE_SIZE)
 	return Vector2i(tx, ty)
+
+## Clear all foreground tiles in a 2x2 area for tank spawning.
+## [param global_center] is the global position of the tank center (64x64 tank).
+func clear_spawn_area(global_center: Vector2) -> void:
+	# Tank is 2x2 tiles; find top-left tile from the tank's top-left corner
+	var top_left_world := global_center - Vector2(TILE_SIZE, TILE_SIZE)  # -32, -32
+	var tl_tile := world_to_tile(top_left_world + Vector2(1, 1))  # small offset to avoid edge rounding
+	for dy in range(2):
+		for dx in range(2):
+			var tile_pos := Vector2i(tl_tile.x + dx, tl_tile.y + dy)
+			if _fg_tile_data.has(tile_pos):
+				_remove_fg_tile(tile_pos)
+				_brick_damage.erase(tile_pos)
+				_hard_brick_hp.erase(tile_pos)

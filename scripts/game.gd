@@ -9,6 +9,7 @@ extends Node2D
 @onready var effects_container: Node2D = $Entities/Effects
 @onready var eagle: StaticBody2D = $Playfield/Eagle
 @onready var hud: Control = $HUD
+@onready var pause_menu: Control = $PauseLayer/PauseMenu
 
 var _game_over_pending: bool = false
 var _stage_clear_pending: bool = false
@@ -34,6 +35,19 @@ func _ready() -> void:
 	Events.freeze_enemies.connect(_on_freeze_enemies)
 	Events.fortify_base.connect(_on_fortify_base)
 	Events.player_died.connect(_on_player_died)
+
+	# Connect pause menu signals
+	if pause_menu:
+		pause_menu.restart_requested.connect(_on_pause_restart)
+		pause_menu.main_menu_requested.connect(_on_pause_main_menu)
+		pause_menu.exit_requested.connect(_on_pause_exit)
+
+	# Snapshot state at stage start (for restart)
+	GameManager.save_stage_start_snapshot()
+
+	# Create save file on first stage of a new game (if not loaded from save)
+	if GameManager.current_save_file.is_empty():
+		SaveManager.create_new_save()
 
 	_start_stage()
 
@@ -79,8 +93,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			Events.bomb_all_enemies.emit()
 
 func _process(delta: float) -> void:
-	if Input.is_action_just_pressed("pause"):
-		get_tree().paused = not get_tree().paused
+	# Block pause menu during game over / stage clear
+	if pause_menu:
+		pause_menu.set_can_open(not _game_over_pending and not _stage_clear_pending)
 
 	if _game_over_pending or _stage_clear_pending:
 		return
@@ -129,8 +144,11 @@ func _on_all_enemies_defeated() -> void:
 	Events.stage_cleared.emit()
 	# Save live player HP and addons before leaving stage
 	GameManager.save_player_states()
-	# Wait a moment then go to next stage
-	await get_tree().create_timer(2.0).timeout
+	# Wait 10s so players can collect remaining cookies
+	await get_tree().create_timer(10.0).timeout
+	# Increment counter (total stages won) and advance stage
+	# (save happens inside next_stage after stage number is updated)
+	GameManager.save_counter += 1
 	GameManager.next_stage()
 
 func _on_base_destroyed() -> void:
@@ -210,3 +228,14 @@ func get_player_dead_timer(pid: int) -> float:
 func _update_hud() -> void:
 	if hud and hud.has_method("update_display"):
 		hud.update_display()
+
+# --- Pause menu actions ---
+
+func _on_pause_restart() -> void:
+	GameManager.restart_current_stage()
+
+func _on_pause_main_menu() -> void:
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+func _on_pause_exit() -> void:
+	get_tree().quit()
