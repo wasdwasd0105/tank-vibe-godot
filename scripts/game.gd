@@ -71,9 +71,9 @@ func _spawn_player(player_id: int) -> void:
 	var pf: Vector2 = level_manager.global_position
 	var spawn_x: float
 	if player_id == 0:
-		spawn_x = pf.x + 12 * 32 + 32  # Grid columns 12-13 center
+		spawn_x = pf.x + 17 * 32 + 32  # Grid columns 17-18 center (left of eagle)
 	else:
-		spawn_x = pf.x + 26 * 32 + 32  # Grid columns 26-27 center
+		spawn_x = pf.x + 21 * 32 + 32  # Grid columns 21-22 center (right of eagle)
 
 	var spawn_y: float = pf.y + 28 * 32 + 32  # Grid rows 28-29 center
 

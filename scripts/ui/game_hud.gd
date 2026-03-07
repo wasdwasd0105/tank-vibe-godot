@@ -54,6 +54,8 @@ func _ready() -> void:
 	update_display()
 
 func _process(_delta: float) -> void:
+	if not is_inside_tree():
+		return
 	update_display()
 
 func _get_player_hp(pid: int) -> int:
