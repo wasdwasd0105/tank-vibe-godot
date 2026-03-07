@@ -165,6 +165,7 @@ func _load_background_image(bg_bitmap: String) -> void:
 
 	if tex:
 		_bg_image_sprite.texture = tex
+		_bg_image_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		var game_width: float = GRID_WIDTH * TILE_SIZE   # 1280
 		var game_height: float = GRID_HEIGHT * TILE_SIZE  # 960
 		var tex_size := tex.get_size()
