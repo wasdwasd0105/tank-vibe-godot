@@ -547,8 +547,8 @@ func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	health -= 1
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
-	# Turn to face the attacker and retaliate
-	if bullet_direction != Vector2.ZERO and health > 0:
+	# Turn to face the attacker and retaliate (skip if frozen)
+	if bullet_direction != Vector2.ZERO and health > 0 and not GameManager.enemies_frozen:
 		var face_dir := -bullet_direction  # face toward the shooter
 		current_direction = face_dir
 		_snap_and_update()
