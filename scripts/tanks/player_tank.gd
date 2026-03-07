@@ -20,6 +20,8 @@ var is_invincible: bool = false
 var invincible_timer: float = 0.0
 var is_spawning: bool = false
 var spawn_timer: float = 0.0
+var _damage_flash_timer: float = 0.0
+const DAMAGE_FLASH_DURATION: float = 0.15
 
 # --- Addon system ---
 var has_moon_shield: bool = false
@@ -129,6 +131,17 @@ func _physics_process(delta: float) -> void:
 
 	move_and_slide()
 	clamp_to_playfield()
+
+	# Damage flash effect
+	if _damage_flash_timer > 0:
+		_damage_flash_timer -= delta
+		if sprite:
+			if fmod(_damage_flash_timer, 0.1) < 0.05:
+				sprite.modulate = Color.RED
+			else:
+				sprite.modulate = Color.WHITE
+		if _damage_flash_timer <= 0 and sprite:
+			sprite.modulate = Color.WHITE
 
 	if Input.is_action_just_pressed(_input_prefix + "shoot"):
 		shoot()
@@ -347,6 +360,7 @@ func _update_shield_visual(active: bool) -> void:
 func take_damage() -> void:
 	if is_invincible:
 		return
+	_damage_flash_timer = DAMAGE_FLASH_DURATION
 	super.take_damage()
 
 func destroy() -> void:
