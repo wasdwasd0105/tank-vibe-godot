@@ -83,7 +83,7 @@ func _ready() -> void:
 	set_collision_layer_value(3, true)  # player_tanks
 	set_collision_mask_value(1, true)   # walls
 	set_collision_mask_value(2, true)   # water
-	set_collision_mask_value(4, true)   # enemy_tanks
+	set_collision_mask_value(4, false)  # enemy_tanks (no mutual push; enemy stops via test_move detection)
 	set_collision_mask_value(6, true)   # enemy_bullets
 	set_collision_mask_value(7, true)   # powerups
 
@@ -130,7 +130,13 @@ func _physics_process(delta: float) -> void:
 		if not is_on_ice:
 			stop_moving()
 
+	# Temporarily enable enemy mask so move_and_slide finds exact contact point
+	var enemy_blocking := velocity != Vector2.ZERO and _is_enemy_ahead()
+	if enemy_blocking:
+		set_collision_mask_value(4, true)
 	move_and_slide()
+	if enemy_blocking:
+		set_collision_mask_value(4, false)
 	clamp_to_playfield()
 
 	# Damage flash effect
@@ -357,6 +363,18 @@ func _update_shield_visual(active: bool) -> void:
 	var shield = get_node_or_null("ShieldEffect")
 	if shield:
 		shield.visible = active
+
+func _is_enemy_ahead() -> bool:
+	## Check if an enemy tank is blocking movement in the current direction.
+	## Temporarily enables the enemy mask for test_move, then disables it.
+	set_collision_mask_value(4, true)
+	var blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	set_collision_mask_value(4, false)
+	if not blocked:
+		return false
+	# Check if the blockage is specifically an enemy (not a wall)
+	var still_blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	return not still_blocked  # True = enemy was the only thing blocking
 
 # --- Hit punishment system ---
 

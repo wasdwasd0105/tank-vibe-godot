@@ -16,7 +16,9 @@ var _water_avoid_dir: Vector2 = Vector2.ZERO  # Direction blocked by water (avoi
 var _water_avoid_timer: float = 0.0  # How long to avoid the water-blocked direction
 var _attack_wall_dir: Vector2 = Vector2.ZERO  # Direction of wall we're shooting to break
 var _attack_wall_timer: float = 0.0  # Time left to keep attacking a wall
+var _turn_cooldown: float = 0.0  # Prevents rapid direction changes after collision
 const DAMAGE_FLASH_DURATION: float = 0.15
+const TURN_COOLDOWN_DURATION: float = 0.6  # Minimum seconds between collision-triggered turns
 const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
 const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias after collision
 const EAGLE_ATTACK_RANGE: float = 192.0  # ~6 tiles — enter attack mode
@@ -108,7 +110,7 @@ func _ready() -> void:
 	set_collision_layer_value(4, true)  # enemy_tanks
 	set_collision_mask_value(1, true)   # walls
 	set_collision_mask_value(2, true)   # water
-	set_collision_mask_value(3, true)   # player_tanks
+	set_collision_mask_value(3, false)  # player_tanks (one-directional: player blocks on enemy, not vice versa)
 	set_collision_mask_value(5, true)   # player_bullets
 	# Apply tank sprite by type ID
 	if sprite:
@@ -132,15 +134,29 @@ func _physics_process(delta: float) -> void:
 	_ai_update(delta)
 	if has_anti_ice:
 		is_on_ice = false
+
+	# Check if player tank is blocking the path ahead
+	var player_blocking := _is_player_ahead()
+	if player_blocking:
+		# Attack the player: shoot rapidly
+		if _shoot_cooldown <= 0:
+			_shoot_cooldown = randf_range(0.3, 0.6)
+			shoot()
 	velocity = current_direction * move_speed
 
+	# Temporarily enable player mask so move_and_slide finds exact contact point
+	if player_blocking:
+		set_collision_mask_value(3, true)
 	var collided := move_and_slide()
+	if player_blocking:
+		set_collision_mask_value(3, false)
 	clamp_to_playfield()
-	if collided:
+	if collided and _turn_cooldown <= 0:
 		if _attack_wall_timer > 0:
 			pass  # Stay committed — keep shooting the wall
 		else:
 			_collision_cooldown = COLLISION_COOLDOWN_DURATION
+			_turn_cooldown = TURN_COOLDOWN_DURATION
 			_change_direction()
 
 	# Damage flash effect (any tank that was recently hit)
@@ -153,6 +169,18 @@ func _physics_process(delta: float) -> void:
 				sprite.modulate = Color.WHITE
 		if _damage_flash_timer <= 0 and sprite:
 			sprite.modulate = Color.WHITE
+
+func _is_player_ahead() -> bool:
+	## Check if a player tank is blocking movement in the current direction.
+	## Temporarily enables the player mask for test_move, then disables it.
+	set_collision_mask_value(3, true)
+	var blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	set_collision_mask_value(3, false)
+	if not blocked:
+		return false
+	# Check if the blockage is specifically a player (not a wall)
+	var still_blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	return not still_blocked  # True = player was the only thing blocking
 
 func _is_water_ahead(dir: Vector2) -> bool:
 	## Check if water specifically blocks movement in the given direction.
@@ -235,6 +263,7 @@ func _ai_update(delta: float) -> void:
 	_direction_change_timer -= delta
 	_shoot_cooldown -= delta
 	_collision_cooldown = maxf(_collision_cooldown - delta, 0.0)
+	_turn_cooldown = maxf(_turn_cooldown - delta, 0.0)
 	_water_avoid_timer = maxf(_water_avoid_timer - delta, 0.0)
 	if _water_avoid_timer <= 0:
 		_water_avoid_dir = Vector2.ZERO
@@ -514,10 +543,16 @@ func is_bullet_blocked(bullet_direction: Vector2) -> bool:
 	# dot < 0 means bullet is coming toward the front half of the tank
 	return bullet_direction.dot(current_direction) < 0
 
-func take_damage() -> void:
+func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	health -= 1
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
+	# Turn to face the attacker and retaliate
+	if bullet_direction != Vector2.ZERO and health > 0:
+		var face_dir := -bullet_direction  # face toward the shooter
+		current_direction = face_dir
+		_snap_and_update()
+		_shoot_cooldown = 0.0  # shoot immediately next frame
 	# Addon drop on 2nd hit: only if tank started with hp>2 and has addon(s)
 	if _hits_taken == 2 and max_health > 2 and not addons.is_empty():
 		_drop_addon_cookie()
