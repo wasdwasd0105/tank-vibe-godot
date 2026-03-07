@@ -59,13 +59,19 @@ func _process(_delta: float) -> void:
 	update_display()
 
 func _get_player_hp(pid: int) -> int:
-	for tank in get_tree().get_nodes_in_group("players"):
+	var tree := get_tree()
+	if not tree:
+		return 0
+	for tank in tree.get_nodes_in_group("players"):
 		if tank is PlayerTank and tank.player_id == pid:
 			return tank.health
 	return 0  # Dead / not spawned
 
 func _get_player_addons(pid: int) -> Array:
-	for tank in get_tree().get_nodes_in_group("players"):
+	var tree := get_tree()
+	if not tree:
+		return GameManager.player_addons[pid]
+	for tank in tree.get_nodes_in_group("players"):
 		if tank is PlayerTank and tank.player_id == pid:
 			var addons: Array = []
 			if tank.has_moon_shield:
@@ -78,7 +84,10 @@ func _get_player_addons(pid: int) -> Array:
 func _is_player_hud_hidden(pid: int) -> bool:
 	if not GameManager.player_active[pid]:
 		return true
-	var game_node = get_tree().get_first_node_in_group("game")
+	var tree := get_tree()
+	if not tree:
+		return true
+	var game_node = tree.get_first_node_in_group("game")
 	if game_node and game_node.has_method("get_player_dead_timer"):
 		if game_node.get_player_dead_timer(pid) >= 15.0:
 			return true
@@ -189,7 +198,7 @@ func update_display() -> void:
 		p2_score_label.visible = not p2_hidden
 
 	# Game over countdown
-	if countdown_label:
+	if countdown_label and get_tree():
 		var game_node = get_tree().get_first_node_in_group("game")
 		if game_node and game_node.has_method("get_game_over_countdown"):
 			var countdown: float = game_node.get_game_over_countdown()
