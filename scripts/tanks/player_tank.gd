@@ -21,6 +21,7 @@ var invincible_timer: float = 0.0
 var is_spawning: bool = false
 var spawn_timer: float = 0.0
 var _damage_flash_timer: float = 0.0
+var _hits_taken: int = 0
 const DAMAGE_FLASH_DURATION: float = 0.15
 
 # --- Addon system ---
@@ -357,14 +358,112 @@ func _update_shield_visual(active: bool) -> void:
 	if shield:
 		shield.visible = active
 
+# --- Hit punishment system ---
+
+func _remove_moon_shield() -> void:
+	has_moon_shield = false
+	if _shield_sprite and is_instance_valid(_shield_sprite):
+		_shield_sprite.queue_free()
+		_shield_sprite = null
+	if _addon_sprites.has("moon-shield"):
+		_addon_sprites.erase("moon-shield")
+
+func _drop_player_addon_cookie(addon_name: String) -> void:
+	var cookie_type: int = CookieData.ADDON_TO_COOKIE.get(addon_name, -1)
+	if cookie_type == -1:
+		return
+	# Remove the addon from the tank
+	if addon_name == "moon-shield":
+		_remove_moon_shield()
+	elif addon_name in UTILITY_ADDONS:
+		_remove_utility_addon()
+	# Spawn the addon cookie on the playfield
+	_spawn_cookie_at_position(cookie_type)
+
+func _spawn_cookie_at_position(cookie_type: int) -> void:
+	var cookie_scene := preload("res://scenes/powerups/powerup.tscn")
+	var cookie: Node2D = cookie_scene.instantiate()
+	# Random position on the playfield (40x30 grid, offset 160,16)
+	# Inset by 32px (half cookie size) so the 64px cookie stays fully inside
+	var spawn_pos := Vector2(
+		randf_range(160 + 32, 160 + 40 * 32 - 32),
+		randf_range(16 + 32, 16 + 30 * 32 - 32)
+	).snapped(Vector2(32, 32))
+	# Check if any player is at the spawn position (overlapping)
+	var delay: float = 0.0
+	var players := get_tree().get_nodes_in_group("players")
+	for player in players:
+		if player is PlayerTank and is_instance_valid(player):
+			if spawn_pos.distance_to(player.global_position) < 48.0:
+				delay = 1.0
+				break
+	cookie.setup(cookie_type, delay, global_position)
+	cookie.global_position = spawn_pos
+	var container = get_tree().get_first_node_in_group("powerups_container")
+	if container:
+		container.add_child(cookie)
+	else:
+		get_tree().current_scene.add_child(cookie)
+
+func _apply_hit_punishment() -> void:
+	# Priority 1: drop moon-shield if have it
+	if has_moon_shield:
+		_drop_player_addon_cookie("moon-shield")
+		return
+	# Priority 2: drop utility addon (anti-water/anti-ice) if have one
+	if _current_utility_addon != "" and _current_utility_addon != "memory-save":
+		_drop_player_addon_cookie(_current_utility_addon)
+		return
+	# Priority 3: alternate -1 speed / -1 weapon
+	_hits_taken += 1
+	if (_hits_taken % 2) == 1:
+		# Odd (1, 3, 5, ...): -1 speed
+		if speed_level > 0:
+			speed_level -= 1
+			GameManager.set_speed_level(player_id, speed_level)
+			_apply_speed_upgrade()
+	else:
+		# Even (2, 4, 6, ...): -1 weapon
+		if weapon_level > 0:
+			weapon_level -= 1
+			GameManager.set_weapon_level(player_id, weapon_level)
+			_apply_weapon_upgrade()
+
 func take_damage() -> void:
 	if is_invincible:
 		return
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
+	if not has_memory_save:
+		_apply_hit_punishment()
 	super.take_damage()
 
 func destroy() -> void:
-	Events.player_died.emit(player_id)
-	GameManager.lose_life(player_id)
-	_spawn_explosion()
-	queue_free()
+	if has_memory_save:
+		# Spray the memory-save addon cookie
+		var mem_cookie_type: int = CookieData.ADDON_TO_COOKIE.get("memory-save", -1)
+		if mem_cookie_type >= 0:
+			_spawn_cookie_at_position(mem_cookie_type)
+		# Save current stats before lose_life() resets them
+		var saved_speed: int = speed_level
+		var saved_weapon: int = weapon_level
+		var saved_secondary_type: String = secondary_weapon_type
+		var saved_secondary_count: int = secondary_weapon_count
+		var saved_addons: Array = []
+		if has_moon_shield:
+			saved_addons.append("moon-shield")
+		# Normal death flow
+		Events.player_died.emit(player_id)
+		GameManager.lose_life(player_id)
+		# Restore saved stats into GameManager so the respawned tank loads them
+		GameManager.player_speed_levels[player_id] = saved_speed
+		GameManager.player_weapon_levels[player_id] = saved_weapon
+		GameManager.player_secondary_weapon_types[player_id] = saved_secondary_type
+		GameManager.player_secondary_weapon_counts[player_id] = saved_secondary_count
+		GameManager.player_addons[player_id] = saved_addons
+		_spawn_explosion()
+		queue_free()
+	else:
+		Events.player_died.emit(player_id)
+		GameManager.lose_life(player_id)
+		_spawn_explosion()
+		queue_free()
