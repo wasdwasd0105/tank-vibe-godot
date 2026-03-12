@@ -210,7 +210,7 @@ func _restore_player(pid: int, pdata: Dictionary) -> void:
 	gm.player_scores[pid] = pdata.get("score", 0)
 	gm.player_lives[pid] = pdata.get("lives", 3)
 	gm.player_hp[pid] = pdata.get("hp", 4)
-	gm.player_weapon_levels[pid] = pdata.get("weapon_level", 1)
+	gm.player_weapon_levels[pid] = pdata.get("weapon_level", 0)
 	gm.player_speed_levels[pid] = pdata.get("speed_level", 1)
 	gm.player_secondary_weapon_counts[pid] = pdata.get("special_weapon_count", 50)
 	gm.player_secondary_weapon_types[pid] = pdata.get("special_weapon_type", "rapid")
@@ -231,7 +231,7 @@ func _reset_player_defaults(pid: int) -> void:
 	gm.player_scores[pid] = 0
 	gm.player_hp[pid] = 4
 	gm.player_speed_levels[pid] = 1
-	gm.player_weapon_levels[pid] = 1
+	gm.player_weapon_levels[pid] = 0
 	gm.player_secondary_weapon_types[pid] = "rapid"
 	gm.player_secondary_weapon_counts[pid] = 50
 	gm.player_addons[pid] = []

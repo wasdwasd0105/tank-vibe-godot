@@ -5,6 +5,7 @@ const HALF_TILE: int = 16
 const TILE_SIZE: int = 32
 const TANK_SIZE: int = 64  # Tanks occupy 2x2 tiles
 const HALF_TANK: int = 32  # Half of tank size for boundary clamping
+const DEFAULT_BULLET_LANE_OFFSETS: Array[float] = [-16.0, 16.0]
 
 # Playfield boundaries in global coordinates (Playfield at 160,16; grid 40x30 @ 32px)
 const PLAYFIELD_MIN_X: float = 192.0   # 160 + 32 (half tank inset)
@@ -64,21 +65,36 @@ func _update_sprite_direction() -> void:
 func shoot() -> void:
 	if active_bullets >= max_bullets or not can_shoot:
 		return
+	_begin_shot()
+	_spawn_bullet(
+		global_position + current_direction * (TANK_SIZE * 0.5),
+		DEFAULT_BULLET_LANE_OFFSETS,
+		DEFAULT_BULLET_LANE_OFFSETS
+	)
+
+func _begin_shot() -> void:
 	can_shoot = false
 	if shoot_cooldown:
 		shoot_cooldown.start()
 	active_bullets += 1
 
+func _spawn_bullet(
+	spawn_position: Vector2,
+	visual_lane_offsets: Array[float],
+	collision_lane_offsets: Array[float]
+) -> void:
 	var bullet_scene := preload("res://scenes/tanks/bullet.tscn")
-	var bullet: Node2D = bullet_scene.instantiate()
+	var bullet: Bullet = bullet_scene.instantiate()
 	bullet.direction = current_direction
 	bullet.speed = bullet_speed
 	bullet.owner_tank = self
 	bullet.is_player_bullet = is_in_group("players")
+	bullet.visual_lane_offsets = visual_lane_offsets.duplicate()
+	bullet.collision_lane_offsets = collision_lane_offsets.duplicate()
 	# Weapon level 3 player tanks can destroy steel
 	if self is PlayerTank and self.weapon_level >= 3:
 		bullet.can_destroy_steel = true
-	bullet.global_position = global_position + current_direction * (TANK_SIZE * 0.5)
+	bullet.global_position = spawn_position
 
 	# Set collision layers based on owner
 	if bullet.is_player_bullet:
@@ -99,6 +115,9 @@ func shoot() -> void:
 		bullets_container.add_child(bullet)
 	else:
 		get_tree().current_scene.add_child(bullet)
+
+func _get_firing_right_vector() -> Vector2:
+	return Vector2(-current_direction.y, current_direction.x)
 
 func on_bullet_destroyed() -> void:
 	active_bullets = maxi(active_bullets - 1, 0)

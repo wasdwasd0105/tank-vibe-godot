@@ -7,9 +7,9 @@ extends BaseTank
 const MAX_HP: int = 8
 const DEFAULT_HP: int = 4
 
-# --- Speed & weapon levels (0-3, default 1) ---
+# --- Speed & weapon levels (0-3, default 0) ---
 var speed_level: int = 1
-var weapon_level: int = 1
+var weapon_level: int = 0
 
 # --- Secondary weapon ---
 var secondary_weapon_type: String = "rapid"
@@ -58,6 +58,21 @@ const SPEED_MAP: Dictionary = {
 	2: 160.0,
 	3: 192.0,
 }
+
+const REGULAR_WEAPON_COOLDOWN_MAP: Dictionary = {
+	0: 0.7,
+	1: 0.4,
+	2: 0.3,
+	3: 0.25,
+}
+
+const PLAYER_MAX_ACTIVE_BULLETS: int = 12
+const FIRE_ROW_LEFT: float = -16.0
+const FIRE_ROW_MID: float = 0.0
+const FIRE_ROW_RIGHT: float = 16.0
+const MID_ROW_COLLISION_OFFSETS: Array[float] = [-16.0, 16.0]
+
+var _regular_fire_step: int = 0
 
 func _ready() -> void:
 	super._ready()
@@ -150,8 +165,8 @@ func _physics_process(delta: float) -> void:
 		if _damage_flash_timer <= 0 and sprite:
 			sprite.modulate = Color.WHITE
 
-	if Input.is_action_just_pressed(_input_prefix + "shoot"):
-		shoot()
+	if Input.is_action_pressed(_input_prefix + "shoot"):
+		shoot_regular()
 	if Input.is_action_just_pressed(_input_prefix + "shoot2"):
 		shoot_secondary()
 
@@ -165,19 +180,49 @@ func _apply_speed_upgrade() -> void:
 	move_speed = SPEED_MAP.get(speed_level, 128.0)
 
 func _apply_weapon_upgrade() -> void:
+	weapon_level = clampi(weapon_level, 0, 3)
 	match weapon_level:
 		0:
 			bullet_speed = 256.0
-			max_bullets = 1
+			max_bullets = PLAYER_MAX_ACTIVE_BULLETS
 		1:
 			bullet_speed = 384.0
-			max_bullets = 1
+			max_bullets = PLAYER_MAX_ACTIVE_BULLETS
 		2:
 			bullet_speed = 384.0
-			max_bullets = 2
+			max_bullets = PLAYER_MAX_ACTIVE_BULLETS
 		3:
 			bullet_speed = 384.0
-			max_bullets = 2
+			max_bullets = PLAYER_MAX_ACTIVE_BULLETS
+	_regular_fire_step = 0
+	if shoot_cooldown:
+		shoot_cooldown.wait_time = REGULAR_WEAPON_COOLDOWN_MAP.get(weapon_level, 0.4)
+
+func _get_regular_fire_rows() -> Array[float]:
+	match weapon_level:
+		2:
+			return [FIRE_ROW_LEFT, FIRE_ROW_RIGHT]
+		3:
+			return [FIRE_ROW_LEFT, FIRE_ROW_MID, FIRE_ROW_RIGHT]
+		_:
+			return [FIRE_ROW_MID]
+
+func shoot_regular() -> void:
+	if not can_shoot:
+		return
+
+	var fire_rows := _get_regular_fire_rows()
+	var row_offset: float = fire_rows[_regular_fire_step % fire_rows.size()]
+	_regular_fire_step = (_regular_fire_step + 1) % fire_rows.size()
+
+	_begin_shot()
+
+	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	spawn_position += _get_firing_right_vector() * row_offset
+	var collision_offsets: Array[float] = [0.0]
+	if is_zero_approx(row_offset):
+		collision_offsets = MID_ROW_COLLISION_OFFSETS
+	_spawn_bullet(spawn_position, [0.0], collision_offsets)
 
 # --- Cookie effect methods ---
 
@@ -332,11 +377,11 @@ func apply_cookie_bullet_refill() -> void:
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
 func shoot_secondary() -> void:
-	if secondary_weapon_count <= 0:
+	if secondary_weapon_count <= 0 or not can_shoot or active_bullets >= max_bullets:
 		return
 	secondary_weapon_count -= 1
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
-	shoot()
+	super.shoot()
 
 func _check_ice() -> void:
 	var game = get_tree().get_first_node_in_group("game")

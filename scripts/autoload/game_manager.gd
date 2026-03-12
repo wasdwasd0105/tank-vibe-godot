@@ -24,7 +24,7 @@ var save_created_iso: String = ""  # ISO timestamp when save was first created
 var player_lives: Array[int] = [3, 3]
 var player_scores: Array[int] = [0, 0]
 var player_speed_levels: Array[int] = [1, 1]    # 0-3, default 1
-var player_weapon_levels: Array[int] = [1, 1]    # 0-3, default 1
+var player_weapon_levels: Array[int] = [0, 0]    # 0-3, default 0
 var player_secondary_weapon_types: Array[String] = ["rapid", "rapid"]
 var player_secondary_weapon_counts: Array[int] = [50, 50]  # default rapid reload_count
 var player_hp: Array[int] = [4, 4]                          # current HP, persists across stages
@@ -55,7 +55,7 @@ func reset() -> void:
 	player_lives = [3, 3]
 	player_scores = [0, 0]
 	player_speed_levels = [1, 1]
-	player_weapon_levels = [1, 1]
+	player_weapon_levels = [0, 0]
 	player_secondary_weapon_types = ["rapid", "rapid"]
 	player_secondary_weapon_counts = [50, 50]
 	player_hp = [4, 4]
@@ -105,7 +105,7 @@ func lose_life(player_id: int) -> void:
 	player_lives[player_id] -= 1
 	# Reset stats to defaults on death
 	player_speed_levels[player_id] = 1
-	player_weapon_levels[player_id] = 1
+	player_weapon_levels[player_id] = 0
 	player_secondary_weapon_types[player_id] = "rapid"
 	player_secondary_weapon_counts[player_id] = CookieData.WEAPON_DATA["rapid"]["reload_count"]
 	player_hp[player_id] = 4  # DEFAULT_HP
@@ -134,7 +134,7 @@ func rejoin_player(player_id: int) -> bool:
 	credits -= 1
 	player_lives[player_id] = 3
 	player_speed_levels[player_id] = 1
-	player_weapon_levels[player_id] = 1
+	player_weapon_levels[player_id] = 0
 	player_secondary_weapon_types[player_id] = "rapid"
 	player_secondary_weapon_counts[player_id] = CookieData.WEAPON_DATA["rapid"]["reload_count"]
 	player_hp[player_id] = 4

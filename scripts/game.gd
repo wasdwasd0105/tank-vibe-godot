@@ -165,7 +165,7 @@ func _on_base_destroyed() -> void:
 		if GameManager.player_active[pid]:
 			GameManager.player_lives[pid] = -1
 			GameManager.player_speed_levels[pid] = 1
-			GameManager.player_weapon_levels[pid] = 1
+			GameManager.player_weapon_levels[pid] = 0
 			GameManager.player_secondary_weapon_types[pid] = "rapid"
 			GameManager.player_secondary_weapon_counts[pid] = CookieData.WEAPON_DATA["rapid"]["reload_count"]
 			GameManager.player_hp[pid] = 4
