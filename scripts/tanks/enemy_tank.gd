@@ -521,7 +521,7 @@ func _shoot_special_rapid() -> bool:
 
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.4))
 	_begin_shot()
-	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier)
+	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier, "rapid")
 	return true
 
 func _update_sprite_direction() -> void:

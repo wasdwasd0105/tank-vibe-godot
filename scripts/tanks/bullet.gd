@@ -6,15 +6,36 @@ var direction: Vector2 = Vector2.UP
 var owner_tank: BaseTank = null
 var is_player_bullet: bool = true
 var can_destroy_steel: bool = false
+var visual_style: String = "regular"
 var visual_lane_offsets: Array[float] = [-16.0, 16.0]
 var collision_lane_offsets: Array[float] = [-16.0, 16.0]
 var _destroyed: bool = false
+var _visual_sprites: Array[Sprite2D] = []
+var _animation_timer: float = 0.0
+var _current_frame: int = 0
 
 var _level_manager: LevelManager = null
+static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
 const BULLET_THICKNESS: float = 10.0
 const LINE_WIDTH: float = 2.0
+const FRAME_DURATION: float = 0.5
+const BULLET_VISUAL_SCALE: float = 2.0
+const BULLET_TEXTURE_PATHS: Dictionary = {
+	"regular": [
+		"res://assets/sprites/bullets/regular/regular_1.png",
+		"res://assets/sprites/bullets/regular/regular_2.png",
+	],
+	"rapid": [
+		"res://assets/sprites/bullets/rapid/rapid_1.png",
+		"res://assets/sprites/bullets/rapid/rapid_2.png",
+	],
+}
+const BG_KEY_R: float = 248.0 / 255.0
+const BG_KEY_G: float = 0.0
+const BG_KEY_B: float = 248.0 / 255.0
+const BG_KEY_THRESHOLD: float = 0.05
 
 func _ready() -> void:
 	area_entered.connect(_on_area_entered)
@@ -31,6 +52,8 @@ func _ready() -> void:
 	if collision_lane_offsets.is_empty():
 		collision_lane_offsets = visual_lane_offsets.duplicate()
 
+	_load_bullet_textures(visual_style)
+
 	var col_shape = get_node_or_null("CollisionShape2D")
 	if col_shape and col_shape.shape is RectangleShape2D:
 		var rect := col_shape.shape as RectangleShape2D
@@ -45,6 +68,7 @@ func _ready() -> void:
 	if game and game.has_method("get_level_manager"):
 		_level_manager = game.get_level_manager()
 
+	_create_visual_sprites()
 	queue_redraw()
 
 func _get_lane_span(offsets: Array[float]) -> float:
@@ -59,6 +83,8 @@ func _get_lane_span(offsets: Array[float]) -> float:
 	return max_offset - min_offset
 
 func _draw() -> void:
+	if not _visual_sprites.is_empty():
+		return
 	var color := Color.WHITE
 	var half_len := BULLET_LENGTH / 2.0
 
@@ -72,6 +98,13 @@ func _draw() -> void:
 func _physics_process(delta: float) -> void:
 	if _destroyed:
 		return
+
+	_animation_timer += delta
+	var active_textures := _get_active_bullet_textures()
+	if active_textures.size() > 1 and _animation_timer >= FRAME_DURATION:
+		_animation_timer -= FRAME_DURATION
+		_current_frame = (_current_frame + 1) % active_textures.size()
+		_update_visual_frame()
 
 	var movement: Vector2 = direction * speed * delta
 	position += movement
@@ -194,3 +227,71 @@ func _destroy() -> void:
 		parent_node.add_child(explosion)
 
 	queue_free()
+
+func _create_visual_sprites() -> void:
+	var active_textures := _get_active_bullet_textures()
+	if active_textures.is_empty():
+		return
+
+	var sprite_rotation := _get_sprite_rotation()
+	for lane_offset in visual_lane_offsets:
+		var sprite := Sprite2D.new()
+		sprite.texture = active_textures[_current_frame]
+		sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		sprite.scale = Vector2.ONE * BULLET_VISUAL_SCALE
+		sprite.rotation = sprite_rotation
+		sprite.position = _get_visual_lane_position(lane_offset)
+		add_child(sprite)
+		_visual_sprites.append(sprite)
+
+func _update_visual_frame() -> void:
+	var active_textures := _get_active_bullet_textures()
+	if active_textures.is_empty():
+		return
+	for sprite in _visual_sprites:
+		if sprite and is_instance_valid(sprite):
+			sprite.texture = active_textures[_current_frame]
+
+func _load_bullet_textures(style: String) -> void:
+	if _bullet_texture_cache.has(style):
+		return
+
+	var textures: Array[Texture2D] = []
+	for texture_path in BULLET_TEXTURE_PATHS.get(style, []):
+		var img := Image.new()
+		if img.load(ProjectSettings.globalize_path(texture_path)) != OK:
+			continue
+		img.convert(Image.FORMAT_RGBA8)
+
+		for y in range(img.get_height()):
+			for x in range(img.get_width()):
+				var c := img.get_pixel(x, y)
+				if absf(c.r - BG_KEY_R) < BG_KEY_THRESHOLD \
+					and absf(c.g - BG_KEY_G) < BG_KEY_THRESHOLD \
+					and absf(c.b - BG_KEY_B) < BG_KEY_THRESHOLD:
+					img.set_pixel(x, y, Color(0, 0, 0, 0))
+
+		textures.append(ImageTexture.create_from_image(img))
+
+	_bullet_texture_cache[style] = textures
+
+func _get_active_bullet_textures() -> Array[Texture2D]:
+	var textures: Array[Texture2D] = _bullet_texture_cache.get(visual_style, [])
+	if textures.is_empty() and visual_style != "regular":
+		_load_bullet_textures("regular")
+		textures = _bullet_texture_cache.get("regular", [])
+	return textures
+
+func _get_visual_lane_position(lane_offset: float) -> Vector2:
+	if direction == Vector2.UP or direction == Vector2.DOWN:
+		return Vector2(lane_offset, 0.0)
+	return Vector2(0.0, lane_offset)
+
+func _get_sprite_rotation() -> float:
+	if direction == Vector2.DOWN:
+		return PI
+	if direction == Vector2.LEFT:
+		return -PI / 2
+	if direction == Vector2.RIGHT:
+		return PI / 2
+	return 0.0
