@@ -394,7 +394,7 @@ func _shoot_secondary_rapid() -> void:
 
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.4))
 	_begin_shot()
-	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier)
+	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier, "rapid")
 
 	_rapid_special_ammo_progress += 1
 	if _rapid_special_ammo_progress >= ammo_per_count:

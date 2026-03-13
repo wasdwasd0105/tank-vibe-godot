@@ -90,7 +90,8 @@ func _spawn_bullet(
 	spawn_position: Vector2,
 	visual_lane_offsets: Array[float],
 	collision_lane_offsets: Array[float],
-	bullet_speed_override: float = -1.0
+	bullet_speed_override: float = -1.0,
+	bullet_visual_style: String = "regular"
 ) -> void:
 	var bullet_scene := preload("res://scenes/tanks/bullet.tscn")
 	var bullet: Bullet = bullet_scene.instantiate()
@@ -100,6 +101,7 @@ func _spawn_bullet(
 	bullet.is_player_bullet = is_in_group("players")
 	bullet.visual_lane_offsets = visual_lane_offsets.duplicate()
 	bullet.collision_lane_offsets = collision_lane_offsets.duplicate()
+	bullet.visual_style = bullet_visual_style
 	# Weapon level 3 player tanks can destroy steel
 	if self is PlayerTank and self.weapon_level >= 3:
 		bullet.can_destroy_steel = true
@@ -133,10 +135,20 @@ func _get_single_row_collision_offsets(row_offset: float) -> Array[float]:
 		return MID_ROW_COLLISION_OFFSETS
 	return [0.0]
 
-func _spawn_single_row_bullet(row_offset: float, bullet_speed_override: float = -1.0) -> void:
+func _spawn_single_row_bullet(
+	row_offset: float,
+	bullet_speed_override: float = -1.0,
+	bullet_visual_style: String = "regular"
+) -> void:
 	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
 	spawn_position += _get_firing_right_vector() * row_offset
-	_spawn_bullet(spawn_position, [0.0], _get_single_row_collision_offsets(row_offset), bullet_speed_override)
+	_spawn_bullet(
+		spawn_position,
+		[0.0],
+		_get_single_row_collision_offsets(row_offset),
+		bullet_speed_override,
+		bullet_visual_style
+	)
 
 func on_bullet_destroyed() -> void:
 	active_bullets = maxi(active_bullets - 1, 0)
