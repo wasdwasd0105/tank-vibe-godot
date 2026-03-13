@@ -6,6 +6,10 @@ const TILE_SIZE: int = 32
 const TANK_SIZE: int = 64  # Tanks occupy 2x2 tiles
 const HALF_TANK: int = 32  # Half of tank size for boundary clamping
 const DEFAULT_BULLET_LANE_OFFSETS: Array[float] = [-16.0, 16.0]
+const FIRE_ROW_LEFT: float = -16.0
+const FIRE_ROW_MID: float = 0.0
+const FIRE_ROW_RIGHT: float = 16.0
+const MID_ROW_COLLISION_OFFSETS: Array[float] = [-16.0, 16.0]
 
 # Playfield boundaries in global coordinates (Playfield at 160,16; grid 40x30 @ 32px)
 const PLAYFIELD_MIN_X: float = 192.0   # 160 + 32 (half tank inset)
@@ -78,15 +82,20 @@ func _begin_shot() -> void:
 		shoot_cooldown.start()
 	active_bullets += 1
 
+func _set_shoot_cooldown_wait_time(wait_time: float) -> void:
+	if shoot_cooldown:
+		shoot_cooldown.wait_time = wait_time
+
 func _spawn_bullet(
 	spawn_position: Vector2,
 	visual_lane_offsets: Array[float],
-	collision_lane_offsets: Array[float]
+	collision_lane_offsets: Array[float],
+	bullet_speed_override: float = -1.0
 ) -> void:
 	var bullet_scene := preload("res://scenes/tanks/bullet.tscn")
 	var bullet: Bullet = bullet_scene.instantiate()
 	bullet.direction = current_direction
-	bullet.speed = bullet_speed
+	bullet.speed = bullet_speed_override if bullet_speed_override > 0.0 else bullet_speed
 	bullet.owner_tank = self
 	bullet.is_player_bullet = is_in_group("players")
 	bullet.visual_lane_offsets = visual_lane_offsets.duplicate()
@@ -118,6 +127,16 @@ func _spawn_bullet(
 
 func _get_firing_right_vector() -> Vector2:
 	return Vector2(-current_direction.y, current_direction.x)
+
+func _get_single_row_collision_offsets(row_offset: float) -> Array[float]:
+	if is_zero_approx(row_offset):
+		return MID_ROW_COLLISION_OFFSETS
+	return [0.0]
+
+func _spawn_single_row_bullet(row_offset: float, bullet_speed_override: float = -1.0) -> void:
+	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	spawn_position += _get_firing_right_vector() * row_offset
+	_spawn_bullet(spawn_position, [0.0], _get_single_row_collision_offsets(row_offset), bullet_speed_override)
 
 func on_bullet_destroyed() -> void:
 	active_bullets = maxi(active_bullets - 1, 0)

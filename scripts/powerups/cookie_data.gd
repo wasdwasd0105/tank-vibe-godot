@@ -100,6 +100,15 @@ const TYPE_WEAPON_MAP: Dictionary = {
 	21: "mine", 22: "mine", 23: "mine", 24: "mine",
 }
 
+## Special weapon levels by tank type and game difficulty (1-5) from tank_table.xlsx.
+## Only rapid is wired up for now.
+const TYPE_WEAPON_LEVELS: Dictionary = {
+	5: [0, 0, 0, 1, 1],
+	6: [0, 0, 1, 1, 2],
+	7: [0, 0, 1, 2, 2],
+	8: [0, 0, 0, 0, 1],
+}
+
 ## Maps weapon type string to specific cookie type
 const WEAPON_TO_COOKIE: Dictionary = {
 	"rapid":     CookieType.RAPID_COOKIE,
@@ -116,6 +125,23 @@ const WEAPON_DATA: Dictionary = {
 	"ap":        { "reload_count": 10, "max_count": 50 },
 	"explosion": { "reload_count": 20, "max_count": 60 },
 	"mine":      { "reload_count": 25, "max_count": 75 },
+}
+
+const RAPID_FIRE_CONFIG: Dictionary = {
+	0: { "cooldown": 0.4, "rows": [0.0], "ammo_per_count": 1, "speed_multiplier": 1.5 },
+	1: { "cooldown": 0.3, "rows": [-16.0, 16.0], "ammo_per_count": 1, "speed_multiplier": 1.5 },
+	2: {
+		"cooldown": 0.25,
+		"rows": [-16.0, 0.0, 16.0, 0.0],
+		"ammo_per_count": 3,
+		"speed_multiplier": 1.5,
+	},
+	3: {
+		"cooldown": 0.2,
+		"rows": [-16.0, 0.0, 16.0, 0.0],
+		"ammo_per_count": 5,
+		"speed_multiplier": 1.5,
+	},
 }
 
 const COOKIE_TEXTURES_DIR: String = "res://assets/sprites/cookies/"
@@ -155,6 +181,19 @@ static func get_cookie_texture(cookie_type: int) -> Texture2D:
 	var tex := ImageTexture.create_from_image(img)
 	_cookie_textures[cookie_type] = tex
 	return tex
+
+static func get_weapon_fire_config(weapon_type: String, level: int) -> Dictionary:
+	match weapon_type:
+		"rapid":
+			return RAPID_FIRE_CONFIG.get(clampi(level, 0, 3), RAPID_FIRE_CONFIG[0])
+	return {}
+
+static func get_enemy_weapon_level(tank_type_id: int, difficulty: int) -> int:
+	var levels: Array = TYPE_WEAPON_LEVELS.get(tank_type_id, [])
+	if levels.is_empty():
+		return 0
+	var idx := clampi(difficulty, 1, levels.size()) - 1
+	return levels[idx]
 
 ## Roll a death-drop cookie type for a dying enemy tank.
 ## Returns -1 if no drop (40% chance), otherwise a CookieType value.

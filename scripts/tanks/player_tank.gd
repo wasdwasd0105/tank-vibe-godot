@@ -67,12 +67,10 @@ const REGULAR_WEAPON_COOLDOWN_MAP: Dictionary = {
 }
 
 const PLAYER_MAX_ACTIVE_BULLETS: int = 12
-const FIRE_ROW_LEFT: float = -16.0
-const FIRE_ROW_MID: float = 0.0
-const FIRE_ROW_RIGHT: float = 16.0
-const MID_ROW_COLLISION_OFFSETS: Array[float] = [-16.0, 16.0]
 
 var _regular_fire_step: int = 0
+var _rapid_special_fire_step: int = 0
+var _rapid_special_ammo_progress: int = 0
 
 func _ready() -> void:
 	super._ready()
@@ -145,13 +143,11 @@ func _physics_process(delta: float) -> void:
 		if not is_on_ice:
 			stop_moving()
 
-	# Temporarily enable enemy mask so move_and_slide finds exact contact point
+	# Stop movement when an enemy is immediately ahead, but don't let physics contact push the player.
 	var enemy_blocking := velocity != Vector2.ZERO and _is_enemy_ahead()
 	if enemy_blocking:
-		set_collision_mask_value(4, true)
+		velocity = Vector2.ZERO
 	move_and_slide()
-	if enemy_blocking:
-		set_collision_mask_value(4, false)
 	clamp_to_playfield()
 
 	# Damage flash effect
@@ -167,7 +163,8 @@ func _physics_process(delta: float) -> void:
 
 	if Input.is_action_pressed(_input_prefix + "shoot"):
 		shoot_regular()
-	if Input.is_action_just_pressed(_input_prefix + "shoot2"):
+	var rapid_secondary_held := secondary_weapon_type == "rapid" and Input.is_action_pressed(_input_prefix + "shoot2")
+	if rapid_secondary_held or Input.is_action_just_pressed(_input_prefix + "shoot2"):
 		shoot_secondary()
 
 func _update_sprite_direction() -> void:
@@ -203,7 +200,7 @@ func _get_regular_fire_rows() -> Array[float]:
 		2:
 			return [FIRE_ROW_LEFT, FIRE_ROW_RIGHT]
 		3:
-			return [FIRE_ROW_LEFT, FIRE_ROW_MID, FIRE_ROW_RIGHT]
+			return [FIRE_ROW_LEFT, FIRE_ROW_MID, FIRE_ROW_RIGHT, FIRE_ROW_MID]
 		_:
 			return [FIRE_ROW_MID]
 
@@ -215,14 +212,9 @@ func shoot_regular() -> void:
 	var row_offset: float = fire_rows[_regular_fire_step % fire_rows.size()]
 	_regular_fire_step = (_regular_fire_step + 1) % fire_rows.size()
 
+	_set_shoot_cooldown_wait_time(REGULAR_WEAPON_COOLDOWN_MAP.get(weapon_level, 0.4))
 	_begin_shot()
-
-	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
-	spawn_position += _get_firing_right_vector() * row_offset
-	var collision_offsets: Array[float] = [0.0]
-	if is_zero_approx(row_offset):
-		collision_offsets = MID_ROW_COLLISION_OFFSETS
-	_spawn_bullet(spawn_position, [0.0], collision_offsets)
+	_spawn_single_row_bullet(row_offset)
 
 # --- Cookie effect methods ---
 
@@ -346,6 +338,9 @@ func set_secondary_weapon(weapon_type: String) -> void:
 	var weapon_data: Dictionary = CookieData.WEAPON_DATA.get(weapon_type, {})
 	if weapon_data.is_empty():
 		return
+	if weapon_type != secondary_weapon_type:
+		_rapid_special_fire_step = 0
+		_rapid_special_ammo_progress = 0
 	if weapon_type == secondary_weapon_type:
 		# Same weapon: refill by reload_count (capped at max)
 		secondary_weapon_count = mini(
@@ -379,9 +374,33 @@ func apply_cookie_bullet_refill() -> void:
 func shoot_secondary() -> void:
 	if secondary_weapon_count <= 0 or not can_shoot or active_bullets >= max_bullets:
 		return
+	if secondary_weapon_type == "rapid":
+		_shoot_secondary_rapid()
+		return
 	secondary_weapon_count -= 1
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 	super.shoot()
+
+func _shoot_secondary_rapid() -> void:
+	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", weapon_level)
+	if config.is_empty():
+		return
+
+	var fire_rows: Array = config.get("rows", [FIRE_ROW_MID])
+	var ammo_per_count: int = config.get("ammo_per_count", 1)
+	var speed_multiplier: float = config.get("speed_multiplier", 1.0)
+	var row_offset: float = fire_rows[_rapid_special_fire_step % fire_rows.size()]
+	_rapid_special_fire_step = (_rapid_special_fire_step + 1) % fire_rows.size()
+
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.4))
+	_begin_shot()
+	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier)
+
+	_rapid_special_ammo_progress += 1
+	if _rapid_special_ammo_progress >= ammo_per_count:
+		_rapid_special_ammo_progress = 0
+		secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
+		GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
 func _check_ice() -> void:
 	var game = get_tree().get_first_node_in_group("game")
@@ -412,13 +431,14 @@ func _update_shield_visual(active: bool) -> void:
 func _is_enemy_ahead() -> bool:
 	## Check if an enemy tank is blocking movement in the current direction.
 	## Temporarily enables the enemy mask for test_move, then disables it.
+	var lookahead := maxf(move_speed / float(Engine.physics_ticks_per_second), 2.0)
 	set_collision_mask_value(4, true)
-	var blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	var blocked := test_move(global_transform, current_direction * lookahead)
 	set_collision_mask_value(4, false)
 	if not blocked:
 		return false
 	# Check if the blockage is specifically an enemy (not a wall)
-	var still_blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	var still_blocked := test_move(global_transform, current_direction * lookahead)
 	return not still_blocked  # True = enemy was the only thing blocking
 
 # --- Hit punishment system ---

@@ -5,6 +5,8 @@ extends BaseTank
 @export var tank_type_id: int = 1
 @export var points_value: int = 100
 
+var special_weapon_type: String = "none"
+var special_weapon_level: int = 0
 var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
@@ -17,6 +19,7 @@ var _water_avoid_timer: float = 0.0  # How long to avoid the water-blocked direc
 var _attack_wall_dir: Vector2 = Vector2.ZERO  # Direction of wall we're shooting to break
 var _attack_wall_timer: float = 0.0  # Time left to keep attacking a wall
 var _turn_cooldown: float = 0.0  # Prevents rapid direction changes after collision
+var _rapid_special_fire_step: int = 0
 const DAMAGE_FLASH_DURATION: float = 0.15
 const TURN_COOLDOWN_DURATION: float = 0.6  # Minimum seconds between collision-triggered turns
 const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
@@ -24,6 +27,8 @@ const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias
 const EAGLE_ATTACK_RANGE: float = 192.0  # ~6 tiles — enter attack mode
 const WATER_AVOID_DURATION: float = 4.0  # Seconds to commit to going around water
 const ATTACK_WALL_DURATION: float = 3.0  # Seconds to commit to shooting a wall
+const SPECIAL_FIRE_CHANCE: float = 0.5
+const ENEMY_REGULAR_FIRE_COOLDOWN: float = 0.3
 
 # --- Addon system ---
 const ADDON_MOON_SHIELD := "moon-shield"
@@ -102,6 +107,10 @@ func _ready() -> void:
 	health = max_health
 	bullet_speed = stats["bullet_speed"]
 	points_value = stats["points"]
+	special_weapon_type = CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none")
+	special_weapon_level = CookieData.get_enemy_weapon_level(tank_type_id, GameManager.difficulty)
+	if special_weapon_type == "rapid":
+		max_bullets = 12
 	current_direction = Vector2.DOWN
 	_direction_change_timer = randf_range(1.0, 3.0)
 	_shoot_cooldown = randf_range(0.5, 2.0)
@@ -140,16 +149,11 @@ func _physics_process(delta: float) -> void:
 	if player_blocking:
 		# Attack the player: shoot rapidly
 		if _shoot_cooldown <= 0:
-			_shoot_cooldown = randf_range(0.3, 0.6)
-			shoot()
-	velocity = current_direction * move_speed
+			_fire_weapon(0.3, 0.6)
+	velocity = Vector2.ZERO if player_blocking else current_direction * move_speed
 
-	# Temporarily enable player mask so move_and_slide finds exact contact point
-	if player_blocking:
-		set_collision_mask_value(3, true)
+	# Players should block enemies logically, but enemies should not physically push players.
 	var collided := move_and_slide()
-	if player_blocking:
-		set_collision_mask_value(3, false)
 	clamp_to_playfield()
 	if collided and _turn_cooldown <= 0:
 		if _attack_wall_timer > 0:
@@ -173,13 +177,14 @@ func _physics_process(delta: float) -> void:
 func _is_player_ahead() -> bool:
 	## Check if a player tank is blocking movement in the current direction.
 	## Temporarily enables the player mask for test_move, then disables it.
+	var lookahead := maxf(move_speed / float(Engine.physics_ticks_per_second), 2.0)
 	set_collision_mask_value(3, true)
-	var blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	var blocked := test_move(global_transform, current_direction * lookahead)
 	set_collision_mask_value(3, false)
 	if not blocked:
 		return false
 	# Check if the blockage is specifically a player (not a wall)
-	var still_blocked := test_move(global_transform, current_direction * HALF_TILE * 2)
+	var still_blocked := test_move(global_transform, current_direction * lookahead)
 	return not still_blocked  # True = player was the only thing blocking
 
 func _is_water_ahead(dir: Vector2) -> bool:
@@ -254,8 +259,7 @@ func _try_direct_eagle_attack() -> bool:
 		_snap_and_update()
 	# Rapid fire at the eagle
 	if _shoot_cooldown <= 0:
-		_shoot_cooldown = randf_range(0.1, 0.25)
-		shoot()
+		_fire_weapon(0.1, 0.25)
 	return true
 
 func _ai_update(delta: float) -> void:
@@ -293,8 +297,7 @@ func _ai_update(delta: float) -> void:
 			return
 		# Keep shooting rapidly at the wall
 		if _shoot_cooldown <= 0:
-			_shoot_cooldown = randf_range(0.15, 0.3)
-			shoot()
+			_fire_weapon(0.15, 0.3)
 		return  # Skip normal AI while attacking wall
 
 	# Periodically reconsider direction
@@ -305,8 +308,10 @@ func _ai_update(delta: float) -> void:
 
 	if _shoot_cooldown <= 0:
 		# Near eagle: shoot much faster to break through protective walls
-		_shoot_cooldown = randf_range(0.15, 0.4) if _near_eagle else randf_range(0.5, 2.0)
-		shoot()
+		if _near_eagle:
+			_fire_weapon(0.15, 0.4)
+		else:
+			_fire_weapon(0.5, 2.0)
 
 	# Near eagle: aggressively face toward it every frame (high chance)
 	if _near_eagle and _collision_cooldown <= 0:
@@ -483,6 +488,41 @@ func _bias_toward_eagle() -> void:
 			current_direction = dir
 			_snap_and_update()
 			return
+
+func _fire_weapon(regular_min: float, regular_max: float) -> void:
+	if _has_rapid_special() and randf() < SPECIAL_FIRE_CHANCE:
+		if _shoot_special_rapid():
+			var config: Dictionary = CookieData.get_weapon_fire_config("rapid", special_weapon_level)
+			_shoot_cooldown = config.get("cooldown", regular_min)
+			return
+
+	if not can_shoot or active_bullets >= max_bullets:
+		return
+
+	_set_shoot_cooldown_wait_time(ENEMY_REGULAR_FIRE_COOLDOWN)
+	super.shoot()
+	_shoot_cooldown = randf_range(regular_min, regular_max)
+
+func _has_rapid_special() -> bool:
+	return special_weapon_type == "rapid"
+
+func _shoot_special_rapid() -> bool:
+	if not _has_rapid_special() or not can_shoot or active_bullets >= max_bullets:
+		return false
+
+	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", special_weapon_level)
+	if config.is_empty():
+		return false
+
+	var fire_rows: Array = config.get("rows", [FIRE_ROW_MID])
+	var speed_multiplier: float = config.get("speed_multiplier", 1.0)
+	var row_offset: float = fire_rows[_rapid_special_fire_step % fire_rows.size()]
+	_rapid_special_fire_step = (_rapid_special_fire_step + 1) % fire_rows.size()
+
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.4))
+	_begin_shot()
+	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier)
+	return true
 
 func _update_sprite_direction() -> void:
 	super._update_sprite_direction()
