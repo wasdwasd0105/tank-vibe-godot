@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://ceffectstest1"]
+
+[ext_resource type="Script" path="res://scripts/tests/effects_test.gd" id="1_efxtest"]
+
+[node name="EffectsTest" type="Node"]
+script = ExtResource("1_efxtest")

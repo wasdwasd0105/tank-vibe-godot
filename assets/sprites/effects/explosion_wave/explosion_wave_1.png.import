@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c3plpwmvaf7sj"
-path="res://.godot/imported/B_Armor.bmp-0da14b708b61577a3bc38859f072d5cf.ctex"
+uid="uid://bc3adi52r5p6q"
+path="res://.godot/imported/explosion_wave_1.png-2175aceb39e1a1929b5ed933e460015d.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://extracted_bitmaps/B_Armor.bmp"
-dest_files=["res://.godot/imported/B_Armor.bmp-0da14b708b61577a3bc38859f072d5cf.ctex"]
+source_file="res://assets/sprites/effects/explosion_wave/explosion_wave_1.png"
+dest_files=["res://.godot/imported/explosion_wave_1.png-2175aceb39e1a1929b5ed933e460015d.ctex"]
 
 [params]
 

@@ -20,9 +20,7 @@ var is_invincible: bool = false
 var invincible_timer: float = 0.0
 var is_spawning: bool = false
 var spawn_timer: float = 0.0
-var _damage_flash_timer: float = 0.0
 var _hits_taken: int = 0
-const DAMAGE_FLASH_DURATION: float = 0.15
 
 # --- Addon system ---
 var has_moon_shield: bool = false
@@ -34,7 +32,7 @@ var _shield_sprite: Sprite2D = null
 const UTILITY_ADDONS: Array = ["anti-water", "anti-ice", "memory-save"]
 var _current_utility_addon: String = ""
 const ADDON_CONFIG: Dictionary = {
-	"moon-shield":  { "scale": 0.9, "offset": 5.0 },
+	"moon-shield":  { "scale": 1.0, "offset": 9.0 },  # hood arc over the front, like the original
 	"anti-water":   { "scale": 1.0, "offset": 0.0 },
 	"anti-ice":     { "scale": 1.0, "offset": 10.0 },
 	"memory-save":  { "scale": 1.0, "offset": 0.0 },
@@ -116,6 +114,12 @@ func _ready() -> void:
 		sprite.modulate = Color.WHITE
 
 func _physics_process(delta: float) -> void:
+	if is_materializing:
+		velocity = Vector2.ZERO
+		return
+	if is_flying:
+		_update_flying(delta)
+		return
 	if is_invincible:
 		invincible_timer -= delta
 		if invincible_timer <= 0:
@@ -150,21 +154,12 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	clamp_to_playfield()
 
-	# Damage flash effect
-	if _damage_flash_timer > 0:
-		_damage_flash_timer -= delta
-		if sprite:
-			if fmod(_damage_flash_timer, 0.1) < 0.05:
-				sprite.modulate = Color.RED
-			else:
-				sprite.modulate = Color.WHITE
-		if _damage_flash_timer <= 0 and sprite:
-			sprite.modulate = Color.WHITE
+	# (Damage flash is handled centrally in BaseTank._process.)
 
 	if Input.is_action_pressed(_input_prefix + "shoot"):
 		shoot_regular()
-	var rapid_secondary_held := secondary_weapon_type == "rapid" and Input.is_action_pressed(_input_prefix + "shoot2")
-	if rapid_secondary_held or Input.is_action_just_pressed(_input_prefix + "shoot2"):
+	var auto_secondary_held := secondary_weapon_type in ["rapid", "fire", "explosion", "ap"] and Input.is_action_pressed(_input_prefix + "shoot2")
+	if auto_secondary_held or Input.is_action_just_pressed(_input_prefix + "shoot2"):
 		shoot_secondary()
 
 func _update_sprite_direction() -> void:
@@ -277,6 +272,9 @@ func _remove_utility_addon() -> void:
 		"anti-water":
 			has_boat = false
 			set_collision_mask_value(2, true)
+			# Losing the boat while afloat: the tank sinks. Deferred so it runs
+			# after the current add/remove-addon logic finishes.
+			_sink_if_stranded_on_water.call_deferred()
 		"anti-ice":
 			has_anti_ice = false
 		"memory-save":
@@ -290,24 +288,28 @@ func _remove_utility_addon() -> void:
 	_current_utility_addon = ""
 
 func _add_addon_sprite(addon_name: String) -> void:
-	var tex := ThemeManager.get_addon_texture(addon_name)
+	# Prefer a 4-frame animation (anti-water / memory-save) over the single sprite.
+	var frames: Array = ThemeManager.get_addon_frames(addon_name)
+	var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
 	if tex:
 		var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
 		var addon_sprite := Sprite2D.new()
 		addon_sprite.texture = tex
+		addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
 		var tex_size := tex.get_size()
 		var addon_size: float = TANK_SIZE * cfg["scale"]
 		addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
 		add_child(addon_sprite)
+		if not frames.is_empty():
+			register_animated_addon(addon_sprite, frames)
+		# Draw order via sibling order (all at z 0 so nothing sinks below the world),
+		# back -> front: other addons -> moon shield -> tank body (on top, fully visible).
+		var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
 		if addon_name == "moon-shield":
-			# Moon-shield renders above utility addons but below tank body:
-			# insert just before the Sprite2D child
-			var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
-			move_child(addon_sprite, sprite_idx)
+			move_child(addon_sprite, sprite_idx)  # just behind the tank body
 			_shield_sprite = addon_sprite
 		else:
-			# Utility addons render at the bottom (behind everything)
-			move_child(addon_sprite, 0)
+			move_child(addon_sprite, 0)  # behind everything
 		_addon_sprites[addon_name] = addon_sprite
 		_update_addon_directions()
 
@@ -377,9 +379,57 @@ func shoot_secondary() -> void:
 	if secondary_weapon_type == "rapid":
 		_shoot_secondary_rapid()
 		return
+	if secondary_weapon_type == "fire":
+		_shoot_secondary_fire()
+		return
+	if secondary_weapon_type == "explosion":
+		_shoot_secondary_explosion()
+		return
+	if secondary_weapon_type == "mine":
+		_shoot_secondary_mine()
+		return
+	if secondary_weapon_type == "ap":
+		_shoot_secondary_ap()
+		return
 	secondary_weapon_count -= 1
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 	super.shoot()
+
+func _shoot_secondary_ap() -> void:
+	var config: Dictionary = CookieData.get_weapon_fire_config("ap", weapon_level)
+	if config.is_empty():
+		return
+	if active_ap_bullets >= int(config.get("max_in_flight", 2)):
+		return
+
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
+	_begin_shot()
+	_spawn_ap_bullet(config)
+
+	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+
+## AP shell stripped this player's moon shield: remove it and grant a brief grace.
+func break_moon_shield_grace() -> void:
+	if has_moon_shield:
+		_remove_moon_shield()
+	_activate_invincibility(AP_SHIELD_GRACE)
+
+const AP_SHIELD_GRACE: float = 1.125
+
+func _shoot_secondary_mine() -> void:
+	var config: Dictionary = CookieData.get_weapon_fire_config("mine", weapon_level)
+	if config.is_empty():
+		return
+	# Lay the mine first; if there's no free tile, spend neither ammo nor cooldown.
+	if not _place_mine(int(config.get("mine_level", 1))):
+		return
+	can_shoot = false
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
+	if shoot_cooldown:
+		shoot_cooldown.start()
+	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
 func _shoot_secondary_rapid() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", weapon_level)
@@ -402,6 +452,34 @@ func _shoot_secondary_rapid() -> void:
 		secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 		GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
+func _shoot_secondary_fire() -> void:
+	var config: Dictionary = CookieData.get_weapon_fire_config("fire", weapon_level)
+	if config.is_empty():
+		return
+	if active_fire_bullets >= int(config.get("max_in_flight", 3)):
+		return
+
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.27))
+	_begin_shot()
+	_spawn_fire_bullet(config)
+
+	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+
+func _shoot_secondary_explosion() -> void:
+	var config: Dictionary = CookieData.get_weapon_fire_config("explosion", weapon_level)
+	if config.is_empty():
+		return
+	if active_explosion_bullets >= int(config.get("max_in_flight", 2)):
+		return
+
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.45))
+	_begin_shot()
+	_spawn_explosion_bullet(config)
+
+	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
+	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+
 func _check_ice() -> void:
 	var game = get_tree().get_first_node_in_group("game")
 	if not game or not game.has_method("get_level_manager"):
@@ -418,15 +496,32 @@ func _check_ice() -> void:
 	else:
 		is_on_ice = false
 
+## If this tank is sitting on water without a boat, it sinks. Called when the
+## anti-water addon is lost (e.g. shot off) while afloat.
+func _sink_if_stranded_on_water() -> void:
+	if has_boat or is_flying or not is_instance_valid(self):
+		return
+	var game = get_tree().get_first_node_in_group("game")
+	if not game or not game.has_method("get_level_manager"):
+		return
+	var lm = game.get_level_manager()
+	if lm and lm.is_water_at_world(global_position):
+		destroy()  # sank — no boat on water
+
 func _activate_invincibility(duration: float) -> void:
 	is_invincible = true
 	invincible_timer = maxf(invincible_timer, duration)
 	_update_shield_visual(true)
 
 func _update_shield_visual(active: bool) -> void:
-	var shield = get_node_or_null("ShieldEffect")
-	if shield:
-		shield.visible = active
+	# The old procedural arc is replaced by the animated shield wreath (Tank_T row 1).
+	var old = get_node_or_null("ShieldEffect")
+	if old:
+		old.visible = false
+	if active:
+		show_state_overlay(BaseTank.get_shield_frames())
+	else:
+		hide_state_overlay()
 
 func _is_enemy_ahead() -> bool:
 	## Check if an enemy tank is blocking movement in the current direction.
@@ -515,10 +610,9 @@ func _apply_hit_punishment() -> void:
 func take_damage() -> void:
 	if is_invincible:
 		return
-	_damage_flash_timer = DAMAGE_FLASH_DURATION
 	if not has_memory_save:
 		_apply_hit_punishment()
-	super.take_damage()
+	super.take_damage()  # reduces health + triggers the shared damage flash
 
 func destroy() -> void:
 	if has_memory_save:

@@ -123,7 +123,7 @@ const WEAPON_DATA: Dictionary = {
 	"rapid":     { "reload_count": 50, "max_count": 200 },
 	"fire":      { "reload_count": 30, "max_count": 150 },
 	"ap":        { "reload_count": 10, "max_count": 50 },
-	"explosion": { "reload_count": 20, "max_count": 60 },
+	"explosion": { "reload_count": 20, "max_count": 100 },
 	"mine":      { "reload_count": 25, "max_count": 75 },
 }
 
@@ -142,6 +142,48 @@ const RAPID_FIRE_CONFIG: Dictionary = {
 		"ammo_per_count": 5,
 		"speed_multiplier": 1.5,
 	},
+}
+
+## Fire gun config by weapon level (0-3). A fire bullet flies straight and, on
+## death, ignites (or grows) a ground-fire field. Growth/shape/burn-time are the
+## field's job; weapon level only affects fire rate, in-flight cap, and `damage`
+## (how much the fire bullet subtracts from a crossed enemy bullet — rule 6).
+const FIRE_FIRE_CONFIG: Dictionary = {
+	0: { "cooldown": 0.27,  "speed": 520.0, "range_px": 480.0, "max_in_flight": 3, "damage": 1 },
+	1: { "cooldown": 0.225, "speed": 520.0, "range_px": 480.0, "max_in_flight": 4, "damage": 1 },
+	2: { "cooldown": 0.18,  "speed": 520.0, "range_px": 480.0, "max_in_flight": 5, "damage": 2 },
+	3: { "cooldown": 0.135, "speed": 520.0, "range_px": 480.0, "max_in_flight": 6, "damage": 2 },
+}
+
+## Explosion gun config by weapon level (0-3). The bullet flies straight and fast,
+## detonating a shockwave wherever it dies; "level" scales the blast (power/radius)
+## and "damage" is the direct-hit / bullet-vs-bullet value. See explosion_blast.gd.
+## "level" drives the wave (radius + spray damage, see ExplosionBlast); "damage"
+## is the DIRECT hit dealt to a tank the bullet strikes (3/4/5/6 by level).
+const EXPLOSION_FIRE_CONFIG: Dictionary = {
+	0: { "cooldown": 0.45,  "speed": 650.0, "max_in_flight": 2, "level": 0, "damage": 3 },
+	1: { "cooldown": 0.375, "speed": 650.0, "max_in_flight": 2, "level": 1, "damage": 4 },
+	2: { "cooldown": 0.30,  "speed": 650.0, "max_in_flight": 3, "level": 2, "damage": 5 },
+	3: { "cooldown": 0.225, "speed": 650.0, "max_in_flight": 4, "level": 3, "damage": 6 },
+}
+
+## Mine config by weapon level (0-3), mapped to mine level 1-4. Each level lays a
+## mine that detonates the explosion blast; higher levels add effects:
+##   L1 blast · L2 blast+slow · L3 blast+fly · L4 blast+fly+slow. See mine.gd.
+const MINE_FIRE_CONFIG: Dictionary = {
+	0: { "cooldown": 0.6,  "mine_level": 1 },
+	1: { "cooldown": 0.55, "mine_level": 2 },
+	2: { "cooldown": 0.5,  "mine_level": 3 },
+	3: { "cooldown": 0.45, "mine_level": 4 },
+}
+
+## AP gun config by weapon level (0-3). A slow-launch, accelerating shell whose
+## "damage" is a pool it spends piercing through tanks and walls. See bullet.gd.
+const AP_FIRE_CONFIG: Dictionary = {
+	0: { "cooldown": 0.6, "speed": 222.0, "accel": 889.0, "max_speed": 667.0, "damage": 8,  "max_in_flight": 2 },
+	1: { "cooldown": 0.5, "speed": 222.0, "accel": 889.0, "max_speed": 667.0, "damage": 10, "max_in_flight": 2 },
+	2: { "cooldown": 0.4, "speed": 222.0, "accel": 889.0, "max_speed": 667.0, "damage": 12, "max_in_flight": 3 },
+	3: { "cooldown": 0.3, "speed": 222.0, "accel": 889.0, "max_speed": 667.0, "damage": 14, "max_in_flight": 3 },
 }
 
 const COOKIE_TEXTURES_DIR: String = "res://assets/sprites/cookies/"
@@ -186,6 +228,14 @@ static func get_weapon_fire_config(weapon_type: String, level: int) -> Dictionar
 	match weapon_type:
 		"rapid":
 			return RAPID_FIRE_CONFIG.get(clampi(level, 0, 3), RAPID_FIRE_CONFIG[0])
+		"fire":
+			return FIRE_FIRE_CONFIG.get(clampi(level, 0, 3), FIRE_FIRE_CONFIG[0])
+		"explosion":
+			return EXPLOSION_FIRE_CONFIG.get(clampi(level, 0, 3), EXPLOSION_FIRE_CONFIG[0])
+		"mine":
+			return MINE_FIRE_CONFIG.get(clampi(level, 0, 3), MINE_FIRE_CONFIG[0])
+		"ap":
+			return AP_FIRE_CONFIG.get(clampi(level, 0, 3), AP_FIRE_CONFIG[0])
 	return {}
 
 static func get_enemy_weapon_level(tank_type_id: int, difficulty: int) -> int:

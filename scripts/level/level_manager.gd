@@ -23,13 +23,30 @@ var _brick_damage: Dictionary = {}
 # Hard brick HP tracking: Key: Vector2i, Value: int (remaining HP 1-4)
 var _hard_brick_hp: Dictionary = {}
 
+# Animated tiles (ice/water/iron/super): sprites that cycle a 4-frame loop in sync.
+const TILE_ANIM_FRAME_DUR: float = 1.0
+const TILE_ANIM_DIR: String = "res://assets/sprites/tiles_anim/"
+var _animated_tile_frames: Dictionary = {}   # TileCategory -> Array[Texture2D]
+var _animated_tiles: Array = []              # Array of { "sprite": Sprite2D, "cat": int }
+var _tile_anim_time: float = 0.0
+var _tile_anim_frame: int = 0
+
+# Static grass variants (green + burned) from the tileset, picked by map code.
+var _grass_variants: Dictionary = {}         # TileCategory -> Array[Texture2D]
+
+var _ground_fire_scene := preload("res://scripts/effects/ground_fire.gd")
+
 # Background image
 var _bg_image_sprite: Sprite2D
 
-# Base wall fortification
-var _original_base_walls: Array[Vector2i] = []
+# Base wall fortification. Key: wall tile (Vector2i) -> its initial tile code, so
+# reverting the shovel restores the map's original base walls (not a fixed brick).
+var _original_base_walls: Dictionary = {}
 var _fortify_timer: float = -1.0
 var _is_fortified: bool = false
+
+# The 2x2 tiles the eagle occupies — reserved so tanks never spawn on the base.
+var _eagle_tiles: Array[Vector2i] = []
 
 const BG_ASSETS_DIR: String = "res://assets/background/"
 
@@ -42,6 +59,8 @@ func _ready() -> void:
 	_tile_textures = ThemeManager.get_all_tile_textures()
 	ThemeManager.theme_changed.connect(_on_theme_changed)
 
+	_load_animated_tile_frames()
+	_load_grass_variants()
 	_create_boundaries()
 
 	# Set up eagle (2x2 tiles)
@@ -53,12 +72,21 @@ func _ready() -> void:
 		var col_shape := eagle.get_node_or_null("CollisionShape2D")
 		if col_shape:
 			col_shape.shape = shape
+		# The eagle occupies a 2x2 block; reserve it so nothing spawns on the base.
+		var etl: Vector2i = world_to_tile(eagle.global_position) - Vector2i(1, 1)
+		_eagle_tiles.clear()
+		for oy in range(2):
+			for ox in range(2):
+				_eagle_tiles.append(etl + Vector2i(ox, oy))
 
 func _process(delta: float) -> void:
 	if _is_fortified:
 		_fortify_timer -= delta
 		if _fortify_timer <= 0:
 			_revert_fortification()
+	_tick_fire(delta)
+	_tick_grass_fire(delta)
+	_tick_tile_anim(delta)
 
 func _on_theme_changed(_theme_name: String) -> void:
 	_tile_textures = ThemeManager.get_all_tile_textures()
@@ -95,6 +123,8 @@ func _create_boundaries() -> void:
 
 func load_stage(stage_num: int) -> void:
 	_clear_tiles()
+	_clear_fire()
+	_clear_mines()
 	_brick_damage.clear()
 	_hard_brick_hp.clear()
 
@@ -187,10 +217,102 @@ func _clear_tiles() -> void:
 		if data.has("body") and is_instance_valid(data["body"]):
 			data["body"].queue_free()
 	_fg_tile_data.clear()
+	_animated_tiles.clear()  # sprites are freed above; drop the stale references
 
 # =====================================================================
 # Tile Placement
 # =====================================================================
+
+## Load the 4-frame animation strips for ice/water/iron/super from tiles_anim/.
+func _load_animated_tile_frames() -> void:
+	var by_cat := {
+		LevelData.TileCategory.ICE: "ice",
+		LevelData.TileCategory.WATER: "water",
+		LevelData.TileCategory.IRON_BLOCK: "iron",
+		LevelData.TileCategory.SUPER_BLOCK: "super",
+	}
+	for cat in by_cat:
+		var frames: Array = []
+		for f in range(1, 5):
+			var img := Image.new()
+			if img.load(ProjectSettings.globalize_path(TILE_ANIM_DIR + "%s_%d.png" % [by_cat[cat], f])) == OK:
+				img.convert(Image.FORMAT_RGBA8)
+				frames.append(ImageTexture.create_from_image(img))
+		if frames.size() == 4:
+			_animated_tile_frames[cat] = frames
+
+## Load the 4 static grass variants (green + burned) from the tileset.
+func _load_grass_variants() -> void:
+	var by_cat := {
+		LevelData.TileCategory.GRASS: "grass",
+		LevelData.TileCategory.BURNED_GRASS: "burned_grass",
+	}
+	for cat in by_cat:
+		var frames: Array = []
+		for f in range(1, 5):
+			var img := Image.new()
+			if img.load(ProjectSettings.globalize_path(TILE_ANIM_DIR + "%s_%d.png" % [by_cat[cat], f])) == OK:
+				img.convert(Image.FORMAT_RGBA8)
+				frames.append(ImageTexture.create_from_image(img))
+		if frames.size() == 4:
+			_grass_variants[cat] = frames
+
+## The grass texture for a map code — the tileset variant its id selects
+## (green 0x09-0x0C -> 0-3, burned 0x0D-0x10 -> 0-3), or the theme texture if the
+## tileset isn't loaded.
+func _grass_texture(code: int) -> Texture2D:
+	var cat := LevelData.get_tile_category(code)
+	if _grass_variants.has(cat):
+		var base := 0x09 if cat == LevelData.TileCategory.GRASS else 0x0D
+		return _grass_variants[cat][clampi(code - base, 0, 3)]
+	return _tile_textures.get(code, null)
+
+## If [param cat] is an animated tile type, swap the sprite to the animation and
+## register it so it cycles with the others.
+func _maybe_animate_tile(spr: Sprite2D, code: int, pos: Vector2i) -> void:
+	var cat := LevelData.get_tile_category(code)
+	if not _animated_tile_frames.has(cat):
+		return
+	var frames: Array = _animated_tile_frames[cat]
+	# Per-tile start frame so a field animates with variety instead of in unison:
+	# ice/water use their map code; iron/super use their board position (x+y).
+	var offset := _anim_start_offset(cat, code, pos)
+	var tex := frames[(_tile_anim_frame + offset) % frames.size()] as Texture2D
+	spr.texture = tex
+	# Frames are native 16px; scale to the 32px tile.
+	var tw := tex.get_size().x
+	if tw > 0:
+		spr.scale = Vector2(TILE_SIZE / tw, TILE_SIZE / tw)
+	_animated_tiles.append({ "sprite": spr, "cat": cat, "offset": offset })
+
+## Per-tile animation start frame. Ice/water use their code's variant index
+## (0-3); iron/super use their board position (x+y) so a wall shimmers in a wave.
+func _anim_start_offset(cat: int, code: int, pos: Vector2i) -> int:
+	match cat:
+		LevelData.TileCategory.ICE:
+			return clampi(code - 0x01, 0, 3)
+		LevelData.TileCategory.WATER:
+			return clampi(code - 0x05, 0, 3)
+		LevelData.TileCategory.IRON_BLOCK, LevelData.TileCategory.SUPER_BLOCK:
+			return (pos.x + pos.y) % 4
+	return 0
+
+func _tick_tile_anim(delta: float) -> void:
+	if _animated_tiles.is_empty():
+		return
+	_tile_anim_time += delta
+	var f := int(_tile_anim_time / TILE_ANIM_FRAME_DUR) % 4
+	if f == _tile_anim_frame:
+		return  # only touch sprites when the frame actually changes
+	_tile_anim_frame = f
+	var alive: Array = []
+	for a in _animated_tiles:
+		var spr = a["sprite"]
+		if is_instance_valid(spr):
+			var frames: Array = _animated_tile_frames[a["cat"]]
+			(spr as Sprite2D).texture = frames[(f + int(a["offset"])) % frames.size()]
+			alive.append(a)
+	_animated_tiles = alive
 
 func _place_bg_tile(pos: Vector2i, code: int) -> void:
 	var world_pos := Vector2(pos.x * TILE_SIZE + TILE_SIZE / 2, pos.y * TILE_SIZE + TILE_SIZE / 2)
@@ -212,6 +334,7 @@ func _place_bg_tile(pos: Vector2i, code: int) -> void:
 		_:
 			terrain_node.add_child(spr)
 
+	_maybe_animate_tile(spr, code, pos)
 	_bg_tile_data[pos] = { "sprite": spr, "body": body, "code": code }
 
 func _place_fg_tile(pos: Vector2i, code: int) -> void:
@@ -226,7 +349,12 @@ func _place_fg_tile(pos: Vector2i, code: int) -> void:
 
 	match cat:
 		LevelData.TileCategory.GRASS, LevelData.TileCategory.BURNED_GRASS:
-			spr.texture = _tile_textures.get(code, null)
+			var gtex := _grass_texture(code)  # variant picked by the map code
+			spr.texture = gtex
+			if gtex:
+				var gw := gtex.get_size().x
+				if gw > 0:
+					spr.scale = Vector2(TILE_SIZE / gw, TILE_SIZE / gw)  # 16px tile -> 32px
 			spr.z_index = 10  # draw above tanks
 			spr.modulate.a = 0.55  # semi-transparent so tanks are visible underneath
 			tree_node.add_child(spr)
@@ -268,6 +396,7 @@ func _place_fg_tile(pos: Vector2i, code: int) -> void:
 			spr.texture = _tile_textures.get(code, null)
 			terrain_node.add_child(spr)
 
+	_maybe_animate_tile(spr, code, pos)
 	_fg_tile_data[pos] = { "sprite": spr, "body": body, "code": code }
 
 func _create_tile_body(world_pos: Vector2, layer: int) -> StaticBody2D:
@@ -298,22 +427,32 @@ func _place_base_walls() -> void:
 	]
 	for pos in wall_positions:
 		if not _fg_tile_data.has(pos):
-			_place_fg_tile(pos, 0x19)  # Soft brick variant 0
-		_original_base_walls.append(pos)
+			_place_fg_tile(pos, 0x19)  # Soft brick variant 0 (fill an empty base tile)
+		# Remember the exact initial tile here so the shovel can restore it later.
+		_original_base_walls[pos] = _fg_tile_data[pos].get("code", 0x19)
 
 func fortify_base(duration: float) -> void:
 	_is_fortified = true
 	_fortify_timer = duration
 	for pos in _original_base_walls:
+		# A super block is already stronger than iron — never downgrade it.
+		if LevelData.get_tile_category(_original_base_walls[pos]) == LevelData.TileCategory.SUPER_BLOCK:
+			continue
 		_remove_fg_tile(pos)
 		_brick_damage.erase(pos)
-		_place_fg_tile(pos, 0x39)  # Iron block
+		_hard_brick_hp.erase(pos)
+		_place_fg_tile(pos, 0x39)  # Iron block (fortified)
 
 func _revert_fortification() -> void:
 	_is_fortified = false
 	for pos in _original_base_walls:
+		# Super blocks were left untouched by fortify — nothing to revert.
+		if LevelData.get_tile_category(_original_base_walls[pos]) == LevelData.TileCategory.SUPER_BLOCK:
+			continue
 		_remove_fg_tile(pos)
-		_place_fg_tile(pos, 0x19)  # Soft brick
+		_brick_damage.erase(pos)
+		_hard_brick_hp.erase(pos)
+		_place_fg_tile(pos, _original_base_walls[pos])  # restore the map's initial tile
 
 # =====================================================================
 # Tile Removal
@@ -490,6 +629,60 @@ func world_to_tile(world_pos: Vector2) -> Vector2i:
 	var ty: int = floori(local.y / TILE_SIZE)
 	return Vector2i(tx, ty)
 
+## True if the foreground tile at [param tile] is a solid wall
+## (soft/hard brick, iron or super).
+func is_tile_solid(tile: Vector2i) -> bool:
+	if not _fg_tile_data.has(tile):
+		return false
+	return LevelData.is_solid_tile(LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)))
+
+## True if the foreground tile at [param world_pos] is a solid wall. Used e.g. by
+## the explosion wave to know a sprayed cell landed on a wall.
+func is_solid_at_world(world_pos: Vector2) -> bool:
+	return is_tile_solid(world_to_tile(world_pos))
+
+## True if the background tile at [param world_pos] is water (used to sink a tank
+## that loses its water-resist while afloat).
+func is_water_at_world(world_pos: Vector2) -> bool:
+	var tile := world_to_tile(world_pos)
+	if not _bg_tile_data.has(tile):
+		return false
+	return LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.WATER
+
+## True if every tile in the [param size] block whose top-left is [param top_left]
+## is in-bounds and free of solid walls.
+func is_area_clear(top_left: Vector2i, size: Vector2i) -> bool:
+	for oy in range(size.y):
+		for ox in range(size.x):
+			var t := top_left + Vector2i(ox, oy)
+			if not _is_in_bounds(t) or is_tile_solid(t) or t in _eagle_tiles:
+				return false
+	return true
+
+## The nearest [param size] block to [param ideal_top_left] whose tiles are all
+## clear — the ideal itself if free, otherwise a ring search outward (used to
+## revive a tank beside the base, falling back to the closest open spot when the
+## base is walled in). Returns the ideal if nothing clear is found in range.
+func find_clear_area(ideal_top_left: Vector2i, size: Vector2i, max_radius: int = 16) -> Vector2i:
+	if is_area_clear(ideal_top_left, size):
+		return ideal_top_left
+	for r in range(1, max_radius + 1):
+		var best := Vector2i(-9999, -9999)
+		var best_d := INF
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue  # only the ring at radius r
+				var cand := ideal_top_left + Vector2i(dx, dy)
+				if is_area_clear(cand, size):
+					var d := Vector2(dx, dy).length()
+					if d < best_d:
+						best_d = d
+						best = cand
+		if best.x != -9999:
+			return best
+	return ideal_top_left
+
 ## Clear all foreground tiles in a 2x2 area for tank spawning.
 ## [param global_center] is the global position of the tank center (64x64 tank).
 func clear_spawn_area(global_center: Vector2) -> void:
@@ -503,3 +696,392 @@ func clear_spawn_area(global_center: Vector2) -> void:
 				_remove_fg_tile(tile_pos)
 				_brick_damage.erase(tile_pos)
 				_hard_brick_hp.erase(tile_pos)
+
+# =====================================================================
+# Ground Fire (fire weapon) — growing/shrinking fire fields
+# =====================================================================
+
+const FIRE_FIELD_CAP: int = 40  # safety: max simultaneous fire fields
+
+var _fire_fields: Array = []          # Array[FireField]
+var _fire_index: Dictionary = {}      # world tile (Vector2i) -> FireField burning it
+
+# Grass fire: a neutral wildfire that burns green grass to grey and creeps to
+# adjacent green grass one generation at a time. Hurts both sides (row 1).
+const GRASS_BURN_TIME: float = 3.0    # how long a burning grass tile stays lit
+const GRASS_SPREAD_DELAY: float = 0.5 # gap between spreading to the next ring of grass
+const GRASS_FIRE_CAP: int = 150       # safety cap on simultaneous grass fires
+
+var _grass_fires: Array = []          # Array of {tile, node, from_player, burn, spread, spread_done}
+var _grass_index: Dictionary = {}     # tile (Vector2i) -> GroundFire node
+
+
+# =====================================================================
+# AP Weapon — wall drilling
+# =====================================================================
+
+## An AP shell drills through the [param tiles] it overlaps, spending its damage
+## [param pool]. The shell is 2 tiles wide, so tiles side-by-side across its path
+## form one "strip" that it carves through at once, paying only the MOST expensive
+## tile in the strip — so a 2-wide channel costs the same pool as a 1-wide one.
+## Returns the remaining pool (0 if fully spent).
+## Costs: full brick 2, partial 1, hard brick = remaining stages, iron 4,
+## super-steel 8 (and only pierceable with pool >= 6).
+func ap_drill_tiles(tiles: Array[Vector2i], pool: int, from_direction: Vector2) -> int:
+	if tiles.is_empty():
+		return pool
+	# Group tiles by their coordinate along the travel axis — each group is one
+	# perpendicular strip (the tiles the shell straddles at that step).
+	var vertical := absf(from_direction.y) > absf(from_direction.x)
+	var groups: Dictionary = {}
+	for tile in tiles:
+		if not _fg_tile_data.has(tile):
+			continue
+		var key: int = tile.y if vertical else tile.x
+		if not groups.has(key):
+			groups[key] = []
+		groups[key].append(tile)
+
+	for key in groups.keys():
+		if pool <= 0:
+			break
+		var strip: Array = groups[key]
+		var has_super := false
+		var max_cost := 0
+		for tile in strip:
+			if LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.SUPER_BLOCK:
+				has_super = true
+			else:
+				max_cost = maxi(max_cost, _ap_tile_cost(tile))
+		if has_super:
+			# Super-steel is indestructible: the shell stops here, breaks nothing.
+			pool = 0
+		elif pool >= max_cost:
+			for tile in strip:
+				_ap_break_tile(tile)
+			pool -= max_cost
+		else:
+			for tile in strip:
+				_ap_chip_tile(tile, pool, from_direction)
+			pool = 0
+	return maxi(pool, 0)
+
+
+func _ap_tile_cost(tile: Vector2i) -> int:
+	match LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)):
+		LevelData.TileCategory.SOFT_BRICK_FULL: return 2
+		LevelData.TileCategory.SOFT_BRICK_PARTIAL: return 1
+		LevelData.TileCategory.HARD_BRICK: return _hard_brick_hp.get(tile, 1)
+		LevelData.TileCategory.IRON_BLOCK: return 4
+		LevelData.TileCategory.SUPER_BLOCK: return 8
+	return 0
+
+
+func _ap_break_tile(tile: Vector2i) -> void:
+	if not _fg_tile_data.has(tile):
+		return
+	_remove_fg_tile(tile)
+	_brick_damage.erase(tile)
+	_hard_brick_hp.erase(tile)
+
+
+func _ap_chip_tile(tile: Vector2i, pool: int, from_direction: Vector2) -> void:
+	if not _fg_tile_data.has(tile):
+		return
+	match LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)):
+		LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+			_damage_brick(tile, from_direction)
+		LevelData.TileCategory.HARD_BRICK:
+			for i in range(pool):
+				_damage_hard_brick(tile)
+
+
+# =====================================================================
+# Mine Weapon
+# =====================================================================
+
+# Placed mines: Key: Vector2i tile, Value: Mine node (one mine per tile).
+var _mine_tiles: Dictionary = {}
+
+## Candidate tiles for laying a mine, in preference order: the tile directly
+## behind the tank first, then the ones beside/further back. Rotated by facing.
+const MINE_PLACE_OFFSETS: Array[Vector2i] = [
+	Vector2i(0, 1), Vector2i(-1, 1), Vector2i(1, 1),
+	Vector2i(0, 2), Vector2i(-1, 2), Vector2i(1, 2),
+	Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, 3),
+]
+
+
+## Try to lay a mine near [param tank_world]/[param facing] (a unit Vector2).
+## Picks the first placeable candidate tile behind the tank. Returns true if laid.
+func try_place_mine(tank_world: Vector2, facing: Vector2, level: int, from_player: bool) -> bool:
+	var origin := world_to_tile(tank_world)
+	for offset in MINE_PLACE_OFFSETS:
+		var tile: Vector2i = origin + _rotate_offset_by_facing(offset, facing)
+		if _mine_tile_placeable(tile):
+			_spawn_mine(tile, level, from_player)
+			return true
+	return false
+
+
+func has_mine(tile: Vector2i) -> bool:
+	return _mine_tiles.has(tile)
+
+
+func unregister_mine(tile: Vector2i, mine: Node) -> void:
+	if _mine_tiles.get(tile) == mine:
+		_mine_tiles.erase(tile)
+
+
+func _spawn_mine(tile: Vector2i, level: int, from_player: bool) -> void:
+	var mine_scene := preload("res://scripts/effects/mine.gd")
+	var mine = mine_scene.new()
+	mine.setup(tile, level, from_player, self)
+	mine.position = Vector2(tile.x * TILE_SIZE + TILE_SIZE / 2, tile.y * TILE_SIZE + TILE_SIZE / 2)
+	# Deferred: mines can be laid from inside a physics step (enemy AI move).
+	terrain_node.add_child.call_deferred(mine)
+	_mine_tiles[tile] = mine
+
+
+func _mine_tile_placeable(tile: Vector2i) -> bool:
+	if not _is_in_bounds(tile):
+		return false
+	if _mine_tiles.has(tile):
+		return false
+	# No mine on solid foreground (brick/steel) or water.
+	if _fg_tile_data.has(tile):
+		if LevelData.is_solid_tile(LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))):
+			return false
+	if _bg_tile_data.has(tile):
+		if LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.WATER:
+			return false
+	return true
+
+
+## Rotate a tank-local offset (authored for facing UP, where +y = "behind the
+## tank") into world tile-space for the tank's actual facing.
+func _rotate_offset_by_facing(offset: Vector2i, facing: Vector2) -> Vector2i:
+	var right := Vector2(-facing.y, facing.x)   # tank-local +x in world space
+	var world := right * float(offset.x) - facing * float(offset.y)
+	return Vector2i(roundi(world.x), roundi(world.y))
+
+
+func _clear_mines() -> void:
+	for tile in _mine_tiles.keys():
+		var mine = _mine_tiles[tile]
+		if is_instance_valid(mine):
+			mine.queue_free()
+	_mine_tiles.clear()
+
+
+func _tick_fire(delta: float) -> void:
+	if _fire_fields.is_empty():
+		return
+	for field in _fire_fields:
+		field.update(delta)
+	var alive: Array = []
+	for field in _fire_fields:
+		if not field.is_dead():
+			alive.append(field)
+	_fire_fields = alive
+
+
+## Ignite the ground where a fire bullet died. If the impact tile is already
+## burning, grow that field by one ring (rule 3); otherwise start a new size-4
+## field (rules 1/4/5/6). [param from_player] decides which side it can burn.
+func ignite_fire_patch(center: Vector2i, from_player: bool) -> void:
+	if _fire_index.has(center):
+		var field = _fire_index[center]
+		if field != null and not field.is_dead():
+			field.feed(from_player)
+			return
+	if _fire_fields.size() >= FIRE_FIELD_CAP:
+		return
+	var new_field := FireField.new(center, from_player, self)
+	_fire_fields.append(new_field)
+
+
+## Spawn one GroundFire tile node at [param world] (deferred; ignition often
+## fires from inside a physics callback). Returns null if the tile can't burn.
+func _spawn_fire_tile(world: Vector2i, from_player: bool, arm_delay: float) -> GroundFire:
+	if not _fire_tile_ignitable(world):
+		return null
+	var fire: GroundFire = _ground_fire_scene.new()
+	fire.setup(world, from_player, arm_delay)
+	fire.position = Vector2(world.x * TILE_SIZE + TILE_SIZE / 2, world.y * TILE_SIZE + TILE_SIZE / 2)
+	terrain_node.add_child.call_deferred(fire)
+	return fire
+
+
+func _fire_tile_ignitable(tile: Vector2i) -> bool:
+	if not _is_in_bounds(tile):
+		return false
+	# No fire on solid walls (brick/steel/super). Burned grass DOES burn — it's
+	# scorched ground now, no different from regular open dirt.
+	if _fg_tile_data.has(tile):
+		var cat := LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))
+		if LevelData.is_solid_tile(cat):
+			return false
+	# Water burns like regular ground; ice does NOT — a fire tile would hide/erase
+	# the frozen floor, so ice stays fire-free.
+	if _bg_tile_data.has(tile):
+		if LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.ICE:
+			return false
+	return true
+
+
+func _is_in_bounds(tile: Vector2i) -> bool:
+	return tile.x >= 0 and tile.x < GRID_WIDTH and tile.y >= 0 and tile.y < GRID_HEIGHT
+
+
+func _clear_fire() -> void:
+	for field in _fire_fields:
+		field.force_clear()
+	_fire_fields.clear()
+	_fire_index.clear()
+	for rec in _grass_fires:
+		if is_instance_valid(rec["node"]):
+			rec["node"].queue_free()
+	_grass_fires.clear()
+	_grass_index.clear()
+
+
+## Set a green grass tile alight: scorch it to grey immediately, spawn a neutral
+## grass fire that hurts both sides, and schedule it to creep to its neighbours.
+## Called by a fire field when it reaches grass, and by the spread step.
+func ignite_grass(tile: Vector2i, from_player: bool) -> void:
+	if not _is_green_grass(tile):
+		return
+	if _grass_index.has(tile):
+		return
+	if _grass_fires.size() >= GRASS_FIRE_CAP:
+		return
+	_convert_grass_to_burned(tile)  # green -> grey (permanent)
+	var fire: GroundFire = _ground_fire_scene.new()
+	fire.is_grass_fire = true
+	fire.setup(tile, from_player, GroundFire.ARM_DELAY)
+	fire.position = Vector2(tile.x * TILE_SIZE + TILE_SIZE / 2, tile.y * TILE_SIZE + TILE_SIZE / 2)
+	terrain_node.add_child.call_deferred(fire)
+	_grass_index[tile] = fire
+	_grass_fires.append({
+		"tile": tile, "node": fire, "from_player": from_player,
+		"burn": GRASS_BURN_TIME, "spread": GRASS_SPREAD_DELAY, "spread_done": false,
+	})
+
+
+func _tick_grass_fire(delta: float) -> void:
+	if _grass_fires.is_empty():
+		return
+	# Tick a snapshot so fires spawned by this frame's spread wait until next frame.
+	for rec in _grass_fires.duplicate():
+		rec["burn"] -= delta
+		if not rec["spread_done"]:
+			rec["spread"] -= delta
+			if rec["spread"] <= 0.0:
+				rec["spread_done"] = true
+				var t: Vector2i = rec["tile"]
+				for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					ignite_grass(t + d, rec["from_player"])
+	var alive: Array = []
+	for rec in _grass_fires:
+		if rec["burn"] > 0.0:
+			alive.append(rec)
+		else:
+			_grass_index.erase(rec["tile"])
+			if is_instance_valid(rec["node"]):
+				rec["node"].start_decay(randf() * 0.5)
+	_grass_fires = alive
+
+
+func _is_green_grass(tile: Vector2i) -> bool:
+	if not _fg_tile_data.has(tile):
+		return false
+	return LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.GRASS
+
+
+## Convert a green grass tile to its grey burned variant (code + 4), permanently.
+func _convert_grass_to_burned(tile: Vector2i) -> void:
+	if not _fg_tile_data.has(tile):
+		return
+	var data: Dictionary = _fg_tile_data[tile]
+	var new_code: int = data.get("code", 0) + 4  # GRASS 0x09-0x0C -> BURNED 0x0D-0x10
+	data["code"] = new_code
+	if data.has("sprite") and is_instance_valid(data["sprite"]):
+		# Burned variant keeps the same index as the green tile it replaces.
+		var btex := _grass_texture(new_code)
+		if btex:
+			data["sprite"].texture = btex
+
+
+# =====================================================================
+# Explosion Weapon — shockwave blast
+# =====================================================================
+
+## Detonate a shockwave at [param world_pos]. Called from an explosion bullet's
+## death (and, later, mines). Deferred add_child because detonation usually fires
+## from inside a physics callback (a bullet's collision).
+func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null) -> void:
+	var blast := ExplosionBlast.new()
+	blast.setup(level, from_player, self, neutral, exclude)
+	blast.global_position = world_pos
+	var container: Node = get_tree().get_first_node_in_group("effects_container")
+	if container == null:
+		container = terrain_node
+	container.add_child.call_deferred(blast)
+
+
+## Break destructible terrain within [param radius_half_tiles] of the blast center,
+## skipping wall-shadowed tiles. Soft bricks are destroyed; hard bricks step down
+## one HP; steel (iron/super), water and the base are left untouched.
+func explosion_destroy_terrain(center: Vector2i, radius_half_tiles: float) -> void:
+	var reach := int(ceil(radius_half_tiles / 2.0))
+	for dy in range(-reach, reach + 1):
+		for dx in range(-reach, reach + 1):
+			var tile := Vector2i(center.x + dx, center.y + dy)
+			if not _is_in_bounds(tile) or not _fg_tile_data.has(tile):
+				continue
+			var dist_half_tiles := sqrt(float(dx * dx + dy * dy)) * 2.0
+			if dist_half_tiles > radius_half_tiles:
+				continue
+			if not _tile_line_of_sight(center, tile):
+				continue
+			var cat := LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))
+			match cat:
+				LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+					_remove_fg_tile(tile)
+					_brick_damage.erase(tile)
+				LevelData.TileCategory.HARD_BRICK:
+					_damage_hard_brick(tile)
+				_:
+					pass  # iron/super/other: fireproof to the blast
+
+
+## True if no solid foreground tile sits strictly between the two world points
+## (a straight-line grid raycast). Used for blast falloff shadowing.
+func has_line_of_sight(from_world: Vector2, to_world: Vector2) -> bool:
+	return _tile_line_of_sight(world_to_tile(from_world), world_to_tile(to_world))
+
+
+func _tile_line_of_sight(from_tile: Vector2i, to_tile: Vector2i) -> bool:
+	var x0: int = from_tile.x
+	var y0: int = from_tile.y
+	var dx: int = absi(to_tile.x - x0)
+	var dy: int = -absi(to_tile.y - y0)
+	var sx: int = 1 if x0 < to_tile.x else -1
+	var sy: int = 1 if y0 < to_tile.y else -1
+	var err: int = dx + dy
+	while true:
+		if Vector2i(x0, y0) == to_tile:
+			return true
+		if Vector2i(x0, y0) != from_tile and _fg_tile_data.has(Vector2i(x0, y0)):
+			var cat := LevelData.get_tile_category(_fg_tile_data[Vector2i(x0, y0)].get("code", 0))
+			if LevelData.is_solid_tile(cat):
+				return false
+		var e2: int = 2 * err
+		if e2 >= dy:
+			err += dy
+			x0 += sx
+		if e2 <= dx:
+			err += dx
+			y0 += sy
+	return true

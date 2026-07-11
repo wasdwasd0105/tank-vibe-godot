@@ -46,7 +46,7 @@ text = ">"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OptionNewGame" type="Label" parent="."]
+[node name="OptionNewGame" type="Label" parent="." unique_id=725956296]
 layout_mode = 1
 offset_left = 600.0
 offset_top = 400.0
@@ -57,7 +57,7 @@ text = "NEW GAME"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OptionLoadGame" type="Label" parent="."]
+[node name="OptionLoadGame" type="Label" parent="." unique_id=1790774012]
 layout_mode = 1
 offset_left = 600.0
 offset_top = 480.0
@@ -68,7 +68,7 @@ text = "LOAD GAME"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OptionSettings" type="Label" parent="."]
+[node name="OptionSettings" type="Label" parent="." unique_id=2142549901]
 layout_mode = 1
 offset_left = 600.0
 offset_top = 560.0
@@ -79,20 +79,21 @@ text = "SETTINGS"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="SettingsTitle" type="Label" parent="."]
+[node name="SettingsTitle" type="Label" parent="." unique_id=607411067]
+visible = false
 layout_mode = 1
 offset_left = 400.0
 offset_top = 340.0
 offset_right = 1200.0
 offset_bottom = 390.0
-theme_override_font_sizes/font_size = 40
 theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+theme_override_font_sizes/font_size = 40
 text = "< SETTINGS >"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsMap" type="Label" parent="."]
+[node name="SettingsMap" type="Label" parent="." unique_id=1664368989]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 400.0
@@ -102,9 +103,9 @@ theme_override_font_sizes/font_size = 32
 text = "MAP: (none)"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsTheme" type="Label" parent="."]
+[node name="SettingsTheme" type="Label" parent="." unique_id=1387229286]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 460.0
@@ -114,9 +115,9 @@ theme_override_font_sizes/font_size = 32
 text = "THEME: Default"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsCredits" type="Label" parent="."]
+[node name="SettingsCredits" type="Label" parent="." unique_id=524373801]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 520.0
@@ -126,9 +127,9 @@ theme_override_font_sizes/font_size = 32
 text = "CREDITS: 3"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsDifficulty" type="Label" parent="."]
+[node name="SettingsDifficulty" type="Label" parent="." unique_id=1670485766]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 580.0
@@ -138,9 +139,9 @@ theme_override_font_sizes/font_size = 32
 text = "DIFFICULTY: 1"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsP1Keys" type="Label" parent="."]
+[node name="SettingsP1Keys" type="Label" parent="." unique_id=653215379]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 640.0
@@ -150,9 +151,9 @@ theme_override_font_sizes/font_size = 32
 text = "P1 KEYS"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsP2Keys" type="Label" parent="."]
+[node name="SettingsP2Keys" type="Label" parent="." unique_id=450770186]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 700.0
@@ -162,9 +163,9 @@ theme_override_font_sizes/font_size = 32
 text = "P2 KEYS"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="SettingsBack" type="Label" parent="."]
+[node name="SettingsBack" type="Label" parent="." unique_id=504315192]
+visible = false
 layout_mode = 1
 offset_left = 600.0
 offset_top = 760.0
@@ -174,22 +175,22 @@ theme_override_font_sizes/font_size = 32
 text = "BACK"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindTitle" type="Label" parent="."]
+[node name="KeybindTitle" type="Label" parent="." unique_id=156850420]
+visible = false
 layout_mode = 1
 offset_left = 400.0
 offset_top = 300.0
 offset_right = 1200.0
 offset_bottom = 360.0
-theme_override_font_sizes/font_size = 40
 theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+theme_override_font_sizes/font_size = 40
 text = "< P1 KEYS >"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindUp" type="Label" parent="."]
+[node name="KeybindUp" type="Label" parent="." unique_id=519965947]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 380.0
@@ -199,9 +200,9 @@ theme_override_font_sizes/font_size = 32
 text = "UP:  W"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindDown" type="Label" parent="."]
+[node name="KeybindDown" type="Label" parent="." unique_id=111793393]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 425.0
@@ -211,9 +212,9 @@ theme_override_font_sizes/font_size = 32
 text = "DOWN:  S"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindLeft" type="Label" parent="."]
+[node name="KeybindLeft" type="Label" parent="." unique_id=204953652]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 470.0
@@ -223,9 +224,9 @@ theme_override_font_sizes/font_size = 32
 text = "LEFT:  A"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindRight" type="Label" parent="."]
+[node name="KeybindRight" type="Label" parent="." unique_id=1109804071]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 515.0
@@ -235,9 +236,9 @@ theme_override_font_sizes/font_size = 32
 text = "RIGHT:  D"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindShoot" type="Label" parent="."]
+[node name="KeybindShoot" type="Label" parent="." unique_id=703167193]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 560.0
@@ -247,9 +248,9 @@ theme_override_font_sizes/font_size = 32
 text = "FIRE 1:  T"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindShoot2" type="Label" parent="."]
+[node name="KeybindShoot2" type="Label" parent="." unique_id=2032667638]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 605.0
@@ -259,9 +260,9 @@ theme_override_font_sizes/font_size = 32
 text = "FIRE 2:  Y"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindReset" type="Label" parent="."]
+[node name="KeybindReset" type="Label" parent="." unique_id=2037512997]
+visible = false
 layout_mode = 1
 offset_left = 500.0
 offset_top = 670.0
@@ -271,9 +272,9 @@ theme_override_font_sizes/font_size = 32
 text = "RESET DEFAULTS"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindBack" type="Label" parent="."]
+[node name="KeybindBack" type="Label" parent="." unique_id=509522914]
+visible = false
 layout_mode = 1
 offset_left = 600.0
 offset_top = 715.0
@@ -283,20 +284,18 @@ theme_override_font_sizes/font_size = 32
 text = "BACK"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
-[node name="KeybindPrompt" type="Label" parent="."]
+[node name="KeybindPrompt" type="Label" parent="." unique_id=561887713]
+visible = false
 layout_mode = 1
 offset_left = 400.0
 offset_top = 790.0
 offset_right = 1200.0
 offset_bottom = 830.0
+theme_override_colors/font_color = Color(1, 1, 0.3, 1)
 theme_override_font_sizes/font_size = 28
-theme_override_colors/font_color = Color(1.0, 1.0, 0.3, 1)
-text = ""
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
 
 [node name="Controls" type="Label" parent="." unique_id=1639186135]
 layout_mode = 1

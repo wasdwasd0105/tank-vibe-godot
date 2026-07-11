@@ -66,19 +66,28 @@ func _spawn_player(player_id: int) -> void:
 	var player: PlayerTank = player_scene.instantiate()
 	player.player_id = player_id
 
-	# Spawn positions: P1 bottom-left area, P2 bottom-right area
-	# Tanks are 2x2 tiles, centered on even tile boundaries
-	var pf: Vector2 = level_manager.global_position
-	var spawn_x: float
-	if player_id == 0:
-		spawn_x = pf.x + 17 * 32 + 32  # Grid columns 17-18 center (left of eagle)
-	else:
-		spawn_x = pf.x + 21 * 32 + 32  # Grid columns 21-22 center (right of eagle)
-
-	var spawn_y: float = pf.y + 28 * 32 + 32  # Grid rows 28-29 center
-
-	player.global_position = Vector2(spawn_x, spawn_y)
+	var spawn_pos := _player_revive_position(player_id)
+	player.global_position = spawn_pos
 	players_container.add_child(player)
+	# The tank materializes only after its spawn burst finishes playing.
+	player.begin_materialize(SpawnBurst.DURATION)
+	SpawnBurst.spawn_at(get_tree(), spawn_pos)
+
+## Where a player revives: the 2x2 tile block right beside the base (P1 left of the
+## eagle, P2 right). If those tiles are walled in, fall back to the nearest clear
+## block. Returns the world-space center of the resolved block.
+func _player_revive_position(player_id: int) -> Vector2:
+	# Eagle is 2x2; world_to_tile(center) lands on its bottom-right tile, so -1,-1
+	# gives the top-left tile (e.g. cols 19-20 -> top-left (19,28)).
+	var eagle_tl: Vector2i = level_manager.world_to_tile(eagle.global_position) - Vector2i(1, 1)
+	var ideal: Vector2i
+	if player_id == 0:
+		ideal = Vector2i(eagle_tl.x - 2, eagle_tl.y)  # 2x2 immediately left of the eagle
+	else:
+		ideal = Vector2i(eagle_tl.x + 2, eagle_tl.y)  # 2x2 immediately right of the eagle
+	var tl: Vector2i = level_manager.find_clear_area(ideal, Vector2i(2, 2))
+	# The 2x2 block center sits at the shared corner of its four tiles.
+	return level_manager.tile_to_world(tl) + Vector2(16, 16)
 
 func get_level_manager() -> LevelManager:
 	return level_manager

@@ -14,6 +14,28 @@ var _visual_sprites: Array[Sprite2D] = []
 var _animation_timer: float = 0.0
 var _current_frame: int = 0
 
+# How much damage this bullet deals to an opposing bullet it crosses (rule 6).
+# A bullet dies when its damage is reduced to 0 or below.
+var damage: int = 1
+
+# Fire weapon: this bullet leaves a burning patch wherever it dies.
+var ignites_ground: bool = false
+var max_range: float = -1.0   # px; <= 0 means unlimited
+var _traveled: float = 0.0
+
+# Explosion weapon: this bullet detonates a shockwave wherever it dies.
+var explodes: bool = false
+var explosion_level: int = 0
+var _direct_hit_tank: Node2D = null  # tank the explosion bullet struck (excluded from its own wave)
+
+# AP weapon: a slow-then-fast shell whose "damage" is a pool it spends piercing
+# through tanks and walls (it keeps flying until the pool is empty). accel/max_speed
+# make it accelerate after launch.
+var pierces: bool = false
+var accel: float = 0.0
+var max_speed: float = 0.0
+const SHIELD_BREAK_THRESHOLD: int = 6  # AP pool needed to strip a moon shield
+
 var _level_manager: LevelManager = null
 static var _bullet_texture_cache: Dictionary = {}
 
@@ -21,6 +43,12 @@ const BULLET_LENGTH: float = 10.0
 const BULLET_THICKNESS: float = 10.0
 const LINE_WIDTH: float = 2.0
 const FRAME_DURATION: float = 0.5
+# Per-style animation frame duration (falls back to FRAME_DURATION). Fire
+# flickers fast to read as a live flame.
+const FRAME_DURATIONS: Dictionary = {
+	"fire": 0.05,
+	"explosion": 0.05,
+}
 const BULLET_VISUAL_SCALE: float = 2.0
 const BULLET_TEXTURE_PATHS: Dictionary = {
 	"regular": [
@@ -30,6 +58,17 @@ const BULLET_TEXTURE_PATHS: Dictionary = {
 	"rapid": [
 		"res://assets/sprites/bullets/rapid/rapid_1.png",
 		"res://assets/sprites/bullets/rapid/rapid_2.png",
+	],
+	"fire": [
+		"res://assets/sprites/bullets/fire/fire_1.png",
+		"res://assets/sprites/bullets/fire/fire_2.png",
+	],
+	"explosion": [
+		"res://assets/sprites/bullets/explosion/explosion_dir1.png",
+	],
+	"ap": [
+		"res://assets/sprites/bullets/ap/ap_1.png",
+		"res://assets/sprites/bullets/ap/ap_2.png",
 	],
 }
 const BG_KEY_R: float = 248.0 / 255.0
@@ -100,14 +139,26 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_animation_timer += delta
+	var frame_duration: float = FRAME_DURATIONS.get(visual_style, FRAME_DURATION)
 	var active_textures := _get_active_bullet_textures()
-	if active_textures.size() > 1 and _animation_timer >= FRAME_DURATION:
-		_animation_timer -= FRAME_DURATION
+	if active_textures.size() > 1 and _animation_timer >= frame_duration:
+		_animation_timer -= frame_duration
 		_current_frame = (_current_frame + 1) % active_textures.size()
 		_update_visual_frame()
 
+	# AP shells launch slow and accelerate to a high top speed.
+	if accel > 0.0 and max_speed > 0.0:
+		speed = minf(speed + accel * delta, max_speed)
+
 	var movement: Vector2 = direction * speed * delta
 	position += movement
+
+	# Fire bullets drop (and ignite) once they exceed their range.
+	if max_range > 0.0:
+		_traveled += movement.length()
+		if _traveled >= max_range:
+			_destroy()
+			return
 
 	if position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992:
 		_destroy()
@@ -151,6 +202,14 @@ func _check_tile_collision() -> void:
 			solid_tiles.append(tile_pos)
 
 	if should_destroy:
+		# AP shells drill through walls, spending their pool per tile, and keep
+		# flying as long as the pool survives.
+		if pierces:
+			damage = _level_manager.ap_drill_tiles(solid_tiles, damage, direction)
+			if damage <= 0:
+				_destroy()
+			return
+
 		for tile_pos in solid_tiles:
 			if not _level_manager._fg_tile_data.has(tile_pos):
 				continue
@@ -175,20 +234,76 @@ func _on_body_entered(body: Node2D) -> void:
 	if body == owner_tank:
 		return
 
+	if pierces:
+		_ap_on_body(body)
+		return
+
 	if is_player_bullet and body is EnemyTank:
 		if body.is_bullet_blocked(direction):
 			_destroy()
 			return
-		body.take_damage(direction)
+		if explodes:
+			_explode_direct_hit(body)
+		else:
+			body.take_damage(direction)
 		_destroy()
 	elif not is_player_bullet and body is PlayerTank:
 		if body.is_bullet_blocked(direction):
 			_destroy()
 			return
 		if not body.is_invincible:
-			body.take_damage()
+			if explodes:
+				_explode_direct_hit(body)
+			else:
+				body.take_damage()
 		_destroy()
 	elif body.is_in_group("eagle"):
+		Events.base_destroyed.emit()
+		_destroy()
+	elif body.is_in_group("boundary"):
+		_destroy()
+
+## An explosion bullet's DIRECT hit: deal its `damage` as HP (no retaliation),
+## then the caller detonates the wave.
+func _explode_direct_hit(tank: Node2D) -> void:
+	_direct_hit_tank = tank  # its own wave should not double-hit it
+	for i in range(damage):
+		if is_instance_valid(tank) and tank.health > 0:
+			tank.take_damage()
+
+## AP shell hitting a body: spend the damage pool, pierce through dead tanks.
+func _ap_on_body(body: Node2D) -> void:
+	var tank: BaseTank = null
+	if is_player_bullet and body is EnemyTank:
+		tank = body
+	elif not is_player_bullet and body is PlayerTank:
+		tank = body
+
+	if tank:
+		# An invincible tank is fully untouchable: the shell is absorbed WITHOUT
+		# stripping its moon shield or dealing damage. (Check before the shield.)
+		if tank is PlayerTank and tank.is_invincible:
+			_destroy()
+			return
+		# Moon-shield front hit: a strong enough pool (>= threshold) strips the
+		# shield (tank unhurt + grace); a worn-down shell is just absorbed.
+		if tank.is_bullet_blocked(direction):
+			if damage >= SHIELD_BREAK_THRESHOLD:
+				tank.break_moon_shield_grace()
+			_destroy()
+			return
+		# Spend min(pool, tankHP): the tank takes that much, the pool drops by it.
+		var dealt: int = mini(damage, tank.health)
+		for i in range(dealt):
+			if is_instance_valid(tank) and tank.health > 0:
+				tank.take_damage()  # no direction -> no retaliation while being drilled
+		damage -= dealt
+		if damage <= 0:
+			_destroy()
+		# else: the tank died and the shell flies on through it (pass-through)
+		return
+
+	if body.is_in_group("eagle"):
 		Events.base_destroyed.emit()
 		_destroy()
 	elif body.is_in_group("boundary"):
@@ -199,9 +314,29 @@ func _on_area_entered(area: Area2D) -> void:
 		return
 	if area is Bullet:
 		var other_bullet := area as Bullet
-		if is_player_bullet != other_bullet.is_player_bullet:
-			other_bullet._destroy()
+		if other_bullet._destroyed:
+			return
+		if is_player_bullet == other_bullet.is_player_bullet:
+			return  # same side — bullets pass through each other
+
+		# Each bullet subtracts the other's damage (rule 6). Normal bullets die
+		# only when reduced to <= 0, so two normal bullets annihilate 1-for-1.
+		# Special bullets (fire/explosion) always drop on contact and run their
+		# death effect (ignite / detonate), even if their damage survives.
+		var my_dmg := damage
+		var their_dmg := other_bullet.damage
+		take_bullet_damage(their_dmg)
+		other_bullet.take_bullet_damage(my_dmg)
+		if (ignites_ground or explodes) and not _destroyed:
 			_destroy()
+		if (other_bullet.ignites_ground or other_bullet.explodes) and not other_bullet._destroyed:
+			other_bullet._destroy()
+
+## Reduce this bullet's damage by [param amount]; destroy it if it hits 0.
+func take_bullet_damage(amount: int) -> void:
+	damage -= amount
+	if damage <= 0:
+		_destroy()
 
 func _destroy() -> void:
 	if _destroyed:
@@ -209,6 +344,24 @@ func _destroy() -> void:
 	_destroyed = true
 	if owner_tank and is_instance_valid(owner_tank):
 		owner_tank.on_bullet_destroyed()
+		if ignites_ground:
+			owner_tank.on_fire_bullet_destroyed()
+		if explodes:
+			owner_tank.on_explosion_bullet_destroyed()
+		if pierces:
+			owner_tank.on_ap_bullet_destroyed()
+
+	# Fire bullets ignite the ground wherever they die — range end, wall/tank/bullet
+	# hit, or map border. If they land on already-burning ground the field grows.
+	if ignites_ground and _level_manager:
+		_level_manager.ignite_fire_patch(
+			_level_manager.world_to_tile(global_position), is_player_bullet)
+
+	# Explosion bullets detonate a shockwave wherever they die (a directly-hit
+	# tank already took the direct hit, so it's excluded from the wave).
+	if explodes and _level_manager:
+		_level_manager.spawn_explosion_blast(
+			global_position, explosion_level, is_player_bullet, false, _direct_hit_tank)
 
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var effects_container = get_tree().get_first_node_in_group("effects_container")

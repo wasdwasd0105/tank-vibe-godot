@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://captest01"]
+
+[ext_resource type="Script" path="res://scripts/tests/ap_test.gd" id="1_ap"]
+
+[node name="APTest" type="Node"]
+script = ExtResource("1_ap")

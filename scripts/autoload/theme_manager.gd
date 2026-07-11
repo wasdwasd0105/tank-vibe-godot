@@ -21,6 +21,7 @@ var _tile_textures: Dictionary = {}           # code (int) -> Texture2D
 var _partial_brick_cache: Dictionary = {}     # mask (int) or "mask_variant" (String) -> Texture2D
 var _tank_textures: Dictionary = {}           # "p1","p2","e1"-"e24" -> Texture2D
 var _addon_textures: Dictionary = {}         # "moon-shield","anti-water",etc -> Texture2D
+var _addon_frames: Dictionary = {}           # "anti-water","memory-save" -> Array[Texture2D] (4-frame anim)
 
 # =====================================================================
 # Procedural color palettes (moved from level_manager.gd)
@@ -135,6 +136,7 @@ func load_theme(theme_name: String) -> void:
 	_partial_brick_cache.clear()
 	_tank_textures.clear()
 	_addon_textures.clear()
+	_addon_frames.clear()
 
 	if _theme_type == "procedural":
 		_generate_procedural_textures()
@@ -143,6 +145,7 @@ func load_theme(theme_name: String) -> void:
 
 	_load_tank_textures()
 	_load_addon_textures()
+	_load_addon_frames()
 	theme_changed.emit(theme_name)
 
 ## Full code→Texture2D dictionary (for level_manager)
@@ -455,6 +458,33 @@ func _load_addon_textures() -> void:
 			_addon_textures[addon_name] = tex
 		else:
 			push_warning("ThemeManager: Failed to load addon texture: %s" % path)
+
+## Addon animations from Tank_L (anti-water row 1, memory-save row 4): 4 frames each,
+## already keyed to transparent, so load them preserving their alpha.
+const ADDON_ANIM_NAMES: Array = ["anti-water", "memory-save"]
+const ADDON_ANIM_FRAME_COUNT: int = 4
+
+func _load_addon_frames() -> void:
+	for addon_name in ADDON_ANIM_NAMES:
+		var frames: Array = []
+		for f in range(1, ADDON_ANIM_FRAME_COUNT + 1):
+			var tex := _load_texture_keep_alpha(ADDONS_DIR + "%s_%d.png" % [addon_name, f])
+			if tex:
+				frames.append(tex)
+		if frames.size() == ADDON_ANIM_FRAME_COUNT:
+			_addon_frames[addon_name] = frames
+
+func _load_texture_keep_alpha(path: String) -> Texture2D:
+	if ResourceLoader.exists(path):
+		return load(path) as Texture2D
+	var img := Image.new()
+	if img.load(ProjectSettings.globalize_path(path)) == OK:
+		return ImageTexture.create_from_image(img)
+	return null
+
+## Returns the 4-frame animation for an addon (anti-water / memory-save), or [].
+func get_addon_frames(addon_name: String) -> Array:
+	return _addon_frames.get(addon_name, [])
 
 # =====================================================================
 # Procedural texture generation (moved from level_manager.gd)

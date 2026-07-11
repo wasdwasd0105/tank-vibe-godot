@@ -134,6 +134,8 @@ func _on_body_entered(body: Node2D) -> void:
 func _apply_effect(player: PlayerTank) -> void:
 	# Grant 1-second pickup invincibility
 	player.activate_pickup_invincibility()
+	# Any cookie clears a mine-inflicted slow.
+	player.clear_mine_slow()
 
 	match cookie_type:
 		# utility_power_up

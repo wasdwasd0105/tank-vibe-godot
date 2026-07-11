@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cfiretest01"]
+
+[ext_resource type="Script" path="res://scripts/tests/fire_test.gd" id="1_firetest"]
+
+[node name="FireTest" type="Node"]
+script = ExtResource("1_firetest")

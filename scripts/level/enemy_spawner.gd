@@ -86,6 +86,9 @@ func _spawn_enemy() -> void:
 		get_tree().current_scene.add_child(enemy)
 	enemy.global_position = spawn_pos
 	enemy.tree_exited.connect(_on_enemy_removed)
+	# The tank materializes only after its spawn burst finishes playing.
+	enemy.begin_materialize(SpawnBurst.DURATION)
+	SpawnBurst.spawn_at(get_tree(), spawn_pos)
 
 	_total_spawned += 1
 	_active_enemies += 1

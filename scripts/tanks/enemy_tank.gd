@@ -10,7 +10,6 @@ var special_weapon_level: int = 0
 var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
-var _damage_flash_timer: float = 0.0
 var _alive_time: float = 0.0  # Time since spawn (for initial downward push)
 var _collision_cooldown: float = 0.0  # Prevents eagle bias right after a collision
 var _near_eagle: bool = false  # True when within attack range of eagle
@@ -20,7 +19,6 @@ var _attack_wall_dir: Vector2 = Vector2.ZERO  # Direction of wall we're shooting
 var _attack_wall_timer: float = 0.0  # Time left to keep attacking a wall
 var _turn_cooldown: float = 0.0  # Prevents rapid direction changes after collision
 var _rapid_special_fire_step: int = 0
-const DAMAGE_FLASH_DURATION: float = 0.15
 const TURN_COOLDOWN_DURATION: float = 0.6  # Minimum seconds between collision-triggered turns
 const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
 const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias after collision
@@ -29,6 +27,24 @@ const WATER_AVOID_DURATION: float = 4.0  # Seconds to commit to going around wat
 const ATTACK_WALL_DURATION: float = 3.0  # Seconds to commit to shooting a wall
 const SPECIAL_FIRE_CHANCE: float = 0.5
 const ENEMY_REGULAR_FIRE_COOLDOWN: float = 0.3
+# Fire is persistent area-denial, so enemies use it sparingly: a lower pick
+# chance and a long gap between fire shots (the player's fast fire cadence would
+# blanket the map). Tune these if enemy fire feels too weak/strong.
+const ENEMY_FIRE_CHANCE: float = 0.3
+const ENEMY_FIRE_COOLDOWN_MIN: float = 2.2
+const ENEMY_FIRE_COOLDOWN_MAX: float = 3.5
+# Explosion is powerful area-denial + terrain damage — enemies use it sparingly.
+const ENEMY_EXPLOSION_CHANCE: float = 0.35
+const ENEMY_EXPLOSION_COOLDOWN_MIN: float = 2.0
+const ENEMY_EXPLOSION_COOLDOWN_MAX: float = 3.5
+
+const ENEMY_MINE_CHANCE: float = 0.25
+const ENEMY_MINE_COOLDOWN_MIN: float = 2.5
+const ENEMY_MINE_COOLDOWN_MAX: float = 4.5
+
+const ENEMY_AP_CHANCE: float = 0.4
+const ENEMY_AP_COOLDOWN_MIN: float = 1.5
+const ENEMY_AP_COOLDOWN_MAX: float = 2.8
 
 # --- Addon system ---
 const ADDON_MOON_SHIELD := "moon-shield"
@@ -55,11 +71,12 @@ var has_moon_shield: bool = false
 var has_anti_ice: bool = false
 var _shield_sprite: Sprite2D = null  # Reference for front-positioned shield
 var _addon_sprites: Array = []  # All addon Sprite2D nodes for rotation
+var _frost_shown: bool = false  # freeze-frost overlay currently on (tracks GameManager.enemies_frozen)
 const SHIELD_FRONT_OFFSET: float = 5.0  # Pixels from center toward front
 
 # Per-addon size multiplier (relative to TANK_SIZE) and front offset override
 const ADDON_CONFIG: Dictionary = {
-	"moon-shield":  { "scale": 0.9, "offset": 5.0 },
+	"moon-shield":  { "scale": 1.0, "offset": 10.0 },  # hood arc over the front, like the original
 	"anti-water":   { "scale": 1.0, "offset": 5.0 },
 	"anti-ice":     { "scale": 1.0, "offset": 5.0 },
 	"memory-save":  { "scale": 1.0, "offset": 5.0 },
@@ -109,7 +126,7 @@ func _ready() -> void:
 	points_value = stats["points"]
 	special_weapon_type = CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none")
 	special_weapon_level = CookieData.get_enemy_weapon_level(tank_type_id, GameManager.difficulty)
-	if special_weapon_type == "rapid":
+	if special_weapon_type == "rapid" or special_weapon_type == "fire" or special_weapon_type == "explosion" or special_weapon_type == "ap":
 		max_bullets = 12
 	current_direction = Vector2.DOWN
 	_direction_change_timer = randf_range(1.0, 3.0)
@@ -135,7 +152,27 @@ func _ready() -> void:
 	_apply_addons()
 	_update_sprite_direction()
 
+func _process(delta: float) -> void:
+	super(delta)  # base: addons, damage flash, state-overlay frame tick
+	_sync_frost_overlay()
+
+## Show the frost wreath (Tank_T row 2) while the global freeze is active, hide
+## it otherwise. Frame advance is handled by the base state-overlay tick.
+func _sync_frost_overlay() -> void:
+	if GameManager.enemies_frozen and not _frost_shown:
+		show_state_overlay(BaseTank.get_freeze_frames())
+		_frost_shown = true
+	elif not GameManager.enemies_frozen and _frost_shown:
+		hide_state_overlay()
+		_frost_shown = false
+
 func _physics_process(delta: float) -> void:
+	if is_materializing:
+		velocity = Vector2.ZERO
+		return
+	if is_flying:
+		_update_flying(delta)
+		return
 	if GameManager.enemies_frozen:
 		velocity = Vector2.ZERO
 		return
@@ -150,7 +187,8 @@ func _physics_process(delta: float) -> void:
 		# Attack the player: shoot rapidly
 		if _shoot_cooldown <= 0:
 			_fire_weapon(0.3, 0.6)
-	velocity = Vector2.ZERO if player_blocking else current_direction * move_speed
+	var speed_factor := MINE_SLOW_FACTOR if is_mine_slowed else 1.0
+	velocity = Vector2.ZERO if player_blocking else current_direction * move_speed * speed_factor
 
 	# Players should block enemies logically, but enemies should not physically push players.
 	var collided := move_and_slide()
@@ -163,16 +201,7 @@ func _physics_process(delta: float) -> void:
 			_turn_cooldown = TURN_COOLDOWN_DURATION
 			_change_direction()
 
-	# Damage flash effect (any tank that was recently hit)
-	if _damage_flash_timer > 0:
-		_damage_flash_timer -= delta
-		if sprite:
-			if fmod(_damage_flash_timer, 0.1) < 0.05:
-				sprite.modulate = Color.RED
-			else:
-				sprite.modulate = Color.WHITE
-		if _damage_flash_timer <= 0 and sprite:
-			sprite.modulate = Color.WHITE
+	# (Damage flash is handled centrally in BaseTank._process.)
 
 func _is_player_ahead() -> bool:
 	## Check if a player tank is blocking movement in the current direction.
@@ -496,6 +525,27 @@ func _fire_weapon(regular_min: float, regular_max: float) -> void:
 			_shoot_cooldown = config.get("cooldown", regular_min)
 			return
 
+	if _has_fire_special() and randf() < ENEMY_FIRE_CHANCE:
+		if _shoot_special_fire():
+			# Long, self-paced gap — NOT the player's rapid fire cooldown.
+			_shoot_cooldown = randf_range(ENEMY_FIRE_COOLDOWN_MIN, ENEMY_FIRE_COOLDOWN_MAX)
+			return
+
+	if _has_explosion_special() and randf() < ENEMY_EXPLOSION_CHANCE:
+		if _shoot_special_explosion():
+			_shoot_cooldown = randf_range(ENEMY_EXPLOSION_COOLDOWN_MIN, ENEMY_EXPLOSION_COOLDOWN_MAX)
+			return
+
+	if _has_mine_special() and randf() < ENEMY_MINE_CHANCE:
+		if _lay_mine_special():
+			_shoot_cooldown = randf_range(ENEMY_MINE_COOLDOWN_MIN, ENEMY_MINE_COOLDOWN_MAX)
+			return
+
+	if _has_ap_special() and randf() < ENEMY_AP_CHANCE:
+		if _shoot_special_ap():
+			_shoot_cooldown = randf_range(ENEMY_AP_COOLDOWN_MIN, ENEMY_AP_COOLDOWN_MAX)
+			return
+
 	if not can_shoot or active_bullets >= max_bullets:
 		return
 
@@ -505,6 +555,66 @@ func _fire_weapon(regular_min: float, regular_max: float) -> void:
 
 func _has_rapid_special() -> bool:
 	return special_weapon_type == "rapid"
+
+func _has_fire_special() -> bool:
+	return special_weapon_type == "fire"
+
+func _has_explosion_special() -> bool:
+	return special_weapon_type == "explosion"
+
+func _has_mine_special() -> bool:
+	return special_weapon_type == "mine"
+
+func _lay_mine_special() -> bool:
+	# Enemy mine level from its special-weapon level (0-3 -> mine level 1-4).
+	return _place_mine(clampi(special_weapon_level + 1, 1, 4))
+
+func _has_ap_special() -> bool:
+	return special_weapon_type == "ap"
+
+func _shoot_special_ap() -> bool:
+	if not _has_ap_special() or not can_shoot:
+		return false
+	var config: Dictionary = CookieData.get_weapon_fire_config("ap", special_weapon_level)
+	if config.is_empty():
+		return false
+	if active_ap_bullets >= int(config.get("max_in_flight", 2)):
+		return false
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
+	_begin_shot()
+	_spawn_ap_bullet(config)
+	return true
+
+## AP shell stripped this enemy's moon shield: remove it (no invuln grace for enemies).
+func break_moon_shield_grace() -> void:
+	if has_moon_shield:
+		_remove_addon(ADDON_MOON_SHIELD)
+
+func _shoot_special_explosion() -> bool:
+	if not _has_explosion_special() or not can_shoot:
+		return false
+	var config: Dictionary = CookieData.get_weapon_fire_config("explosion", special_weapon_level)
+	if config.is_empty():
+		return false
+	if active_explosion_bullets >= int(config.get("max_in_flight", 2)):
+		return false
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.45))
+	_begin_shot()
+	_spawn_explosion_bullet(config)
+	return true
+
+func _shoot_special_fire() -> bool:
+	if not _has_fire_special() or not can_shoot:
+		return false
+	var config: Dictionary = CookieData.get_weapon_fire_config("fire", special_weapon_level)
+	if config.is_empty():
+		return false
+	if active_fire_bullets >= int(config.get("max_in_flight", 3)):
+		return false
+	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.27))
+	_begin_shot()
+	_spawn_fire_bullet(config)
+	return true
 
 func _shoot_special_rapid() -> bool:
 	if not _has_rapid_special() or not can_shoot or active_bullets >= max_bullets:
@@ -551,20 +661,29 @@ func _apply_addons() -> void:
 		return
 	addons = TYPE_ADDONS[tank_type_id].duplicate()
 	for addon_name in addons:
-		# Add visual overlay
-		var tex := ThemeManager.get_addon_texture(addon_name)
+		# Add visual overlay (prefer a 4-frame animation for anti-water / memory-save).
+		var frames: Array = ThemeManager.get_addon_frames(addon_name)
+		var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
 		if tex:
 			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
 			var addon_sprite := Sprite2D.new()
 			addon_sprite.texture = tex
+			addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
 			var tex_size := tex.get_size()
 			var addon_size: float = TANK_SIZE * cfg["scale"]
 			addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
 			add_child(addon_sprite)
-			move_child(addon_sprite, 0)  # Insert before Sprite2D so addon draws behind tank body
-			_addon_sprites.append(addon_sprite)
+			if not frames.is_empty():
+				register_animated_addon(addon_sprite, frames)
+			# Draw order via sibling order (all at z 0), back -> front:
+			# other addons -> moon shield -> tank body (on top, fully visible).
+			var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
 			if addon_name == ADDON_MOON_SHIELD:
+				move_child(addon_sprite, sprite_idx)  # just behind the tank body
 				_shield_sprite = addon_sprite
+			else:
+				move_child(addon_sprite, 0)  # behind everything
+			_addon_sprites.append(addon_sprite)
 		# Apply gameplay effects
 		match addon_name:
 			ADDON_MOON_SHIELD:

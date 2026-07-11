@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cshieldblast"]
+
+[ext_resource type="Script" path="res://scripts/tests/shield_blast_test.gd" id="1_sb"]
+
+[node name="ShieldBlastTest" type="Node"]
+script = ExtResource("1_sb")

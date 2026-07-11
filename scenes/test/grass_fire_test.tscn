@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cgrassfire1"]
+
+[ext_resource type="Script" path="res://scripts/tests/grass_fire_test.gd" id="1_gf"]
+
+[node name="GrassFireTest" type="Node"]
+script = ExtResource("1_gf")
