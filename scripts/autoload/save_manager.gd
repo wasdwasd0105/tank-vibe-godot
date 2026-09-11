@@ -73,6 +73,27 @@ func delete_save(filepath: String) -> bool:
 			push_warning("SaveManager: Failed to delete save file: " + filepath)
 	return false
 
+## Import an original Tank.exe save (.sav) as a new .tsave in the save directory.
+## The new save is named after the source file. Returns
+## {"ok": true, "filepath": ..., "save_name": ...} or {"ok": false, "error": ...}.
+func import_original_save(source_path: String) -> Dictionary:
+	var bytes := FileAccess.get_file_as_bytes(source_path)
+	if bytes.is_empty() and FileAccess.get_open_error() != OK:
+		return {"ok": false, "error": "could not read %s" % source_path.get_file()}
+	var decoded := TankSavCodec.decode(bytes)
+	if decoded.has("error"):
+		return {"ok": false, "error": decoded["error"]}
+
+	var save_name := _unique_save_name(_sanitize_save_name(source_path.get_file().get_basename()))
+	var data := TankSavCodec.to_tsave(decoded, save_name, source_path.get_file())
+	var filepath := SAVE_DIR + save_name + ".tsave"
+	var file := FileAccess.open(filepath, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": "could not write %s" % filepath}
+	file.store_string(JSON.stringify(data, "  "))
+	file.close()
+	return {"ok": true, "filepath": filepath, "save_name": save_name}
+
 ## Get list of save files with metadata for the load screen.
 ## Returns Array of Dictionaries sorted by saved_iso (newest first).
 func get_save_list() -> Array:
@@ -294,6 +315,20 @@ func _generate_save_name() -> String:
 			if num_str.is_valid_int():
 				max_num = maxi(max_num, num_str.to_int())
 	return "Save_%03d" % (max_num + 1)
+
+## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
+func _sanitize_save_name(name: String) -> String:
+	var clean := RegEx.create_from_string("[^A-Za-z0-9_-]+").sub(name, "_", true).left(40)
+	return clean if not clean.is_empty() else "Imported"
+
+## Append _2, _3, ... until no save file with that name exists.
+func _unique_save_name(base: String) -> String:
+	var candidate := base
+	var suffix := 2
+	while FileAccess.file_exists(SAVE_DIR + candidate + ".tsave"):
+		candidate = "%s_%d" % [base, suffix]
+		suffix += 1
+	return candidate
 
 ## Extract save name from file path (without extension)
 func _get_save_name_from_path(path: String) -> String:

@@ -1,311 +1,208 @@
-[gd_scene format=3 uid="uid://cmain01"]
+[gd_scene load_steps=4 format=3 uid="uid://cmain01"]
 
 [ext_resource type="Script" uid="uid://b3c0p0g04j1nc" path="res://scripts/ui/title_screen.gd" id="1_title"]
+[ext_resource type="Theme" path="res://assets/ui/menu_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/menu_backdrop.tscn" id="3_backdrop"]
 
-[node name="TitleScreen" type="Control" unique_id=1990173913]
+[node name="TitleScreen" type="Control"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = ExtResource("2_theme")
 script = ExtResource("1_title")
 
-[node name="Background" type="ColorRect" parent="." unique_id=1713865695]
+[node name="Backdrop" parent="." instance=ExtResource("3_backdrop")]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 1.0
-offset_top = 1.0
-offset_right = 1.0
-offset_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0, 0, 0, 1)
 
-[node name="Title" type="Label" parent="." unique_id=2060935438]
+[node name="TitleBlock" type="VBoxContainer" parent="."]
 layout_mode = 1
-offset_left = 400.0
-offset_top = 150.0
-offset_right = 1200.0
-offset_bottom = 300.0
-theme_override_font_sizes/font_size = 64
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 78.0
+offset_bottom = 236.0
+grow_horizontal = 2
+mouse_filter = 2
+theme_override_constants/separation = 2
+
+[node name="Title" type="Label" parent="TitleBlock"]
+layout_mode = 2
+theme_type_variation = &"TitleLabel"
 text = "BATTLE CITY"
 horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="Cursor" type="Label" parent="." unique_id=779641737]
-layout_mode = 1
-offset_left = 550.0
-offset_top = 400.0
-offset_right = 600.0
-offset_bottom = 460.0
-theme_override_font_sizes/font_size = 36
-text = ">"
+[node name="Subtitle" type="Label" parent="TitleBlock"]
+layout_mode = 2
+theme_type_variation = &"SubtitleLabel"
+text = "A REVIVAL OF THE CLASSIC TANK.EXE"
 horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="OptionNewGame" type="Label" parent="." unique_id=725956296]
+[node name="PanelAnchor" type="CenterContainer" parent="."]
 layout_mode = 1
-offset_left = 600.0
-offset_top = 400.0
-offset_right = 1000.0
-offset_bottom = 460.0
-theme_override_font_sizes/font_size = 36
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 250.0
+offset_bottom = -180.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="MainPanel" type="PanelContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(480, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
+
+[node name="Items" type="VBoxContainer" parent="PanelAnchor/MainPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="NewGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
 text = "NEW GAME"
-horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="OptionLoadGame" type="Label" parent="." unique_id=1790774012]
-layout_mode = 1
-offset_left = 600.0
-offset_top = 480.0
-offset_right = 1000.0
-offset_bottom = 540.0
-theme_override_font_sizes/font_size = 36
+[node name="LoadGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
 text = "LOAD GAME"
-horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="OptionSettings" type="Label" parent="." unique_id=2142549901]
-layout_mode = 1
-offset_left = 600.0
-offset_top = 560.0
-offset_right = 1000.0
-offset_bottom = 620.0
-theme_override_font_sizes/font_size = 36
+[node name="SettingsButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "SETTINGS"
+
+[node name="QuitButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "QUIT"
+
+[node name="SettingsPanel" type="PanelContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(880, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
+
+[node name="Layout" type="VBoxContainer" parent="PanelAnchor/SettingsPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Header" type="Label" parent="PanelAnchor/SettingsPanel/Layout"]
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
 text = "SETTINGS"
 horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="SettingsTitle" type="Label" parent="." unique_id=607411067]
-visible = false
-layout_mode = 1
-offset_left = 400.0
-offset_top = 340.0
-offset_right = 1200.0
-offset_bottom = 390.0
-theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
-theme_override_font_sizes/font_size = 40
-text = "< SETTINGS >"
-horizontal_alignment = 1
-vertical_alignment = 1
+[node name="SettingsRows" type="VBoxContainer" parent="PanelAnchor/SettingsPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 4
 
-[node name="SettingsMap" type="Label" parent="." unique_id=1664368989]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 400.0
-offset_right = 1100.0
-offset_bottom = 450.0
-theme_override_font_sizes/font_size = 32
-text = "MAP: (none)"
-horizontal_alignment = 1
-vertical_alignment = 1
+[node name="SettingsBackButton" type="Button" parent="PanelAnchor/SettingsPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "BACK"
 
-[node name="SettingsTheme" type="Label" parent="." unique_id=1387229286]
+[node name="KeybindPanel" type="PanelContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
 visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 460.0
-offset_right = 1100.0
-offset_bottom = 510.0
-theme_override_font_sizes/font_size = 32
-text = "THEME: Default"
-horizontal_alignment = 1
-vertical_alignment = 1
+custom_minimum_size = Vector2(700, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
 
-[node name="SettingsCredits" type="Label" parent="." unique_id=524373801]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 520.0
-offset_right = 1100.0
-offset_bottom = 570.0
-theme_override_font_sizes/font_size = 32
-text = "CREDITS: 3"
-horizontal_alignment = 1
-vertical_alignment = 1
+[node name="Layout" type="VBoxContainer" parent="PanelAnchor/KeybindPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
 
-[node name="SettingsDifficulty" type="Label" parent="." unique_id=1670485766]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 580.0
-offset_right = 1100.0
-offset_bottom = 630.0
-theme_override_font_sizes/font_size = 32
-text = "DIFFICULTY: 1"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="SettingsP1Keys" type="Label" parent="." unique_id=653215379]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 640.0
-offset_right = 1100.0
-offset_bottom = 690.0
-theme_override_font_sizes/font_size = 32
+[node name="KeybindTitle" type="Label" parent="PanelAnchor/KeybindPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
 text = "P1 KEYS"
 horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="SettingsP2Keys" type="Label" parent="." unique_id=450770186]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 700.0
-offset_right = 1100.0
-offset_bottom = 750.0
-theme_override_font_sizes/font_size = 32
-text = "P2 KEYS"
-horizontal_alignment = 1
-vertical_alignment = 1
+[node name="KeybindRows" type="VBoxContainer" parent="PanelAnchor/KeybindPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
 
-[node name="SettingsBack" type="Label" parent="." unique_id=504315192]
-visible = false
-layout_mode = 1
-offset_left = 600.0
-offset_top = 760.0
-offset_right = 1000.0
-offset_bottom = 810.0
-theme_override_font_sizes/font_size = 32
+[node name="Actions" type="HBoxContainer" parent="PanelAnchor/KeybindPanel/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="KeybindResetButton" type="Button" parent="PanelAnchor/KeybindPanel/Layout/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"MenuItemButton"
+text = "RESET KEYS"
+
+[node name="KeybindBackButton" type="Button" parent="PanelAnchor/KeybindPanel/Layout/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"MenuItemButton"
 text = "BACK"
+
+[node name="KeybindPrompt" type="Label" parent="PanelAnchor/KeybindPanel/Layout"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 34)
+layout_mode = 2
+theme_type_variation = &"PromptLabel"
 horizontal_alignment = 1
 vertical_alignment = 1
+autowrap_mode = 3
 
-[node name="KeybindTitle" type="Label" parent="." unique_id=156850420]
-visible = false
+[node name="Footer" type="HBoxContainer" parent="."]
 layout_mode = 1
-offset_left = 400.0
-offset_top = 300.0
-offset_right = 1200.0
-offset_bottom = 360.0
-theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
-theme_override_font_sizes/font_size = 40
-text = "< P1 KEYS >"
-horizontal_alignment = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -172.0
+offset_bottom = -140.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+theme_override_constants/separation = 64
+alignment = 1
+
+[node name="FooterP1" type="Label" parent="Footer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"HintLabel"
+text = "P1   WASD + T + Y"
 vertical_alignment = 1
 
-[node name="KeybindUp" type="Label" parent="." unique_id=519965947]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 380.0
-offset_right = 1100.0
-offset_bottom = 420.0
-theme_override_font_sizes/font_size = 32
-text = "UP:  W"
-horizontal_alignment = 1
+[node name="FooterP2" type="Label" parent="Footer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"HintLabel"
+text = "P2   ARROWS + [ + ]"
 vertical_alignment = 1
 
-[node name="KeybindDown" type="Label" parent="." unique_id=111793393]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 425.0
-offset_right = 1100.0
-offset_bottom = 465.0
-theme_override_font_sizes/font_size = 32
-text = "DOWN:  S"
-horizontal_alignment = 1
+[node name="FooterFullscreen" type="Label" parent="Footer"]
+layout_mode = 2
+theme_type_variation = &"HintLabel"
+text = "F11   FULLSCREEN"
 vertical_alignment = 1
 
-[node name="KeybindLeft" type="Label" parent="." unique_id=204953652]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 470.0
-offset_right = 1100.0
-offset_bottom = 510.0
-theme_override_font_sizes/font_size = 32
-text = "LEFT:  A"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindRight" type="Label" parent="." unique_id=1109804071]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 515.0
-offset_right = 1100.0
-offset_bottom = 555.0
-theme_override_font_sizes/font_size = 32
-text = "RIGHT:  D"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindShoot" type="Label" parent="." unique_id=703167193]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 560.0
-offset_right = 1100.0
-offset_bottom = 600.0
-theme_override_font_sizes/font_size = 32
-text = "FIRE 1:  T"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindShoot2" type="Label" parent="." unique_id=2032667638]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 605.0
-offset_right = 1100.0
-offset_bottom = 645.0
-theme_override_font_sizes/font_size = 32
-text = "FIRE 2:  Y"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindReset" type="Label" parent="." unique_id=2037512997]
-visible = false
-layout_mode = 1
-offset_left = 500.0
-offset_top = 670.0
-offset_right = 1100.0
-offset_bottom = 710.0
-theme_override_font_sizes/font_size = 32
-text = "RESET DEFAULTS"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindBack" type="Label" parent="." unique_id=509522914]
-visible = false
-layout_mode = 1
-offset_left = 600.0
-offset_top = 715.0
-offset_right = 1000.0
-offset_bottom = 755.0
-theme_override_font_sizes/font_size = 32
-text = "BACK"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="KeybindPrompt" type="Label" parent="." unique_id=561887713]
-visible = false
-layout_mode = 1
-offset_left = 400.0
-offset_top = 790.0
-offset_right = 1200.0
-offset_bottom = 830.0
-theme_override_colors/font_color = Color(1, 1, 0.3, 1)
-theme_override_font_sizes/font_size = 28
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="Controls" type="Label" parent="." unique_id=1639186135]
-layout_mode = 1
-offset_left = 350.0
-offset_top = 720.0
-offset_right = 1250.0
-offset_bottom = 870.0
-theme_override_font_sizes/font_size = 28
-text = "P1: WASD + T + Y
-P2: ARROWS + [ + ]
-F11: Toggle Fullscreen"
-horizontal_alignment = 1
+[node name="FooterMouse" type="Label" parent="Footer"]
+layout_mode = 2
+theme_type_variation = &"HintLabel"
+text = "MOUSE   CLICK TO SELECT"
 vertical_alignment = 1

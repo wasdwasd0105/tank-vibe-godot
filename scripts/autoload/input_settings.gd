@@ -188,6 +188,15 @@ func save_difficulty(value: int) -> void:
 func get_saved_difficulty() -> int:
 	return _config.get_value("game", "difficulty", 1)
 
+## Folder a file was last imported from, per purpose ("save", "map"), so the
+## file pickers reopen there.
+func save_import_dir(purpose: String, path: String) -> void:
+	_config.set_value("import", purpose + "_dir", path)
+	_config.save(SAVE_PATH)
+
+func get_saved_import_dir(purpose: String) -> String:
+	return _config.get_value("import", purpose + "_dir", "")
+
 # =====================================================================
 # Stats persistence
 # =====================================================================

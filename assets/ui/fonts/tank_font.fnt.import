@@ -1,0 +1,17 @@
+[remap]
+
+importer="font_data_bmfont"
+type="FontFile"
+uid="uid://d3lkj0huxo5f8"
+path="res://.godot/imported/tank_font.fnt-dd0e226d4e43254480df571c940d4ddb.fontdata"
+
+[deps]
+
+source_file="res://assets/ui/fonts/tank_font.fnt"
+dest_files=["res://.godot/imported/tank_font.fnt-dd0e226d4e43254480df571c940d4ddb.fontdata"]
+
+[params]
+
+fallbacks=[]
+compress=true
+scaling_mode=2

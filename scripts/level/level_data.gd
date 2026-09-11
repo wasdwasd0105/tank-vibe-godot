@@ -16,6 +16,10 @@ const DEFAULT_SPAWN_QUEUE: Array = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 
 # Path to map files directory
 const MAP_DIR: String = "res://maps/"
+## Imported map files (see import_map_file) live here and count as extra pools.
+const USER_MAP_DIR: String = "user://maps/"
+const USER_POOL_PREFIX: String = "user:"
+const IMPORTED_SUFFIX: String = " (imported)"
 
 # --- Tile Category Classification ---
 enum TileCategory {
@@ -354,53 +358,115 @@ static func load_stages_from_file(path: String) -> Array:
 # Map Pool Scanning & Loading
 # =====================================================================
 
-## Scan the maps/ directory for available map pools.
+## Scan the bundled maps/ directory and the user's imported maps for pools.
 ## A .dat file = one pool. A subfolder with .txt files = one pool.
 static func scan_map_pools() -> Array:
 	_available_pools.clear()
-	var dir := DirAccess.open(MAP_DIR)
+	_scan_pool_dir(MAP_DIR, "", "", true)
+	_scan_pool_dir(USER_MAP_DIR, USER_POOL_PREFIX, IMPORTED_SUFFIX, false)
+	_available_pools.sort_custom(func(a, b): return a.id.naturalcasecmp_to(b.id) < 0)
+	print("LevelData: Found %d map pools" % _available_pools.size())
+	return _available_pools
+
+static func _scan_pool_dir(dir_path: String, id_prefix: String, name_suffix: String, required: bool) -> void:
+	var dir := DirAccess.open(dir_path)
 	if not dir:
-		push_error("LevelData: Failed to open maps directory: " + MAP_DIR)
-		return _available_pools
+		if required:
+			push_error("LevelData: Failed to open maps directory: " + dir_path)
+		return
 
 	dir.list_dir_begin()
 	var entry := dir.get_next()
 	while not entry.is_empty():
 		if dir.current_is_dir():
-			if not entry.begins_with("."):
-				# Check if folder contains at least one .txt file
-				var sub_dir := DirAccess.open(MAP_DIR + entry)
-				if sub_dir:
-					var has_txt := false
-					sub_dir.list_dir_begin()
-					var sub_entry := sub_dir.get_next()
-					while not sub_entry.is_empty():
-						if not sub_dir.current_is_dir() and sub_entry.ends_with(".txt"):
-							has_txt = true
-							break
-						sub_entry = sub_dir.get_next()
-					sub_dir.list_dir_end()
-					if has_txt:
-						var pool := MapPool.new()
-						pool.id = entry
-						pool.display_name = entry
-						pool.type = "folder"
-						pool.path = MAP_DIR + entry + "/"
-						_available_pools.append(pool)
-		else:
-			if entry.ends_with(".dat"):
+			if not entry.begins_with(".") and _folder_has_txt(dir_path + entry):
 				var pool := MapPool.new()
-				pool.id = entry.get_basename()
-				pool.display_name = entry.get_basename()
-				pool.type = "dat"
-				pool.path = MAP_DIR + entry
+				pool.id = id_prefix + entry
+				pool.display_name = entry + name_suffix
+				pool.type = "folder"
+				pool.path = dir_path + entry + "/"
 				_available_pools.append(pool)
+		elif entry.ends_with(".dat"):
+			var pool := MapPool.new()
+			pool.id = id_prefix + entry.get_basename()
+			pool.display_name = entry.get_basename() + name_suffix
+			pool.type = "dat"
+			pool.path = dir_path + entry
+			_available_pools.append(pool)
 		entry = dir.get_next()
 	dir.list_dir_end()
 
-	_available_pools.sort_custom(func(a, b): return a.id.naturalcasecmp_to(b.id) < 0)
-	print("LevelData: Found %d map pools" % _available_pools.size())
-	return _available_pools
+static func _folder_has_txt(folder_path: String) -> bool:
+	var sub_dir := DirAccess.open(folder_path)
+	if not sub_dir:
+		return false
+	var has_txt := false
+	sub_dir.list_dir_begin()
+	var sub_entry := sub_dir.get_next()
+	while not sub_entry.is_empty():
+		if not sub_dir.current_is_dir() and sub_entry.ends_with(".txt"):
+			has_txt = true
+			break
+		sub_entry = sub_dir.get_next()
+	sub_dir.list_dir_end()
+	return has_txt
+
+## Copies a map file into the user's maps folder so it shows up as a pool.
+## Accepts a Tank.exe stage file (.dat, a multiple of 6000 bytes) or one of the
+## remake's .txt map files (stored as a one-file folder pool). Returns
+## {"ok": true, "pool_id": ..., "name": ..., "stage_count": ...} or {"ok": false, "error": ...}.
+static func import_map_file(source_path: String) -> Dictionary:
+	var file_name := source_path.get_file()
+	var extension := source_path.get_extension().to_lower()
+	if extension != "dat" and extension != "txt":
+		return {"ok": false, "error": "unsupported file type .%s (expected .dat or .txt)" % extension}
+	var source := FileAccess.open(source_path, FileAccess.READ)
+	if not source:
+		return {"ok": false, "error": "could not read %s" % file_name}
+	var size := source.get_length()
+	source.close()
+
+	var stages: Array
+	if extension == "dat":
+		if size == 0 or size % DAT_STAGE_SIZE != 0:
+			return {"ok": false, "error": "%s is not a Tank.exe map file (size must be a multiple of %d bytes)" % [file_name, DAT_STAGE_SIZE]}
+		stages = load_stages_from_dat(source_path)
+	else:
+		stages = load_stages_from_file(source_path)
+	if stages.is_empty():
+		return {"ok": false, "error": "no stages found in %s" % file_name}
+
+	DirAccess.make_dir_recursive_absolute(USER_MAP_DIR)
+	var base := _sanitize_pool_name(file_name.get_basename())
+	var pool_name: String
+	var err: Error
+	if extension == "dat":
+		pool_name = _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(USER_MAP_DIR + n + ".dat"))
+		err = DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + ".dat")
+	else:
+		pool_name = _unique_pool_name(base, func(n: String) -> bool: return DirAccess.dir_exists_absolute(USER_MAP_DIR + n))
+		err = DirAccess.make_dir_recursive_absolute(USER_MAP_DIR + pool_name)
+		if err == OK:
+			err = DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + "/" + file_name)
+	if err != OK:
+		return {"ok": false, "error": "could not copy %s into %s (%s)" % [file_name, USER_MAP_DIR, error_string(err)]}
+
+	scan_map_pools()
+	return {"ok": true, "pool_id": USER_POOL_PREFIX + pool_name, "name": pool_name, "stage_count": stages.size()}
+
+## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
+static func _sanitize_pool_name(name: String) -> String:
+	var clean := RegEx.create_from_string("[^A-Za-z0-9_-]+").sub(name, "_", true).left(40)
+	return clean if not clean.is_empty() else "map"
+
+## Append _2, _3, ... until [param taken] reports the name as free.
+static func _unique_pool_name(base: String, taken: Callable) -> String:
+	var candidate := base
+	var suffix := 2
+	while taken.call(candidate):
+		candidate = "%s_%d" % [base, suffix]
+		suffix += 1
+	return candidate
 
 ## Get available pools (lazy-scan on first call)
 static func get_available_pools() -> Array:

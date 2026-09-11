@@ -434,6 +434,7 @@ func _place_base_walls() -> void:
 func fortify_base(duration: float) -> void:
 	_is_fortified = true
 	_fortify_timer = duration
+	_set_flag_invincible(true)
 	for pos in _original_base_walls:
 		# A super block is already stronger than iron — never downgrade it.
 		if LevelData.get_tile_category(_original_base_walls[pos]) == LevelData.TileCategory.SUPER_BLOCK:
@@ -445,6 +446,7 @@ func fortify_base(duration: float) -> void:
 
 func _revert_fortification() -> void:
 	_is_fortified = false
+	_set_flag_invincible(false)
 	for pos in _original_base_walls:
 		# Super blocks were left untouched by fortify — nothing to revert.
 		if LevelData.get_tile_category(_original_base_walls[pos]) == LevelData.TileCategory.SUPER_BLOCK:
@@ -453,6 +455,11 @@ func _revert_fortification() -> void:
 		_brick_damage.erase(pos)
 		_hard_brick_hp.erase(pos)
 		_place_fg_tile(pos, _original_base_walls[pos])  # restore the map's initial tile
+
+func _set_flag_invincible(value: bool) -> void:
+	var flag := get_node_or_null("Eagle")
+	if flag is BaseFlag:
+		flag.invincible = value
 
 # =====================================================================
 # Tile Removal

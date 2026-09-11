@@ -22,6 +22,7 @@ var _partial_brick_cache: Dictionary = {}     # mask (int) or "mask_variant" (St
 var _tank_textures: Dictionary = {}           # "p1","p2","e1"-"e24" -> Texture2D
 var _addon_textures: Dictionary = {}         # "moon-shield","anti-water",etc -> Texture2D
 var _addon_frames: Dictionary = {}           # "anti-water","memory-save" -> Array[Texture2D] (4-frame anim)
+var _flag_frames: Dictionary = {}            # "healthy","dead","invincible" -> Array[Texture2D] (base flag anim)
 
 # =====================================================================
 # Procedural color palettes (moved from level_manager.gd)
@@ -137,6 +138,7 @@ func load_theme(theme_name: String) -> void:
 	_tank_textures.clear()
 	_addon_textures.clear()
 	_addon_frames.clear()
+	_flag_frames.clear()
 
 	if _theme_type == "procedural":
 		_generate_procedural_textures()
@@ -146,6 +148,7 @@ func load_theme(theme_name: String) -> void:
 	_load_tank_textures()
 	_load_addon_textures()
 	_load_addon_frames()
+	_load_flag_frames()
 	theme_changed.emit(theme_name)
 
 ## Full code→Texture2D dictionary (for level_manager)
@@ -175,6 +178,11 @@ func get_partial_brick_texture(damage_mask: int, variant: int) -> Texture2D:
 ## Tank sprite texture
 func get_tank_texture(tank_key: String) -> Texture2D:
 	return _tank_textures.get(tank_key, null)
+
+## Animation frames of the base flag for [param state] ("healthy", "dead" or
+## "invincible"). Empty when the theme has no flag strip (the default eagle is used).
+func get_flag_frames(state: String) -> Array:
+	return _flag_frames.get(state, [])
 
 ## Addon sprite texture (e.g. "moon-shield", "anti-water")
 func get_addon_texture(addon_name: String) -> Texture2D:
@@ -440,6 +448,37 @@ func _load_image_with_blue_transparent(path: String) -> Texture2D:
 
 func _is_same_color(a: Color, b: Color) -> bool:
 	return absf(a.r - b.r) < 0.03 and absf(a.g - b.g) < 0.03 and absf(a.b - b.b) < 0.03
+
+# =====================================================================
+# Base flag strip loading
+# =====================================================================
+
+const FLAG_STATES: Array = ["healthy", "dead", "invincible"]
+
+## [base] flag="..." in theme.cfg: a strip with one row per FLAG_STATES entry and
+## `frames` square frames of `frame_size` px per row, keyed on the corner colour.
+func _load_flag_frames() -> void:
+	if not _config:
+		return
+	var rel_path: String = _config.get_value("base", "flag", "")
+	if rel_path.is_empty():
+		return
+	var frame_size: int = _config.get_value("base", "frame_size", 32)
+	var frame_count: int = _config.get_value("base", "frames", 8)
+	var strip := _load_image_with_blue_transparent(THEMES_DIR + current_theme + "/" + rel_path)
+	if strip == null:
+		push_warning("ThemeManager: could not load flag strip " + rel_path)
+		return
+	var img := strip.get_image()
+	if img.get_width() < frame_size * frame_count or img.get_height() < frame_size * FLAG_STATES.size():
+		push_warning("ThemeManager: flag strip %s is too small for %dx%d frames" % [rel_path, frame_count, FLAG_STATES.size()])
+		return
+	for row in FLAG_STATES.size():
+		var frames: Array = []
+		for column in frame_count:
+			var region := img.get_region(Rect2i(column * frame_size, row * frame_size, frame_size, frame_size))
+			frames.append(ImageTexture.create_from_image(region))
+		_flag_frames[FLAG_STATES[row]] = frames
 
 # =====================================================================
 # Addon texture loading

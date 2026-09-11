@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3 uid="uid://cgame01"]
+[gd_scene load_steps=11 format=3 uid="uid://cgame01"]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
 [ext_resource type="Script" path="res://scripts/level/level_manager.gd" id="2_level_mgr"]
@@ -8,6 +8,7 @@
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/eagle.png" id="6_eagle_tex"]
 [ext_resource type="Texture2D" path="res://assets/sprites/tiles/tree.png" id="7_tree_tex"]
 [ext_resource type="Script" path="res://scripts/ui/pause_menu.gd" id="8_pause_menu"]
+[ext_resource type="Script" path="res://scripts/level/base_flag.gd" id="9_base_flag"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 bg_color = Color(0.05, 0.05, 0.05, 1)
@@ -36,6 +37,7 @@ z_index = 10
 position = Vector2(640, 928)
 collision_layer = 128
 collision_mask = 48
+script = ExtResource("9_base_flag")
 
 [node name="Sprite2D" type="Sprite2D" parent="Playfield/Eagle"]
 scale = Vector2(2, 2)

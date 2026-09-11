@@ -7,7 +7,7 @@ extends Node2D
 @onready var bullets_container: Node2D = $Entities/Bullets
 @onready var powerups_container: Node2D = $Entities/PowerUps
 @onready var effects_container: Node2D = $Entities/Effects
-@onready var eagle: StaticBody2D = $Playfield/Eagle
+@onready var eagle: BaseFlag = $Playfield/Eagle
 @onready var hud: Control = $HUD
 @onready var pause_menu: Control = $PauseLayer/PauseMenu
 
@@ -160,9 +160,8 @@ func _on_base_destroyed() -> void:
 	if _base_destroyed:
 		return
 	_base_destroyed = true
-	# Destroy eagle visual
-	if eagle and eagle.has_node("Sprite2D"):
-		eagle.get_node("Sprite2D").modulate = Color.RED
+	if eagle:
+		eagle.destroyed = true
 	# Spawn big explosion
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var explosion := explosion_scene.instantiate()
@@ -218,9 +217,8 @@ func _on_fortify_base(duration: float) -> void:
 
 func _restore_base() -> void:
 	_base_destroyed = false
-	# Restore eagle visual
-	if eagle and eagle.has_node("Sprite2D"):
-		eagle.get_node("Sprite2D").modulate = Color.WHITE
+	if eagle:
+		eagle.destroyed = false
 	# Fortify the base walls
 	level_manager.fortify_base(30.0)
 
