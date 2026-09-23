@@ -41,6 +41,7 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 @onready var _keybind_prompt: Label = %KeybindPrompt
 
 # --- Footer ---
+@onready var _footer: Control = $Footer
 @onready var _footer_p1: Label = %FooterP1
 @onready var _footer_p2: Label = %FooterP2
 
@@ -50,6 +51,8 @@ var _nav: MenuFocus
 # Settings rows, built in _ready()
 var _map_row: Button
 var _import_map_row: Button
+var _sfx_row: Button
+var _music_row: Button
 var _theme_row: Button
 var _credits_row: Button
 var _difficulty_row: Button
@@ -80,6 +83,7 @@ func _ready() -> void:
 	_refresh_settings_values()
 	_refresh_footer()
 	_show_page(Page.MAIN, _new_game_button, false)
+	SoundManager.attach_ui_sounds(self)
 
 
 func _input(event: InputEvent) -> void:
@@ -143,6 +147,8 @@ func _build_settings_rows() -> void:
 	_theme_row = _add_value_row("THEME", _cycle_theme)
 	_credits_row = _add_value_row("CREDITS", _cycle_credits)
 	_difficulty_row = _add_value_row("DIFFICULTY", _cycle_difficulty)
+	_sfx_row = _add_value_row("SFX VOLUME", _cycle_sfx_volume)
+	_music_row = _add_value_row("MUSIC VOLUME", _cycle_music_volume)
 	_p1_keys_row = _add_keys_row("P1 KEYS", "p1")
 	_p2_keys_row = _add_keys_row("P2 KEYS", "p2")
 
@@ -215,6 +221,9 @@ func _show_page(page: Page, focus_target: Control, animate: bool = true) -> void
 	_main_page.visible = page == Page.MAIN
 	_settings_page.visible = page == Page.SETTINGS
 	_keybind_page.visible = page == Page.KEYBIND
+	# The sub-pages are taller than the main panel and would run into the
+	# footer, which only repeats what those pages already show.
+	_footer.visible = page == Page.MAIN
 	_nav.items = _page_items(page)
 	if animate:
 		var shown := _page_control(page)
@@ -242,7 +251,7 @@ func _page_items(page: Page) -> Array[Control]:
 			items.assign([_new_game_button, _load_game_button, _settings_button, _quit_button])
 		Page.SETTINGS:
 			items.assign([_map_row, _import_map_row, _theme_row, _credits_row, _difficulty_row,
-					_p1_keys_row, _p2_keys_row, _settings_back_button])
+					_sfx_row, _music_row, _p1_keys_row, _p2_keys_row, _settings_back_button])
 		Page.KEYBIND:
 			items.assign(_action_rows)
 			items.append(_keybind_reset_button)
@@ -278,6 +287,12 @@ func _adjust_focused_value(direction: int) -> void:
 	if _page != Page.SETTINGS:
 		return
 	var focused := _nav.focus_owner()
+	if focused == _sfx_row:
+		_cycle_sfx_volume(direction)
+		return
+	if focused == _music_row:
+		_cycle_music_volume(direction)
+		return
 	if focused == _map_row:
 		_cycle_pool(direction)
 	elif focused == _theme_row:
@@ -319,6 +334,30 @@ func _cycle_difficulty(direction: int) -> void:
 	_refresh_settings_values()
 
 
+## Volume steps in tenths, the granularity the row can show as a bar.
+func _cycle_sfx_volume(direction: int) -> void:
+	SoundManager.set_sfx_volume(_stepped_volume(SoundManager.get_sfx_volume(), direction))
+	_refresh_settings_values()
+	SoundManager.play(&"ui_select")  # audible preview of the new level
+
+
+func _cycle_music_volume(direction: int) -> void:
+	SoundManager.set_music_volume(_stepped_volume(SoundManager.get_music_volume(), direction))
+	_refresh_settings_values()
+
+
+func _stepped_volume(current: float, direction: int) -> float:
+	return clampf(snappedf(current, 0.1) + 0.1 * direction, 0.0, 1.0)
+
+
+## "OFF" or a ten-segment bar plus the percentage.
+func _format_volume(value: float) -> String:
+	var steps := int(roundf(clampf(value, 0.0, 1.0) * 10.0))
+	if steps == 0:
+		return "OFF"
+	return "%s%s  %d%%" % ["\u2588".repeat(steps), "\u2591".repeat(10 - steps), steps * 10]
+
+
 func _refresh_settings_values() -> void:
 	var map_text := "(no maps found)"
 	if not _available_pools.is_empty():
@@ -334,6 +373,14 @@ func _refresh_settings_values() -> void:
 	MenuRows.arrow(_credits_row, "Right").disabled = GameManager.max_credits >= MAX_CREDITS
 	MenuRows.arrow(_difficulty_row, "Left").disabled = difficulty <= MIN_DIFFICULTY
 	MenuRows.arrow(_difficulty_row, "Right").disabled = difficulty >= MAX_DIFFICULTY
+	var sfx := SoundManager.get_sfx_volume()
+	var music := SoundManager.get_music_volume()
+	MenuRows.value_label(_sfx_row).text = _format_volume(sfx)
+	MenuRows.value_label(_music_row).text = _format_volume(music)
+	MenuRows.arrow(_sfx_row, "Left").disabled = sfx <= 0.0
+	MenuRows.arrow(_sfx_row, "Right").disabled = sfx >= 1.0
+	MenuRows.arrow(_music_row, "Left").disabled = music <= 0.0
+	MenuRows.arrow(_music_row, "Right").disabled = music >= 1.0
 	MenuRows.value_label(_p1_keys_row).text = InputSettings.get_player_controls_text("p1")
 	MenuRows.value_label(_p2_keys_row).text = InputSettings.get_player_controls_text("p2")
 
@@ -435,6 +482,9 @@ func _handle_capture_input(event: InputEvent) -> void:
 		return
 	if physical_key == KEY_F11:
 		_set_prompt("F11 is reserved for fullscreen. Press another key.")
+		return
+	if physical_key == KEY_BACKSLASH or physical_key == KEY_QUOTELEFT:
+		_set_prompt("%s is reserved for a debug key. Press another key." % ("\\" if physical_key == KEY_BACKSLASH else "`"))
 		return
 	var action := _capture_action
 	var conflict := _find_conflicting_action(physical_key, action)

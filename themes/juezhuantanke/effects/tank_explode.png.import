@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://xb8f1sxggykq"
-path="res://.godot/imported/BG04.JPG-0cafb634f1d9f25a49a45feec5eb4415.ctex"
+uid="uid://cosympgsvq7tl"
+path="res://.godot/imported/tank_explode.png-e02fd133d8923656878ecba538c0b323.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/background/BG04.JPG"
-dest_files=["res://.godot/imported/BG04.JPG-0cafb634f1d9f25a49a45feec5eb4415.ctex"]
+source_file="res://themes/juezhuantanke/effects/tank_explode.png"
+dest_files=["res://.godot/imported/tank_explode.png-e02fd133d8923656878ecba538c0b323.ctex"]
 
 [params]
 

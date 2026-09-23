@@ -108,6 +108,7 @@ func _rebuild_list(focus_index: int) -> void:
 	items.append(_import_button)
 	items.append(_back_button)
 	_nav.items = items
+	SoundManager.attach_ui_sounds(self)
 	if _rows.is_empty():
 		_import_button.grab_focus()
 	else:

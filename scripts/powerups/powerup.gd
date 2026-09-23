@@ -131,11 +131,20 @@ func _on_body_entered(body: Node2D) -> void:
 		_apply_effect(body)
 		queue_free()
 
+## A mine's slow wears off only through these, as in the original: any add-on
+## cookie frees the tank that takes it, and MAX frees every player.
+func _clear_mine_slows(player: PlayerTank) -> void:
+	if cookie_type in CookieData.ADDON_TO_COOKIE.values():
+		player.clear_mine_slow()
+	elif cookie_type == CookieData.CookieType.MAX_UP:
+		for teammate in get_tree().get_nodes_in_group("players"):
+			if teammate is PlayerTank and is_instance_valid(teammate):
+				teammate.clear_mine_slow()
+
 func _apply_effect(player: PlayerTank) -> void:
 	# Grant 1-second pickup invincibility
 	player.activate_pickup_invincibility()
-	# Any cookie clears a mine-inflicted slow.
-	player.clear_mine_slow()
+	_clear_mine_slows(player)
 
 	match cookie_type:
 		# utility_power_up

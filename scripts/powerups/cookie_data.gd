@@ -100,6 +100,22 @@ const TYPE_WEAPON_MAP: Dictionary = {
 	21: "mine", 22: "mine", 23: "mine", 24: "mine",
 }
 
+## The original game's enemy gun levels (its enemy spawn, 0x00499f30): a base
+## per tank type plus a bonus for the difficulty, clamped to 0-3. Mine tanks use
+## it (see get_enemy_weapon_level); the table covers every type.
+const ORIGINAL_TYPE_GUN_LEVEL: Array[int] = [
+	0, 1, 1, 2,   # 1-4   plain gun
+	0, 1, 2, 3,   # 5-8   rapid
+	0, 1, 2, 3,   # 9-12  fire
+	0, 1, 1, 2,   # 13-16 AP
+	0, 1, 2, 3,   # 17-20 explosion
+	0, 1, 1, 2,   # 21-24 mine
+]
+## Gun-level bonus by difficulty 0-5, from the original's difficulty records
+## (0x004d2860). The remake's EASY..INSANE (1-5) are the original's 1-5, as the
+## save importer already assumes; the original's easiest level 0 is not offered.
+const ORIGINAL_DIFFICULTY_GUN_BONUS: Array[int] = [-1, 0, 0, 0, 1, 1]
+
 ## Special weapon levels by tank type and game difficulty (1-5) from tank_table.xlsx.
 ## Only rapid is wired up for now.
 const TYPE_WEAPON_LEVELS: Dictionary = {
@@ -167,14 +183,13 @@ const EXPLOSION_FIRE_CONFIG: Dictionary = {
 	3: { "cooldown": 0.225, "speed": 650.0, "max_in_flight": 4, "level": 3, "damage": 6 },
 }
 
-## Mine config by weapon level (0-3), mapped to mine level 1-4. Each level lays a
-## mine that detonates the explosion blast; higher levels add effects:
-##   L1 blast · L2 blast+slow · L3 blast+fly · L4 blast+fly+slow. See mine.gd.
+## Mine config by weapon level (0-3). The mine's own level is the weapon level:
+##   L0 blast · L1 + slow · L2 + hit and fly · L3 harder. See mine.gd.
 const MINE_FIRE_CONFIG: Dictionary = {
-	0: { "cooldown": 0.6,  "mine_level": 1 },
-	1: { "cooldown": 0.55, "mine_level": 2 },
-	2: { "cooldown": 0.5,  "mine_level": 3 },
-	3: { "cooldown": 0.45, "mine_level": 4 },
+	0: { "cooldown": 0.6 },
+	1: { "cooldown": 0.55 },
+	2: { "cooldown": 0.5 },
+	3: { "cooldown": 0.45 },
 }
 
 ## AP gun config by weapon level (0-3). A slow-launch, accelerating shell whose
@@ -239,11 +254,20 @@ static func get_weapon_fire_config(weapon_type: String, level: int) -> Dictionar
 	return {}
 
 static func get_enemy_weapon_level(tank_type_id: int, difficulty: int) -> int:
+	if TYPE_WEAPON_MAP.get(tank_type_id, "none") == "mine":
+		return original_enemy_gun_level(tank_type_id, difficulty)
 	var levels: Array = TYPE_WEAPON_LEVELS.get(tank_type_id, [])
 	if levels.is_empty():
 		return 0
 	var idx := clampi(difficulty, 1, levels.size()) - 1
 	return levels[idx]
+
+## The original's gun level for an enemy of [param tank_type_id] (1-24). The
+## difficulty keeps climbing on map loops; the original capped it at 5.
+static func original_enemy_gun_level(tank_type_id: int, difficulty: int) -> int:
+	var base: int = ORIGINAL_TYPE_GUN_LEVEL[clampi(tank_type_id, 1, 24) - 1]
+	var bonus: int = ORIGINAL_DIFFICULTY_GUN_BONUS[clampi(difficulty, 0, 5)]
+	return clampi(base + bonus, 0, 3)
 
 ## Roll a death-drop cookie type for a dying enemy tank.
 ## Returns -1 if no drop (40% chance), otherwise a CookieType value.

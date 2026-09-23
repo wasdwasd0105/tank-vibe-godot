@@ -7,6 +7,7 @@ extends Node2D
 ## and each ring starts one step later than the one inside it.
 ## Damage: every opposing tank within the radius takes a flat spray amount (once);
 ## a mine's slow/fly and the bullet's direct hit are applied separately.
+## It also sets off opposing mines it reaches hard enough, so mine fields chain.
 ## See docs/explosion_weapon_original_spec.md for the original recovered constants.
 
 const TILE_SIZE: float = 32.0
@@ -49,6 +50,7 @@ func _ready() -> void:
 	_load_frames()
 	_build_tiles()
 	_apply_tank_damage()
+	_set_off_mines()
 
 
 ## One Sprite2D per tile within the (circular) radius, hidden until its ring's turn.
@@ -129,6 +131,8 @@ func _apply_tank_damage() -> void:
 			continue
 		if tank == exclude_tank:
 			continue  # already took the bullet's direct hit
+		if tank.is_flying:
+			continue  # thrown by a mine: out of reach until it lands
 		var is_player: bool = tank.is_in_group("players")
 		if not neutral and from_player == is_player:
 			continue  # a normal blast never hurts its own side; a neutral one hits everyone
@@ -143,6 +147,48 @@ func _apply_tank_damage() -> void:
 		for i in range(dmg):
 			if is_instance_valid(tank) and tank.health > 0:
 				tank.take_damage()
+
+
+## Opposing mines the blast reaches hard enough go off as the wave arrives (the
+## original TExploseSprite collision, 0x00497550). Mines of the blast's own side
+## never do, so your shells never clear your own field; a neutral landing blast
+## belongs to neither side. The blast must be at least the mine's level, and a
+## far or equal-level mine needs more heat: equal levels only chain to the
+## next tile, while a stronger blast reaches weaker mines further out.
+func _set_off_mines() -> void:
+	if _level_manager == null:
+		return
+	for mine in _level_manager.get_mines():
+		if not mine.is_armed():
+			continue  # still deploying: nothing touches it yet
+		if not neutral and mine.from_player == from_player:
+			continue
+		if level < mine.level:
+			continue
+		var heat := _heat_at(mine.global_position)
+		if heat <= 0:
+			continue
+		if level + heat - (2 if level <= 0 else 3) >= mine.level:
+			var tiles := global_position.distance_to(mine.global_position) / TILE_SIZE
+			mine.set_off_after(roundf(tiles) * RING_STEP_FRAMES * FRAME_DUR)
+
+
+## The original's blast heat at a mine, in hit points: round((power -
+## distance * falloff) / 100 + 0.25), power 250 + 25 * level, falloff 60 - 5 *
+## level per half-tile. It sampled a half-tile grid and took the hottest cell of
+## the two tiles either way of the mine's corner, so the distance is to the
+## nearest of those; walls shadow it.
+func _heat_at(target: Vector2) -> int:
+	if _level_manager and not _level_manager.has_line_of_sight(global_position, target):
+		return 0
+	var offset := (target - global_position).abs()
+	var nearest := Vector2(
+		minf(absf(offset.x - HALF_TILE / 2.0), absf(offset.x - HALF_TILE * 1.5)),
+		minf(absf(offset.y - HALF_TILE / 2.0), absf(offset.y - HALF_TILE * 1.5)))
+	var half_tiles := nearest.length() / HALF_TILE
+	var power := 250.0 + 25.0 * level
+	var falloff := 60.0 - 5.0 * level
+	return Mine.round_half_even((power - half_tiles * falloff) / 100.0 + 0.25)
 
 
 func _apply_terrain_damage() -> void:

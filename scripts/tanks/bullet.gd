@@ -5,10 +5,18 @@ extends Area2D
 var direction: Vector2 = Vector2.UP
 var owner_tank: BaseTank = null
 var is_player_bullet: bool = true
+## Lets an ordinary bullet clear an iron block. NOTHING grants this today: in the
+## original only the AP shell gets through steel, and it does so on its own path
+## (see pierces / LevelManager.ap_drill_tiles), spending a damage pool per tile.
+## Kept as the hook for any future weapon that should breach steel outright.
 var can_destroy_steel: bool = false
 var visual_style: String = "regular"
 var visual_lane_offsets: Array[float] = [-16.0, 16.0]
 var collision_lane_offsets: Array[float] = [-16.0, 16.0]
+## Lanes tested against the tile grid; empty = the collision lanes. Tank-wide
+## shots use the shooter's whole body here (BaseTank.BODY_LANE_OFFSETS) while
+## their hitbox against tanks stays the narrower collision lanes.
+var tile_lane_offsets: Array[float] = []
 var _destroyed: bool = false
 var _visual_sprites: Array[Sprite2D] = []
 var _animation_timer: float = 0.0
@@ -181,9 +189,10 @@ func _check_tile_collision() -> void:
 		global_position + direction * 6.0,
 	]
 
+	var lanes: Array[float] = tile_lane_offsets if not tile_lane_offsets.is_empty() else collision_lane_offsets
 	var tiles_to_check: Array[Vector2i] = []
 	for base_pos in base_positions:
-		for lane_offset in collision_lane_offsets:
+		for lane_offset in lanes:
 			var lane_pos: Vector2 = base_pos + perp * lane_offset
 			var tile_pos: Vector2i = _level_manager.world_to_tile(lane_pos)
 			if tile_pos not in tiles_to_check:
@@ -288,6 +297,7 @@ func _ap_on_body(body: Node2D) -> void:
 		# Moon-shield front hit: a strong enough pool (>= threshold) strips the
 		# shield (tank unhurt + grace); a worn-down shell is just absorbed.
 		if tank.is_bullet_blocked(direction):
+			SoundManager.play(&"shield_absorb")
 			if damage >= SHIELD_BREAK_THRESHOLD:
 				tank.break_moon_shield_grace()
 			_destroy()
@@ -327,6 +337,10 @@ func _on_area_entered(area: Area2D) -> void:
 		var their_dmg := other_bullet.damage
 		take_bullet_damage(their_dmg)
 		other_bullet.take_bullet_damage(my_dmg)
+		# The original clinked only when one shell outlived the clash; a mutual
+		# annihilation was silent.
+		if _destroyed != other_bullet._destroyed:
+			SoundManager.play(&"bullet_clink")
 		if (ignites_ground or explodes) and not _destroyed:
 			_destroy()
 		if (other_bullet.ignites_ground or other_bullet.explodes) and not other_bullet._destroyed:
@@ -363,9 +377,18 @@ func _destroy() -> void:
 		_level_manager.spawn_explosion_blast(
 			global_position, explosion_level, is_player_bullet, false, _direct_hit_tank)
 
-	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var effects_container = get_tree().get_first_node_in_group("effects_container")
 	var parent_node = effects_container if effects_container else get_tree().current_scene
+
+	# A theme with its own hit animation plays it once, centred on the shot, as
+	# the original did; otherwise the built-in flash marks each lane.
+	var hit_frames: Array = ThemeManager.get_hit_frames(visual_style)
+	if not hit_frames.is_empty():
+		HitEffect.spawn(parent_node, global_position, hit_frames, ThemeManager.get_hit_duration())
+		queue_free()
+		return
+
+	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 
 	var perp: Vector2 = Vector2.ZERO
 	if direction == Vector2.UP or direction == Vector2.DOWN:

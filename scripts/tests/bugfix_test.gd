@@ -19,6 +19,17 @@ func _cat(lm: LevelManager, pos: Vector2i) -> int:
 func _ready() -> void:
 	_run()
 
+## An enemy counted by the spawner exactly as EnemySpawner._spawn_enemy does.
+func _add_tracked_enemy(game: Node, spawner: EnemySpawner, world: Vector2) -> EnemyTank:
+	var e: EnemyTank = load("res://scenes/tanks/enemy_tank.tscn").instantiate()
+	e.tank_type_id = 1
+	game.get_node("Entities/Enemies").add_child(e)
+	e.set_physics_process(false)
+	e.global_position = world
+	e.tree_exited.connect(spawner._on_enemy_removed)
+	spawner._active_enemies += 1
+	return e
+
 func _run() -> void:
 	var tree := get_tree()
 	await tree.process_frame
@@ -76,6 +87,39 @@ func _run() -> void:
 	await tree.process_frame
 	check(not is_instance_valid(player) or GameManager.player_lives[0] < lives_before,
 		"tank sank after losing the boat on water")
+
+	print("\n[C] Leaving the game while enemies are alive is not a stage clear")
+	var spawner: EnemySpawner = game.get_node("EnemySpawner")
+	spawner.spawn_timer.stop()
+	for e in tree.get_nodes_in_group("enemies"):
+		e.queue_free()
+	await tree.process_frame
+	# The real stage-clear flow advances the stage (and writes a save) after 10 s,
+	# so count the signals instead.
+	Events.all_enemies_defeated.disconnect(game._on_all_enemies_defeated)
+	var counts := {"defeated": 0, "cleared": 0}
+	var on_defeated := func() -> void: counts["defeated"] += 1
+	var on_cleared := func() -> void: counts["cleared"] += 1
+	Events.all_enemies_defeated.connect(on_defeated)
+	Events.stage_cleared.connect(on_cleared)
+	spawner._spawn_queue.clear()   # late in a stage: every enemy already spawned
+	spawner._active_enemies = 0
+	var last := _add_tracked_enemy(game, spawner, lm.tile_to_world(Vector2i(20, 12)))
+	await tree.process_frame
+	last.destroy()
+	await tree.process_frame
+	await tree.process_frame
+	check(counts["defeated"] == 1, "the last enemy dying clears the stage")
+	_add_tracked_enemy(game, spawner, lm.tile_to_world(Vector2i(20, 12)))
+	await tree.process_frame
+	tree.root.remove_child(game)   # what leaving the scene does (menu, restart, game over)
+	check(counts["defeated"] == 1, "closing the game with an enemy alive does not clear the stage")
+	game._on_all_enemies_defeated()   # a stray stage clear reaching the closed game
+	check(counts["cleared"] == 0, "a closed game ignores it: no stage-clear jingle, no null get_tree()")
+	Events.all_enemies_defeated.disconnect(on_defeated)
+	Events.stage_cleared.disconnect(on_cleared)
+	game.free()
+	await tree.create_timer(1.2).timeout  # let the explosion sound finish before quitting
 
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

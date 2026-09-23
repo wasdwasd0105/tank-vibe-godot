@@ -4,6 +4,8 @@ extends Node
 ## Save directory: user://save/
 
 const SAVE_DIR := "user://save/"
+## The bundled copy of the original game's 64-stage map.
+const ORIGINAL_POOL_ID := "v1_2_2"
 
 func _ready() -> void:
 	# Ensure save directory exists
@@ -86,6 +88,7 @@ func import_original_save(source_path: String) -> Dictionary:
 
 	var save_name := _unique_save_name(_sanitize_save_name(source_path.get_file().get_basename()))
 	var data := TankSavCodec.to_tsave(decoded, save_name, source_path.get_file())
+	data["header"]["map_pool"] = _pool_for_imported_save(int(data["header"].get("current_stage", 1)))
 	var filepath := SAVE_DIR + save_name + ".tsave"
 	var file := FileAccess.open(filepath, FileAccess.WRITE)
 	if not file:
@@ -139,6 +142,7 @@ func _build_save_data() -> Dictionary:
 			"credit": gm.credits,
 			"current_stage": gm.current_stage,
 			"counter": gm.save_counter,
+			"map_pool": gm.current_map_pool_id,
 		},
 		"players": {},
 	}
@@ -201,6 +205,13 @@ func _restore_from_data(data: Dictionary) -> void:
 	gm.credits = header.get("credit", 3)
 	gm.save_counter = header.get("counter", 0)
 	gm.save_created_iso = header.get("created_iso", "")
+
+	# Reopen the map this save was played on; without it a stage-30 save loaded
+	# against a one-stage pool silently clamps back to stage 1.
+	var pool_id: String = header.get("map_pool", "")
+	if not pool_id.is_empty() and pool_id != gm.current_map_pool_id:
+		gm.set_map_pool(pool_id)
+		InputSettings.save_map_pool(pool_id)
 
 	# Reset runtime state
 	gm.is_game_over = false
@@ -315,6 +326,27 @@ func _generate_save_name() -> String:
 			if num_str.is_valid_int():
 				max_num = maxi(max_num, num_str.to_int())
 	return "Save_%03d" % (max_num + 1)
+
+## An original save expects the original stage set, so pick a pool that can
+## actually reach its stage - preferring the bundled original map.
+func _pool_for_imported_save(stage: int) -> String:
+	var pools := LevelData.get_available_pools()
+	var best := ""
+	for pool in pools:
+		LevelData.load_pool(pool)
+		if LevelData.get_stage_count() < stage:
+			continue
+		if pool.id == ORIGINAL_POOL_ID:
+			best = pool.id
+			break
+		if best.is_empty():
+			best = pool.id
+	# Leave the player's current selection alone if nothing can hold this stage.
+	if best.is_empty():
+		best = GameManager.current_map_pool_id
+	if not GameManager.current_map_pool_id.is_empty():
+		GameManager.set_map_pool(GameManager.current_map_pool_id)
+	return best
 
 ## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
 func _sanitize_save_name(name: String) -> String:

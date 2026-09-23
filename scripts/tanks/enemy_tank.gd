@@ -41,6 +41,9 @@ const ENEMY_EXPLOSION_COOLDOWN_MAX: float = 3.5
 const ENEMY_MINE_CHANCE: float = 0.25
 const ENEMY_MINE_COOLDOWN_MIN: float = 2.5
 const ENEMY_MINE_COOLDOWN_MAX: float = 4.5
+## Enemy mines stop at level 2. The original let the toughest mine tank lay
+## ringed level-3 mines on EXPERT and INSANE; the remake leaves those out.
+const ENEMY_MINE_MAX_LEVEL: int = 2
 
 const ENEMY_AP_CHANCE: float = 0.4
 const ENEMY_AP_COOLDOWN_MIN: float = 1.5
@@ -70,16 +73,16 @@ var addons: Array = []
 var has_moon_shield: bool = false
 var has_anti_ice: bool = false
 var _shield_sprite: Sprite2D = null  # Reference for front-positioned shield
-var _addon_sprites: Array = []  # All addon Sprite2D nodes for rotation
+var _addon_sprites: Array = []  # All addon Sprite2D nodes
 var _frost_shown: bool = false  # freeze-frost overlay currently on (tracks GameManager.enemies_frozen)
-const SHIELD_FRONT_OFFSET: float = 5.0  # Pixels from center toward front
 
-# Per-addon size multiplier (relative to TANK_SIZE) and front offset override
+## Add-on size relative to TANK_SIZE. Where each one sits is BaseTank's
+## _layout_addons, as the original placed them.
 const ADDON_CONFIG: Dictionary = {
-	"moon-shield":  { "scale": 1.0, "offset": 10.0 },  # hood arc over the front, like the original
-	"anti-water":   { "scale": 1.0, "offset": 5.0 },
-	"anti-ice":     { "scale": 1.0, "offset": 5.0 },
-	"memory-save":  { "scale": 1.0, "offset": 5.0 },
+	"moon-shield":  { "scale": 1.0 },
+	"anti-water":   { "scale": 1.0 },
+	"anti-ice":     { "scale": 1.0 },
+	"memory-save":  { "scale": 1.0 },
 }
 
 # Stats for each of the 24 tank types from tank_table.xlsx
@@ -205,16 +208,8 @@ func _physics_process(delta: float) -> void:
 
 func _is_player_ahead() -> bool:
 	## Check if a player tank is blocking movement in the current direction.
-	## Temporarily enables the player mask for test_move, then disables it.
 	var lookahead := maxf(move_speed / float(Engine.physics_ticks_per_second), 2.0)
-	set_collision_mask_value(3, true)
-	var blocked := test_move(global_transform, current_direction * lookahead)
-	set_collision_mask_value(3, false)
-	if not blocked:
-		return false
-	# Check if the blockage is specifically a player (not a wall)
-	var still_blocked := test_move(global_transform, current_direction * lookahead)
-	return not still_blocked  # True = player was the only thing blocking
+	return _opponent_ahead("players", current_direction, lookahead)
 
 func _is_water_ahead(dir: Vector2) -> bool:
 	## Check if water specifically blocks movement in the given direction.
@@ -237,11 +232,12 @@ func _has_indestructible_ahead(dir: Vector2) -> bool:
 	var lm = game.get_level_manager()
 	if not lm:
 		return false
-	# Check the 2 tiles directly ahead of the tank (tank is 2x2, so 2 tiles wide)
+	# Check every tile directly ahead across the tank's body: 2 columns when it
+	# sits on a tile corner, 3 when it is snapped to a half-tile.
 	var ahead_center: Vector2 = global_position + dir * (HALF_TANK + HALF_TILE)
 	var perp := Vector2(dir.y, dir.x)  # perpendicular direction
-	for offset in [-0.5, 0.5]:  # Check both lanes of the 2-tile-wide tank
-		var check_pos: Vector2 = ahead_center + perp * (HALF_TILE * offset * 2)
+	for offset in BODY_LANE_OFFSETS:
+		var check_pos: Vector2 = ahead_center + perp * offset
 		var tile_pos: Vector2i = lm.world_to_tile(check_pos)
 		if lm._fg_tile_data.has(tile_pos):
 			var code: int = lm._fg_tile_data[tile_pos].get("code", 0)
@@ -566,8 +562,12 @@ func _has_mine_special() -> bool:
 	return special_weapon_type == "mine"
 
 func _lay_mine_special() -> bool:
-	# Enemy mine level from its special-weapon level (0-3 -> mine level 1-4).
-	return _place_mine(clampi(special_weapon_level + 1, 1, 4))
+	if not _place_mine(mini(special_weapon_level, ENEMY_MINE_MAX_LEVEL)):
+		return false
+	# The original sounded every special weapon, enemies' included; only the
+	# plain gun was silent for them.
+	SoundManager.play(&"lay_mine")
+	return true
 
 func _has_ap_special() -> bool:
 	return special_weapon_type == "ap"
@@ -582,6 +582,7 @@ func _shoot_special_ap() -> bool:
 		return false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
 	_begin_shot()
+	SoundManager.play(&"fire_ap")
 	_spawn_ap_bullet(config)
 	return true
 
@@ -600,6 +601,7 @@ func _shoot_special_explosion() -> bool:
 		return false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.45))
 	_begin_shot()
+	SoundManager.play(&"fire_explosion")
 	_spawn_explosion_bullet(config)
 	return true
 
@@ -613,6 +615,7 @@ func _shoot_special_fire() -> bool:
 		return false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.27))
 	_begin_shot()
+	SoundManager.play(&"fire_fire")
 	_spawn_fire_bullet(config)
 	return true
 
@@ -631,30 +634,9 @@ func _shoot_special_rapid() -> bool:
 
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.4))
 	_begin_shot()
+	SoundManager.play(&"fire_rapid")
 	_spawn_single_row_bullet(row_offset, bullet_speed * speed_multiplier, "rapid")
 	return true
-
-func _update_sprite_direction() -> void:
-	super._update_sprite_direction()
-	_update_addon_directions()
-
-func _update_addon_directions() -> void:
-	# Compute rotation from facing direction
-	var rot := 0.0
-	if current_direction == Vector2.DOWN:
-		rot = PI
-	elif current_direction == Vector2.LEFT:
-		rot = -PI / 2
-	elif current_direction == Vector2.RIGHT:
-		rot = PI / 2
-	# Rotate all addon sprites to match tank direction
-	for addon_sprite in _addon_sprites:
-		if addon_sprite and is_instance_valid(addon_sprite):
-			addon_sprite.rotation = rot
-	# Moon-shield also has a front offset
-	if _shield_sprite and is_instance_valid(_shield_sprite):
-		var offset: float = ADDON_CONFIG.get(ADDON_MOON_SHIELD, {}).get("offset", SHIELD_FRONT_OFFSET)
-		_shield_sprite.position = current_direction * offset
 
 func _apply_addons() -> void:
 	if not TYPE_ADDONS.has(tank_type_id):
@@ -665,8 +647,9 @@ func _apply_addons() -> void:
 		var frames: Array = ThemeManager.get_addon_frames(addon_name)
 		var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
 		if tex:
-			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
+			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0 })
 			var addon_sprite := Sprite2D.new()
+			tag_addon_sprite(addon_sprite, addon_name)
 			addon_sprite.texture = tex
 			addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
 			var tex_size := tex.get_size()
@@ -702,12 +685,24 @@ func is_bullet_blocked(bullet_direction: Vector2) -> bool:
 	# dot < 0 means bullet is coming toward the front half of the tank
 	return bullet_direction.dot(current_direction) < 0
 
+## An enemy's gun level is its special-weapon level.
+func get_gun_level() -> int:
+	return special_weapon_level
+
+func get_addon_names() -> Array:
+	return addons.duplicate()
+
+func lose_addon(addon_name: String) -> void:
+	if addon_name in addons:
+		_remove_addon(addon_name)
+
 func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	health -= 1
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
-	# Turn to face the attacker and retaliate (skip if frozen)
-	if bullet_direction != Vector2.ZERO and health > 0 and not GameManager.enemies_frozen:
+	# Turn to face the attacker and retaliate (skip if frozen, including the debug
+	# freeze, which stops this tank from processing)
+	if bullet_direction != Vector2.ZERO and health > 0 and not GameManager.enemies_frozen and can_process():
 		var face_dir := -bullet_direction  # face toward the shooter
 		current_direction = face_dir
 		_snap_and_update()
@@ -717,6 +712,8 @@ func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 		_drop_addon_cookie()
 	if health <= 0:
 		destroy()
+	else:
+		SoundManager.play(&"tank_hit")
 
 func destroy() -> void:
 	Events.enemy_destroyed.emit(self, points_value)

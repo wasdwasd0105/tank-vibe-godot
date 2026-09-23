@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://ifanb2y770nk"]
+
+[ext_resource type="Script" path="res://scripts/tests/tank_block_test.gd" id="1_tankblock"]
+
+[node name="TankBlockTest" type="Node"]
+script = ExtResource("1_tankblock")

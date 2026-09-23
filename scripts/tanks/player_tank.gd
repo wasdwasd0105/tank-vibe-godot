@@ -31,11 +31,13 @@ var _shield_sprite: Sprite2D = null
 # anti-water, anti-ice, memory-save are mutually exclusive (only one active at a time)
 const UTILITY_ADDONS: Array = ["anti-water", "anti-ice", "memory-save"]
 var _current_utility_addon: String = ""
+## Add-on size relative to TANK_SIZE. Where each one sits is BaseTank's
+## _layout_addons, as the original placed them.
 const ADDON_CONFIG: Dictionary = {
-	"moon-shield":  { "scale": 1.0, "offset": 9.0 },  # hood arc over the front, like the original
-	"anti-water":   { "scale": 1.0, "offset": 0.0 },
-	"anti-ice":     { "scale": 1.0, "offset": 10.0 },
-	"memory-save":  { "scale": 1.0, "offset": 0.0 },
+	"moon-shield":  { "scale": 1.0 },
+	"anti-water":   { "scale": 1.0 },
+	"anti-ice":     { "scale": 1.0 },
+	"memory-save":  { "scale": 1.0 },
 }
 
 const SPAWN_INVINCIBILITY: float = 3.0
@@ -94,7 +96,7 @@ func _ready() -> void:
 	set_collision_layer_value(3, true)  # player_tanks
 	set_collision_mask_value(1, true)   # walls
 	set_collision_mask_value(2, true)   # water
-	set_collision_mask_value(4, false)  # enemy_tanks (no mutual push; enemy stops via test_move detection)
+	set_collision_mask_value(4, false)  # enemy_tanks (no mutual push; each stops for the other via _opponent_ahead)
 	set_collision_mask_value(6, true)   # enemy_bullets
 	set_collision_mask_value(7, true)   # powerups
 
@@ -162,10 +164,6 @@ func _physics_process(delta: float) -> void:
 	if auto_secondary_held or Input.is_action_just_pressed(_input_prefix + "shoot2"):
 		shoot_secondary()
 
-func _update_sprite_direction() -> void:
-	super._update_sprite_direction()
-	_update_addon_directions()
-
 # --- Speed & weapon upgrade application ---
 
 func _apply_speed_upgrade() -> void:
@@ -209,6 +207,7 @@ func shoot_regular() -> void:
 
 	_set_shoot_cooldown_wait_time(REGULAR_WEAPON_COOLDOWN_MAP.get(weapon_level, 0.4))
 	_begin_shot()
+	SoundManager.play(&"fire_primary")
 	_spawn_single_row_bullet(row_offset)
 
 # --- Cookie effect methods ---
@@ -292,8 +291,9 @@ func _add_addon_sprite(addon_name: String) -> void:
 	var frames: Array = ThemeManager.get_addon_frames(addon_name)
 	var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
 	if tex:
-		var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0, "offset": 0.0 })
+		var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0 })
 		var addon_sprite := Sprite2D.new()
+		tag_addon_sprite(addon_sprite, addon_name)
 		addon_sprite.texture = tex
 		addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
 		var tex_size := tex.get_size()
@@ -311,28 +311,33 @@ func _add_addon_sprite(addon_name: String) -> void:
 		else:
 			move_child(addon_sprite, 0)  # behind everything
 		_addon_sprites[addon_name] = addon_sprite
-		_update_addon_directions()
+		_layout_addons()
 
 func is_bullet_blocked(bullet_direction: Vector2) -> bool:
 	if not has_moon_shield:
 		return false
 	return bullet_direction.dot(current_direction) < 0
 
-func _update_addon_directions() -> void:
-	var rot := 0.0
-	if current_direction == Vector2.DOWN:
-		rot = PI
-	elif current_direction == Vector2.LEFT:
-		rot = -PI / 2
-	elif current_direction == Vector2.RIGHT:
-		rot = PI / 2
-	for addon_name in _addon_sprites:
-		var addon_sprite: Sprite2D = _addon_sprites[addon_name]
-		if addon_sprite and is_instance_valid(addon_sprite):
-			addon_sprite.rotation = rot
-	if _shield_sprite and is_instance_valid(_shield_sprite):
-		var offset: float = ADDON_CONFIG.get("moon-shield", {}).get("offset", 5.0)
-		_shield_sprite.position = current_direction * offset
+func get_gun_level() -> int:
+	return weapon_level
+
+## The moon shield first: it is what a hit would cost first, too.
+func get_addon_names() -> Array:
+	var names: Array = []
+	if has_moon_shield:
+		names.append("moon-shield")
+	if not _current_utility_addon.is_empty():
+		names.append(_current_utility_addon)
+	return names
+
+func lose_addon(addon_name: String) -> void:
+	if addon_name == "moon-shield":
+		_remove_moon_shield()
+	elif addon_name == _current_utility_addon:
+		_remove_utility_addon()
+
+func is_invulnerable() -> bool:
+	return is_invincible
 
 # --- Secondary weapon system ---
 
@@ -399,6 +404,7 @@ func _shoot_secondary_ap() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("ap", weapon_level)
 	if config.is_empty():
 		return
+	SoundManager.play(&"fire_ap")
 	if active_ap_bullets >= int(config.get("max_in_flight", 2)):
 		return
 
@@ -421,9 +427,10 @@ func _shoot_secondary_mine() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("mine", weapon_level)
 	if config.is_empty():
 		return
-	# Lay the mine first; if there's no free tile, spend neither ammo nor cooldown.
-	if not _place_mine(int(config.get("mine_level", 1))):
+	# Lay the mine first; if there's no free spot, spend neither ammo nor cooldown.
+	if not _place_mine(weapon_level):
 		return
+	SoundManager.play(&"lay_mine")
 	can_shoot = false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
 	if shoot_cooldown:
@@ -435,6 +442,7 @@ func _shoot_secondary_rapid() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", weapon_level)
 	if config.is_empty():
 		return
+	SoundManager.play(&"fire_rapid")
 
 	var fire_rows: Array = config.get("rows", [FIRE_ROW_MID])
 	var ammo_per_count: int = config.get("ammo_per_count", 1)
@@ -456,6 +464,7 @@ func _shoot_secondary_fire() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("fire", weapon_level)
 	if config.is_empty():
 		return
+	SoundManager.play(&"fire_fire")
 	if active_fire_bullets >= int(config.get("max_in_flight", 3)):
 		return
 
@@ -470,6 +479,7 @@ func _shoot_secondary_explosion() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("explosion", weapon_level)
 	if config.is_empty():
 		return
+	SoundManager.play(&"fire_explosion")
 	if active_explosion_bullets >= int(config.get("max_in_flight", 2)):
 		return
 
@@ -525,16 +535,8 @@ func _update_shield_visual(active: bool) -> void:
 
 func _is_enemy_ahead() -> bool:
 	## Check if an enemy tank is blocking movement in the current direction.
-	## Temporarily enables the enemy mask for test_move, then disables it.
 	var lookahead := maxf(move_speed / float(Engine.physics_ticks_per_second), 2.0)
-	set_collision_mask_value(4, true)
-	var blocked := test_move(global_transform, current_direction * lookahead)
-	set_collision_mask_value(4, false)
-	if not blocked:
-		return false
-	# Check if the blockage is specifically an enemy (not a wall)
-	var still_blocked := test_move(global_transform, current_direction * lookahead)
-	return not still_blocked  # True = enemy was the only thing blocking
+	return _opponent_ahead("enemies", current_direction, lookahead)
 
 # --- Hit punishment system ---
 

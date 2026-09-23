@@ -100,6 +100,7 @@ func add_score(player_id: int, points: int, enemy_type: int) -> void:
 	# Extra life every 20000 points
 	if old_score / EXTRA_LIFE_SCORE < player_scores[player_id] / EXTRA_LIFE_SCORE:
 		player_lives[player_id] += 1
+		SoundManager.play(&"extra_life")
 
 func lose_life(player_id: int) -> void:
 	player_lives[player_id] -= 1
@@ -116,9 +117,11 @@ func add_score_direct(player_id: int, points: int) -> void:
 	player_scores[player_id] += points
 	if old_score / EXTRA_LIFE_SCORE < player_scores[player_id] / EXTRA_LIFE_SCORE:
 		player_lives[player_id] += 1
+		SoundManager.play(&"extra_life")
 
 func add_life(player_id: int) -> void:
 	player_lives[player_id] += 1
+	SoundManager.play(&"extra_life")
 
 func join_player(player_id: int) -> bool:
 	if credits <= 0:

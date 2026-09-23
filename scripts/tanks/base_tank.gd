@@ -10,6 +10,16 @@ const FIRE_ROW_LEFT: float = -16.0
 const FIRE_ROW_MID: float = 0.0
 const FIRE_ROW_RIGHT: float = 16.0
 const MID_ROW_COLLISION_OFFSETS: Array[float] = [-16.0, 16.0]
+## Half the tanks' 60x60 hitbox (see the tank scenes), less half a pixel so a
+## lane stays strictly inside the body.
+const BODY_EDGE: float = 29.5
+## Perpendicular offsets spanning a tank's whole hitbox. A tank snapped to a
+## half-tile straddles three tile columns, so "which tiles is this tank up
+## against" needs all three: +/-16 misses the outer column on one side, which
+## left tanks walled in by a brick their own shots never reached.
+const BODY_LANE_OFFSETS: Array[float] = [-BODY_EDGE, 0.0, BODY_EDGE]
+## Side of every tank's square hitbox (the tank scenes' collision shapes).
+const HITBOX_SIZE: float = 60.0
 
 # Playfield boundaries in global coordinates (Playfield at 160,16; grid 40x30 @ 32px)
 const PLAYFIELD_MIN_X: float = 192.0   # 160 + 32 (half tank inset)
@@ -43,19 +53,36 @@ const DAMAGE_FLASH_DURATION: float = 0.35
 var _damage_flash_timer: float = 0.0
 
 # Mine weapon effects on this tank.
-var is_mine_slowed: bool = false        # halved speed until a cookie is picked up (players)
-var is_flying: bool = false             # thrown into the air by a level 3/4 mine — helpless
-var _fly_t: float = 0.0
-var _fly_duration: float = 0.0
-var _fly_level: int = 3
-var _fly_horiz_vel: Vector2 = Vector2.ZERO
-var _fly_peak_height: float = 0.0       # visual altitude at apex (px)
-var _fly_peak_scale: float = 0.0        # extra sprite scale at apex
-var _fly_spin_speed: float = 0.0        # rad/s (signed)
+var is_mine_slowed: bool = false        # quarter speed until an add-on or MAX pickup, or death
+var is_flying: bool = false             # thrown into the air by a level 2/3 mine — helpless
+var _fly_velocity: Vector2 = Vector2.ZERO   # px/s, away from the mine
+var _fly_altitude: float = 0.0          # the sprite draws at (altitude + 1) times its size
+var _fly_climb: float = 0.0             # altitude gained per time unit
+var _fly_angle: float = 0.0             # tumble so far, in 1/256 turns
+var _fly_spin: float = 0.0              # 1/256 turns per time unit
+var _fly_spin_accel: float = 0.0
 var _fly_base_sprite_scale: Vector2 = Vector2.ONE
+var _fly_base_rotation: float = 0.0
 var _fly_saved_layer: int = 0
+var _fly_saved_z: int = 0
 
-const MINE_SLOW_FACTOR: float = 0.5
+## The original quartered a mined tank's move speed (0x00492f24).
+const MINE_SLOW_FACTOR: float = 0.25
+
+## The mine flight, ported from the original's TFlyingTank (0x0049a5ec, DoMove
+## 0x0049a7f4). Its clock ran in units of 1000 engine ticks, 0.75 s.
+const FLY_TIME_UNIT: float = 0.75
+## Launch speed: this many times the tank's offset from the mine centre, per unit.
+const FLY_THROW: float = 5.0
+## Altitude climbs at (mine level + 2) per unit to begin with, and falls at this.
+const FLY_GRAVITY: float = -5.0
+## The tumble starts at 200 x the mine level in 1/256 turns per unit, and slows.
+const FLY_SPIN_PER_LEVEL: float = 200.0
+const FLY_SPIN_SLOWDOWN: float = 55.0
+## Airborne tanks draw over grass, blasts and everything else on the field.
+const FLY_Z_INDEX: int = 30
+## The original's facing numbers: 0 up, 1 right, 2 down, 3 left.
+const FACINGS: Array[Vector2] = [Vector2.UP, Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT]
 
 # Spawn materialize: a tank is created hidden + intangible while its spawn burst
 # plays, then revealed and made collidable so it only "appears" once the effect
@@ -77,6 +104,7 @@ func _process(delta: float) -> void:
 	if fire_immunity_timer > 0.0:
 		fire_immunity_timer -= delta
 	_animate_addons(delta)
+	_layout_addons()
 	_tick_damage_flash(delta)
 	_tick_state_overlay(delta)
 	_tick_materialize(delta)
@@ -99,7 +127,22 @@ func _tick_damage_flash(delta: float) -> void:
 # --- Animated addon sprites (anti-water / memory-save, 4-frame loops) ---
 var _animated_addons: Array = []   # Array of { "sprite": Sprite2D, "frames": Array }
 var _addon_anim_time: float = 0.0
-const ADDON_ANIM_FRAME_DUR: float = 1.0
+## The original stepped both rings 3 frames per 1000 ticks (0.75 s).
+const ADDON_ANIM_FRAME_DUR: float = 0.25
+
+# --- Add-on placement. Tank.exe drew every add-on at the tank's own spot and
+# size, under the body, pushed along the facing (0x00493720). In original px,
+# doubled here: the moon shield 4 px ahead, the memory-save ring 2 px behind,
+# and the anti-water ring and anti-ice wings 2 px behind while driving but 1 px
+# when still or on ice. The wings and the shield have a drawn frame per facing;
+# the rings stay upright. A tank in the air (a mine flight) shows none.
+const ADDON_PUSH: Dictionary = {
+	"moon-shield": 8.0, "memory-save": -4.0, "anti-water": -4.0, "anti-ice": -4.0,
+}
+const ADDON_PUSH_EASED: float = -2.0
+const ADDONS_EASED_WHEN_IDLE: Array = ["anti-water", "anti-ice"]
+const UPRIGHT_ADDONS: Array = ["anti-water", "memory-save"]
+const FACING_ROTATIONS: Array[float] = [0.0, PI / 2, PI, -PI / 2]
 
 ## Hide + freeze this tank while its spawn burst plays; it reveals after [param duration].
 ## collision_layer is zeroed (mirroring the fly state) so it can't be hit or block meanwhile.
@@ -123,6 +166,41 @@ func _tick_materialize(delta: float) -> void:
 ## Register an addon sprite to cycle through [param frames] each ADDON_ANIM_FRAME_DUR.
 func register_animated_addon(sprite: Sprite2D, frames: Array) -> void:
 	_animated_addons.append({ "sprite": sprite, "frames": frames })
+
+## Marks [param sprite] as the [param addon_name] add-on, for _layout_addons.
+func tag_addon_sprite(sprite: Sprite2D, addon_name: String) -> void:
+	sprite.set_meta(&"addon", addon_name)
+
+func _layout_addons() -> void:
+	var facing := maxi(FACINGS.find(current_direction), 0)
+	var eased := -1  # worked out once, when an add-on first needs it
+	for child in get_children():
+		var spr := child as Sprite2D
+		if spr == null or not spr.has_meta(&"addon"):
+			continue
+		var addon_name: String = spr.get_meta(&"addon")
+		spr.visible = not is_flying
+		var frames: Array = ThemeManager.get_addon_facing_textures(addon_name)
+		if frames.size() == FACINGS.size():
+			spr.texture = frames[facing]
+			spr.rotation = 0.0
+		elif addon_name in UPRIGHT_ADDONS:
+			spr.rotation = 0.0
+		else:
+			spr.rotation = FACING_ROTATIONS[facing]  # only one frame: turn it
+		var push: float = ADDON_PUSH.get(addon_name, 0.0)
+		if addon_name in ADDONS_EASED_WHEN_IDLE:
+			if eased < 0:
+				eased = 1 if velocity == Vector2.ZERO or _on_ice_terrain() else 0
+			if eased == 1:
+				push = ADDON_PUSH_EASED
+		spr.position = current_direction * push
+
+## Two or more of the four tiles under the tank iced over, as the original
+## judged it for the add-on push.
+func _on_ice_terrain() -> bool:
+	var lm := _get_level_manager()
+	return lm != null and lm.ice_tiles_under(global_position) >= 2
 
 func _animate_addons(delta: float) -> void:
 	if _animated_addons.is_empty():
@@ -233,6 +311,26 @@ func stop_moving() -> void:
 	velocity = Vector2.ZERO
 	is_moving = false
 
+## True if a tank from [param group] ("players" or "enemies") is in the way of a
+## [param distance] px step along [param direction]. Players and bots never
+## collide physically (a bot must not shove the player), so they stop for each
+## other here instead. Only a tank AHEAD counts: two tanks that already overlap,
+## which a turn's grid snap, a revive or a mine landing can cause, can always
+## drive apart. A physics test move from inside the overlap hits in every
+## direction and left both tanks frozen.
+func _opponent_ahead(group: String, direction: Vector2, distance: float) -> bool:
+	var across := Vector2(-direction.y, direction.x)
+	for node in get_tree().get_nodes_in_group(group):
+		var other := node as BaseTank
+		if other == null or other == self or other.collision_layer == 0:
+			continue  # airborne or still materializing: nothing to bump into
+		var offset: Vector2 = other.global_position - global_position
+		var ahead: float = offset.dot(direction)
+		if ahead > 0.0 and ahead - HITBOX_SIZE < distance \
+				and absf(offset.dot(across)) < HITBOX_SIZE:
+			return true
+	return false
+
 func _update_sprite_direction() -> void:
 	if not sprite:
 		return
@@ -244,6 +342,7 @@ func _update_sprite_direction() -> void:
 		sprite.rotation = -PI / 2
 	elif current_direction == Vector2.RIGHT:
 		sprite.rotation = PI / 2
+	_layout_addons()
 
 func shoot() -> void:
 	if active_bullets >= max_bullets or not can_shoot:
@@ -288,6 +387,11 @@ func _spawn_bullet(
 	bullet.is_player_bullet = is_in_group("players")
 	bullet.visual_lane_offsets = visual_lane_offsets.duplicate()
 	bullet.collision_lane_offsets = collision_lane_offsets.duplicate()
+	# A tank-wide shot tests the tile grid across the shooter's whole body, so it
+	# can always clear what the tank is blocked by. Its hitbox against tanks keeps
+	# the narrower collision lanes, so it hits tanks exactly as before.
+	if collision_lane_offsets.size() > 1:
+		bullet.tile_lane_offsets = BODY_LANE_OFFSETS
 	bullet.visual_style = bullet_visual_style
 	bullet.ignites_ground = ignites_ground
 	bullet.damage = bullet_damage
@@ -297,9 +401,6 @@ func _spawn_bullet(
 	bullet.pierces = pierces
 	bullet.accel = accel
 	bullet.max_speed = max_speed
-	# Weapon level 3 player tanks can destroy steel
-	if self is PlayerTank and self.weapon_level >= 3:
-		bullet.can_destroy_steel = true
 	bullet.global_position = spawn_position
 
 	# Set collision layers based on owner
@@ -410,14 +511,34 @@ func _spawn_ap_bullet(config: Dictionary) -> void:
 func break_moon_shield_grace() -> void:
 	pass
 
-# --- Mine weapon: laying, slow debuff, and the level 3/4 fly effect ---
+# --- Mine weapon: laying, slow debuff, and the level 2/3 fly effect ---
 
-## Lay a mine of [param level] (1-4) on a tile behind the tank. Returns true if laid.
+## Lay a level-[param level] (0-3) mine on the ring of spots around the tank,
+## behind it first. Returns true if laid.
 func _place_mine(level: int) -> bool:
 	var lm := _get_level_manager()
 	if not lm:
 		return false
-	return lm.try_place_mine(global_position, current_direction, level, is_in_group("players"))
+	return lm.try_place_mine(self, level)
+
+## Gun upgrade level 0-3. Sets the level of the mines this tank lays and the
+## strength of the blast when it lands from a mine flight.
+func get_gun_level() -> int:
+	return 0
+
+## The add-ons this tank carries: "anti-water", "anti-ice", "moon-shield",
+## "memory-save". The mine rules key off them.
+func get_addon_names() -> Array:
+	return []
+
+## A mine flight tears [param addon_name] off. Nothing drops: the original just
+## cleared the tank's add-on.
+func lose_addon(_addon_name: String) -> void:
+	pass
+
+## True while the tank cannot be hurt (spawn protection, the helmet).
+func is_invulnerable() -> bool:
+	return false
 
 func apply_mine_slow() -> void:
 	is_mine_slowed = true
@@ -425,62 +546,71 @@ func apply_mine_slow() -> void:
 func clear_mine_slow() -> void:
 	is_mine_slowed = false
 
-## Thrown into the air by a level 3/4 mine: helpless, uncollidable, spinning arc.
-func launch_mine_fly(mine_level: int) -> void:
+## Thrown into the air by a level 2/3 mine: helpless, uncollidable, tumbling.
+## The throw carries the tank away from [param mine_center] at five times its
+## offset from it per time unit, so a tank that drove onto the mine flies back
+## the way it came: about 11 tiles from a level-2 mine, 14 from a level-3. The
+## flight lasts 1.2 s or 1.5 s, until the altitude comes back down to zero.
+func launch_mine_fly(mine_level: int, mine_center: Vector2) -> void:
 	if is_flying:
 		return
 	is_flying = true
-	_fly_level = mine_level
-	_fly_t = 0.0
-	_fly_duration = 1.2 if mine_level == 3 else 1.5
-	# Thrown to a random spot anywhere on the playfield.
-	var target := Vector2(
-		randf_range(PLAYFIELD_MIN_X, PLAYFIELD_MAX_X),
-		randf_range(PLAYFIELD_MIN_Y, PLAYFIELD_MAX_Y))
-	_fly_horiz_vel = (target - global_position) / _fly_duration
-	# Longer throws arc higher, so the flight reads as a real launch across the map.
-	var throw_dist := global_position.distance_to(target)
-	_fly_peak_height = clampf(throw_dist * 0.18, 40.0, 160.0)
-	_fly_peak_scale = 1.6 if mine_level == 3 else 2.6
-	var revs := 2.3 if mine_level == 3 else 4.3
-	_fly_spin_speed = (1.0 if randf() < 0.5 else -1.0) * revs * TAU / _fly_duration
+	_fly_velocity = (global_position - mine_center) * FLY_THROW / FLY_TIME_UNIT
+	_fly_altitude = 0.0
+	_fly_climb = mine_level + 2.0
+	_fly_angle = 0.0
+	# A coin flip picks which way it tumbles.
+	var way := 1.0 if randi() % 2 == 1 else -1.0
+	_fly_spin = way * FLY_SPIN_PER_LEVEL * mine_level
+	_fly_spin_accel = -way * FLY_SPIN_SLOWDOWN
 	if sprite:
 		_fly_base_sprite_scale = sprite.scale
+		_fly_base_rotation = sprite.rotation
 	# Become helpless: can't be hit, can't collide, can't trigger anything.
 	_fly_saved_layer = collision_layer
 	collision_layer = 0
+	_fly_saved_z = z_index
+	z_index = FLY_Z_INDEX
 	velocity = Vector2.ZERO
 
-## Drive the parabolic spin arc. Player/enemy _physics_process delegate here while
-## airborne. Altitude is faked with sprite offset + scale; the node drifts flat.
+## One step of the flight, integrated as the original did. Player/enemy
+## _physics_process delegate here while airborne. Height shows only as size:
+## the sprite never lifts off its spot.
 func _update_flying(delta: float) -> void:
-	_fly_t += delta
-	var t: float = _fly_t / _fly_duration
-	if t >= 1.0:
+	var dt := delta / FLY_TIME_UNIT
+	_fly_altitude += _fly_climb * dt
+	_fly_climb += FLY_GRAVITY * dt
+	_fly_angle += _fly_spin * dt
+	_fly_spin += _fly_spin_accel * dt
+	# The original also let a high tank drift up the screen by its altitude,
+	# which adds up to a few pixels over a flight.
+	global_position += _fly_velocity * delta + Vector2(0.0, -2.0 * _fly_altitude * dt)
+	clamp_to_playfield()
+	if _fly_altitude <= 0.0:
 		_land_from_flight()
 		return
-	global_position += _fly_horiz_vel * delta
-	clamp_to_playfield()
-	var alt: float = 4.0 * t * (1.0 - t)  # 0 -> 1 (apex) -> 0
 	if sprite:
-		sprite.position = Vector2(0.0, -_fly_peak_height * alt)
-		sprite.scale = _fly_base_sprite_scale * (1.0 + _fly_peak_scale * alt)
-		sprite.rotation += _fly_spin_speed * delta
+		sprite.scale = _fly_base_sprite_scale * (1.0 + _fly_altitude)
+		sprite.rotation = _fly_base_rotation + _fly_angle * TAU / 256.0
 
 func _land_from_flight() -> void:
 	is_flying = false
 	if sprite:
 		sprite.position = Vector2.ZERO
 		sprite.scale = _fly_base_sprite_scale
-	# Land facing a random cardinal (wherever the spin stopped).
-	current_direction = [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT].pick_random()
+	# It lands facing where the tumble stopped, rounded back to a quarter turn.
+	var quarter_turns := posmod(roundi(_fly_angle), 256) >> 6
+	var facing := maxi(FACINGS.find(current_direction), 0)
+	current_direction = FACINGS[(facing + quarter_turns) % FACINGS.size()]
 	_update_sprite_direction()
 	collision_layer = _fly_saved_layer
+	z_index = _fly_saved_z
 	velocity = Vector2.ZERO
-	# Second (neutral) blast at the landing tile — hits the victim AND nearby tanks.
+	# Second (neutral) blast at the landing tile — hits the victim AND nearby
+	# tanks. Its strength is the victim's own gun level, not the mine's.
 	var lm := _get_level_manager()
 	if lm:
-		lm.spawn_explosion_blast(global_position, clampi(_fly_level - 1, 0, 3), is_in_group("players"), true)
+		lm.spawn_explosion_blast(global_position, get_gun_level(), is_in_group("players"), true)
 
 func _get_level_manager() -> LevelManager:
 	var game := get_tree().get_first_node_in_group("game")
@@ -505,21 +635,29 @@ func take_damage() -> void:
 	health -= 1
 	if health <= 0:
 		destroy()
+	else:
+		# The original only sounded a hit the tank actually survived; a fatal
+		# hit is covered by the destruction sound instead.
+		SoundManager.play(&"tank_hit")
 
 func destroy() -> void:
 	_spawn_explosion()
 	queue_free()
 
 func _spawn_explosion() -> void:
+	var effects_container = get_tree().get_first_node_in_group("effects_container")
+	var parent: Node = effects_container if effects_container else get_tree().current_scene
+	# A theme with the original's explosion strip plays it (Tank.exe turned a dead
+	# tank into image 9, _B_48); otherwise the built-in burst.
+	var frames: Array = ThemeManager.get_tank_explode_frames()
+	if not frames.is_empty():
+		HitEffect.spawn(parent, global_position, frames, ThemeManager.get_tank_explode_duration())
+		return
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var explosion := explosion_scene.instantiate()
 	explosion.global_position = global_position
 	explosion.scale = Vector2(2, 2)  # Larger explosion for 2x2 tanks
-	var effects_container = get_tree().get_first_node_in_group("effects_container")
-	if effects_container:
-		effects_container.add_child(explosion)
-	else:
-		get_tree().current_scene.add_child(explosion)
+	parent.add_child(explosion)
 
 func clamp_to_playfield() -> void:
 	global_position.x = clampf(global_position.x, PLAYFIELD_MIN_X, PLAYFIELD_MAX_X)

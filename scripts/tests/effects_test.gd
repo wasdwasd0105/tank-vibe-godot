@@ -136,5 +136,46 @@ func _run() -> void:
 	check(lm.find_clear_area(p1_tl, Vector2i(2, 2)) == p1_tl,
 		"an already-clear ideal block is returned unchanged")
 
+	print("\n[G] A destroyed tank plays the theme's explosion strip, else the built-in burst")
+	var prev_theme: String = ThemeManager.current_theme
+	var effects: Node = game.get_node("Entities/Effects")
+	# The bots from the earlier sections keep shooting, and their bullet hits add
+	# effects of their own; clear them out and look only where the victim died.
+	for e in enemies_container.get_children():
+		e.queue_free()
+	await tree.process_frame
+	for theme_name in ["juezhuantanke", "default"]:
+		ThemeManager.load_theme(theme_name)
+		var strip: Array = ThemeManager.get_tank_explode_frames()
+		if theme_name == "juezhuantanke":
+			check(strip.size() == 8 and (strip[0] as Texture2D).get_size() == Vector2(96, 96),
+				"juezhuantanke: 8 explosion frames of 96 px (the original's 48 px _B_48, doubled)")
+		else:
+			check(strip.is_empty(), "default: no explosion strip")
+		for fx in effects.get_children():
+			fx.free()
+		var victim := _spawn_enemy(enemies_container, lm.tile_to_world(_open_tile(lm)))
+		await tree.process_frame
+		var at := victim.global_position
+		victim.destroy()
+		var themed: HitEffect = null
+		var bursts := 0
+		for fx in effects.get_children():
+			if not (fx is Node2D) or (fx as Node2D).global_position != at:
+				continue
+			if fx is HitEffect and fx._frames == strip:
+				themed = fx
+			elif fx.get_script() and fx.get_script().resource_path == "res://scripts/effects/explosion.gd":
+				bursts += 1
+		if theme_name == "juezhuantanke":
+			check(themed != null and bursts == 0,
+				"juezhuantanke: a destroyed bot plays the original's explosion, not the yellow circle")
+			await tree.create_timer(0.5).timeout
+			check(not is_instance_valid(themed), "the explosion frees itself once its 0.4 s are up")
+		else:
+			check(themed == null and bursts == 1, "default: a destroyed bot keeps the built-in burst")
+	ThemeManager.load_theme(prev_theme)
+	await tree.create_timer(1.5).timeout  # let the explosion sounds finish before quitting
+
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

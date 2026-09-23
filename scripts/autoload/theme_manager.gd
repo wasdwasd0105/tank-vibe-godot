@@ -22,7 +22,12 @@ var _partial_brick_cache: Dictionary = {}     # mask (int) or "mask_variant" (St
 var _tank_textures: Dictionary = {}           # "p1","p2","e1"-"e24" -> Texture2D
 var _addon_textures: Dictionary = {}         # "moon-shield","anti-water",etc -> Texture2D
 var _addon_frames: Dictionary = {}           # "anti-water","memory-save" -> Array[Texture2D] (4-frame anim)
+var _addon_facing_textures: Dictionary = {}  # "anti-ice","moon-shield" -> [up, right, down, left]
 var _flag_frames: Dictionary = {}            # "healthy","dead","invincible" -> Array[Texture2D] (base flag anim)
+var _hit_frames: Dictionary = {}             # bullet visual style -> Array[Texture2D] (hit anim)
+var _hit_duration: float = 0.2
+var _tank_explode_frames: Array = []         # a destroyed tank's explosion (empty: built-in burst)
+var _tank_explode_duration: float = 0.4
 
 # =====================================================================
 # Procedural color palettes (moved from level_manager.gd)
@@ -138,7 +143,10 @@ func load_theme(theme_name: String) -> void:
 	_tank_textures.clear()
 	_addon_textures.clear()
 	_addon_frames.clear()
+	_addon_facing_textures.clear()
 	_flag_frames.clear()
+	_hit_frames.clear()
+	_tank_explode_frames = []
 
 	if _theme_type == "procedural":
 		_generate_procedural_textures()
@@ -148,7 +156,10 @@ func load_theme(theme_name: String) -> void:
 	_load_tank_textures()
 	_load_addon_textures()
 	_load_addon_frames()
+	_load_addon_facing_textures()
 	_load_flag_frames()
+	_load_hit_frames()
+	_load_tank_explode_frames()
 	theme_changed.emit(theme_name)
 
 ## Full code→Texture2D dictionary (for level_manager)
@@ -184,6 +195,24 @@ func get_tank_texture(tank_key: String) -> Texture2D:
 func get_flag_frames(state: String) -> Array:
 	return _flag_frames.get(state, [])
 
+## Hit animation for a bullet visual style ("regular", "rapid", "fire", "ap",
+## "explosion"), or empty when the theme has none (the built-in flash is used).
+func get_hit_frames(style: String) -> Array:
+	return _hit_frames.get(style, [])
+
+## Seconds a hit animation takes to play through once.
+func get_hit_duration() -> float:
+	return _hit_duration
+
+## A destroyed tank's explosion, or empty when the theme has none (the built-in
+## burst is used).
+func get_tank_explode_frames() -> Array:
+	return _tank_explode_frames
+
+## Seconds the tank explosion takes to play through once.
+func get_tank_explode_duration() -> float:
+	return _tank_explode_duration
+
 ## Addon sprite texture (e.g. "moon-shield", "anti-water")
 func get_addon_texture(addon_name: String) -> Texture2D:
 	return _addon_textures.get(addon_name, null)
@@ -191,6 +220,17 @@ func get_addon_texture(addon_name: String) -> Texture2D:
 ## Whether tanks should use color modulation (true) or dedicated sprites (false)
 func is_tank_modulate_mode() -> bool:
 	return _tank_mode == "modulate"
+
+## Read any value out of the current theme.cfg, for systems that keep their own
+## theme-specific assets (see SoundManager and the [sounds] section).
+func get_theme_setting(section: String, key: String, fallback: Variant) -> Variant:
+	if _config == null:
+		return fallback
+	return _config.get_value(section, key, fallback)
+
+## Absolute res:// folder of the current theme, with a trailing slash.
+func get_theme_dir() -> String:
+	return THEMES_DIR + current_theme + "/"
 
 ## Get the display name from theme.cfg
 func get_theme_display_name() -> String:
@@ -481,6 +521,53 @@ func _load_flag_frames() -> void:
 		_flag_frames[FLAG_STATES[row]] = frames
 
 # =====================================================================
+# Bullet hit effects
+# =====================================================================
+
+const HIT_STYLES: Array = ["regular", "rapid", "fire", "explosion", "ap"]
+
+## [effects] hit_<style>="strip.png" in theme.cfg: a horizontal strip of square
+## frames, keyed on its corner colour and scaled by tile_scale like the tiles.
+func _load_hit_frames() -> void:
+	if not _config:
+		return
+	_hit_duration = _config.get_value("effects", "hit_duration", 0.2)
+	var by_path: Dictionary = {}  # several styles may share one strip
+	for style in HIT_STYLES:
+		var rel_path: String = _config.get_value("effects", "hit_" + style, "")
+		if rel_path.is_empty():
+			continue
+		if not by_path.has(rel_path):
+			by_path[rel_path] = _slice_strip(THEMES_DIR + current_theme + "/" + rel_path)
+		if not by_path[rel_path].is_empty():
+			_hit_frames[style] = by_path[rel_path]
+
+## [effects] tank_explode="strip.png" in theme.cfg: what a destroyed tank turns
+## into, a strip like the hit ones.
+func _load_tank_explode_frames() -> void:
+	if not _config:
+		return
+	_tank_explode_duration = _config.get_value("effects", "tank_explode_duration", 0.4)
+	var rel_path: String = _config.get_value("effects", "tank_explode", "")
+	if not rel_path.is_empty():
+		_tank_explode_frames = _slice_strip(THEMES_DIR + current_theme + "/" + rel_path)
+
+func _slice_strip(path: String) -> Array:
+	var strip := _load_image_with_blue_transparent(path)
+	if strip == null:
+		push_warning("ThemeManager: could not load effect strip " + path)
+		return []
+	var img := strip.get_image()
+	var size := img.get_height()
+	var frames: Array = []
+	for i in img.get_width() / size:
+		var frame := img.get_region(Rect2i(i * size, 0, size, size))
+		if _tile_scale > 1:
+			frame.resize(size * _tile_scale, size * _tile_scale, Image.INTERPOLATE_NEAREST)
+		frames.append(ImageTexture.create_from_image(frame))
+	return frames
+
+# =====================================================================
 # Addon texture loading
 # =====================================================================
 
@@ -524,6 +611,26 @@ func _load_texture_keep_alpha(path: String) -> Texture2D:
 ## Returns the 4-frame animation for an addon (anti-water / memory-save), or [].
 func get_addon_frames(addon_name: String) -> Array:
 	return _addon_frames.get(addon_name, [])
+
+## Add-ons Tank.exe drew with a separate frame for each facing rather than one
+## frame turned (Tank_L rows 2 and 3; the shading stays lit from the same side).
+const ADDON_FACING_NAMES: Array = ["anti-ice", "moon-shield"]
+const ADDON_FACING_SUFFIXES: Array = ["up", "right", "down", "left"]
+
+func _load_addon_facing_textures() -> void:
+	for addon_name in ADDON_FACING_NAMES:
+		var frames: Array = []
+		for suffix in ADDON_FACING_SUFFIXES:
+			var tex := _load_image_with_blue_transparent(ADDONS_DIR + "%s_%s.png" % [addon_name, suffix])
+			if tex:
+				frames.append(tex)
+		if frames.size() == ADDON_FACING_SUFFIXES.size():
+			_addon_facing_textures[addon_name] = frames
+
+## The frames for [param addon_name] facing up, right, down and left, or [] when
+## it has just the one (the tank turns that one instead).
+func get_addon_facing_textures(addon_name: String) -> Array:
+	return _addon_facing_textures.get(addon_name, [])
 
 # =====================================================================
 # Procedural texture generation (moved from level_manager.gd)

@@ -198,6 +198,24 @@ func get_saved_import_dir(purpose: String) -> String:
 	return _config.get_value("import", purpose + "_dir", "")
 
 # =====================================================================
+# Audio volume persistence (0.0 - 1.0)
+# =====================================================================
+
+func save_sfx_volume(value: float) -> void:
+	_config.set_value("audio", "sfx_volume", clampf(value, 0.0, 1.0))
+	_config.save(SAVE_PATH)
+
+func get_saved_sfx_volume() -> float:
+	return _config.get_value("audio", "sfx_volume", 0.8)
+
+func save_music_volume(value: float) -> void:
+	_config.set_value("audio", "music_volume", clampf(value, 0.0, 1.0))
+	_config.save(SAVE_PATH)
+
+func get_saved_music_volume() -> float:
+	return _config.get_value("audio", "music_volume", 0.7)
+
+# =====================================================================
 # Stats persistence
 # =====================================================================
 

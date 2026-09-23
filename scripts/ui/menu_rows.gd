@@ -6,7 +6,7 @@ extends RefCounted
 ## HBoxContainer named "Layout". The labels inside ignore the mouse so the row
 ## itself receives hover and clicks; only the arrow buttons catch the mouse.
 
-const ROW_HEIGHT := 50.0
+const ROW_HEIGHT := 46.0
 const NAME_WIDTH := 230.0
 const LAYOUT_MARGIN := 16.0
 

@@ -1,106 +1,258 @@
-# Mine Weapon — Reverse-Engineering Findings & Proposed Rules
+# Mine weapon: how the original works
 
-*(6th / final secondary weapon. Reconstructed from `TMineSprite` @VMT 0x004903d8 and `TFlyingTank` @VMT 0x00490454. Blast reuses the same `TExploseSprite` as the explosion weapon. Please read Part B — one finding directly contradicts your current understanding.)*
+The mine system of `Tank.exe` v1.22, read from the disassembly and checked
+against the game's readme. Units are the original's unless marked *remake*. One
+original cell is 16 px and one remake tile is 32 px, so the grids line up
+cell for cell. The engine tick is 0.75 ms, and there are 20 ticks per 15 ms logic
+frame.
 
----
+`scripts/tests/mine_test.gd` checks every rule below that the remake ports
+(`Godot --headless res://scenes/test/mine_test.tscn`).
 
-## Part A — Mine weapon rules (please confirm)
+**This page replaces an earlier draft**, which had several things wrong. The
+real rules:
+- Levels run **0-3**, not 1-4.
+- **Bullets never** set a mine off; only explosions do.
+- Mines **do** chain, across sides.
+- A mine sits on a **2×2 block, centred on a tile corner**, not on a tile centre.
+- The "proximity indicator" is how **enemy mines stay hidden**.
+- The mystery "stun" is a **quarter-speed slow**.
+- The "type gating" is really the **add-on rules**.
 
-### Laying a mine
+## 1. Laying a mine
 
-1. **A mine is placed on a grid tile near/behind the tank — never under it, never free-floating.** When you fire the mine weapon, the game scans up to 12 candidate tiles on a ring about **2 tiles (64 px)** out from the tank, in an order rotated by which way the tank faces so the tiles **behind and beside** the tank are tried first. The first tile that is in-bounds, passable/empty, has no mine already on it, and isn't too close to another sprite wins.
+`TTankSprite.Fire` (`0x004931e0`), the branch for weapon type 5.
 
-2. **One mine per tile, hard rule.** If every one of the 12 candidate tiles is blocked, **no mine is laid at all**. The mine snaps to the center of its tile.
+**Where it goes.**
 
-3. **Each mine costs 1 ammo; a pickup pack gives 15 mines.** There is **no simultaneous cap** in the original — you're limited only by ammo, the one-per-tile rule, and the fact that **mines never expire on their own** (infinite lifetime). So a tank can have a whole field of mines out at once, one per tile.
+1. The tank's own 2×2 block is `c = (Round(X/16), Round(Y/16))`. X and Y are the
+   tank's top-left corner, and `Round` is Delphi's, which sends halves to the
+   even neighbour.
+2. The game tries up to 12 spots on a ring around the tank:
+   `spot = c - RING[(3*facing + ORDER[i]) mod 12]`, where facing is 0 up, 1 right,
+   2 down, 3 left.
+   - `RING` (`0x004d29d0`) = (0,-2) (1,-2) (2,-1) (2,0) (2,1) (1,2) (0,2) (-1,2)
+     (-2,1) (-2,0) (-2,-1) (-1,-2)
+   - `ORDER` (`0x004d2d64`) = 0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6
+3. The first spot tried is **straight behind**. The next two are shifted one
+   cell either way (one side, then the other). The search works round both
+   sides of the tank and ends **straight ahead**. Every spot is 2 cells out.
+4. The mine goes at `(tx*16+8, ty*16+8)`. That centres its 16 px image on the
+   corner its 2×2 block shares, **32 px (remake 64 px) from the tank centre**.
+   Behind a tank that is sitting still, that leaves an 8 px gap.
 
-4. **Laying a mine plays a "lay" sound (orig sound id 5, `S_Mine`) and adds a cooldown** before the next secondary shot (orig `350 × (6 − fire-rate-upgrade)` heat units — higher fire-rate upgrade = shorter cooldown; exact seconds TBD, see Part B).
+**When a spot is refused.** A spot is skipped if any of these holds:
+- A wall is on any of its 4 cells. The test is FG code ≥ `0x18`, so grass is
+  fine.
+- Water is on any of its 4 cells (BG code ≥ 4). **Anti-water tanks lay on water
+  anyway.**
+- A mine is already keyed to that block. The key is the top-left cell, in the
+  mine grid at `0x004db404`.
+- Something collidable is close by. The test takes each Collisioned sprite's
+  corner + 16 px (the centre of a tank, the base or a bonus) and refuses the spot
+  if that point lies in `Bounds(tx*16-8, ty*16-8, 48, 48)`. This counts armed
+  mines, whose point sits off-centre. It also counts the laying tank itself: one
+  caught between cells can block its own rear slots, so the mine lands at the
+  side.
 
-5. **The mine inherits the layer's side (owner) and takes its level from the tank's current mine-weapon level (1–4).**
+If all 12 spots are refused, nothing is laid, and no ammo or cooldown is spent.
 
-### Arming & friend/foe
+**What a laid mine inherits.** It takes the layer's side. Its level is
+`SetLevel(tank.gun)`, the tank's gun upgrade level **0-3**.
 
-6. **A freshly-laid mine is INERT for ~0.22 s (≈15 frames) while it "arms."** During this window the engine excludes it from collisions, so the layer can drive off their own mine without setting it off. After arming, it becomes triggerable.
+**Sound.** `S_Mine` plays on every successful lay, **for enemies too**. The
+fire tail (`0x0049354d`) sounds every special weapon from any tank. Only the
+plain gun is silent for enemies.
 
-7. **Mines only hurt the enemy.** The mine remembers who laid it; the layer and their allies **never** trigger it (same-side check). Only an opposing tank driving onto the tile sets it off. (Player mines hit enemies; enemy tanks can lay mines that hit the player.)
+**Off-field spots.** The map reader returns -1 for cells off the field, and -1
+passes both terrain checks. So the original can drop a mine partly or wholly
+off-field, where no tank can reach it. **The remake skips those spots.**
 
-8. **The mine is a CONTACT mine, not a proximity mine.** There is a proximity/blink indicator that lights up as an enemy nears (for player/neutral mines only), but that is **cosmetic** — the mine detonates on actual overlap/contact, not from distance.
+## 2. The mine
 
-### Triggering & detonation
+`TMineSprite` (VMT `0x004903d8`, `Create` `0x0049a26c`, `DoMove` `0x0049a3e4`).
 
-9. **When an armed enemy tank overlaps the mine, the mine detonates immediately (all 4 levels).** Detonation spawns the **same `TExploseSprite` blast used by the explosion weapon**, centered on the mine tile.
+**Sprite.** Image 5, `B_Mine`, is 5 rows of four 16 px frames.
+- Row = level (`AnimStart = 4*level`):
+  - Row 0 is a plain ball, shrinking.
+  - Row 1 is spiked.
+  - Row 2 has a red centre.
+  - Row 3 turns its spikes into a ring.
+  - Row 4 is the ringed loop.
+- A new mine is **invisible and inert** (Visible = Collisioned = 0) while its row
+  plays once, at 0.01 frame per tick (75 ms a frame).
+- When the frame first rounds to 3 (**2.5 frames = 0.1875 s**), the mine
+  becomes visible and armed. It then holds frame 3, which is why a settled mine
+  is the small ball.
+- A **level-3** mine then switches to row 4 and loops it at 0.002 frame a tick,
+  1.5 s per loop.
 
-10. **Blast footprint = an 8×8-tile box (256×256 px in the remake), with power scaling by mine level:** blast intensity `250 + 25 × level`, distance falloff `60 − 5 × level`. So level 1 ≈ power 275 / falloff 55, level 4 ≈ power 350 / falloff 40 (bigger, harder-hitting blast at higher levels). The blast does **line-of-sight-falloff area damage** to enemy tanks and **destroys destructible terrain** in the box — identical to the explosion weapon, just level-driven.
+**Enemy mines are hidden** (side ≤ 0). The per-frame code, which runs while the
+frame rounds to 3, computes a distance in 8 px steps:
 
-11. **Detonation sound:** at level ≥ 2 it plays a random mine-explosion sound (orig id 8 or 9, `ExploseMine1`/`ExploseMine2`). Level-1 detonation uses only the blast's own sound.
+```
+d = min( Round(dist(mine, base)/8) - 6,
+         Round(dist(mine, player)/8) - (8 if airborne, else 4 with anti-ice, else 0) )
+alpha = min((16 - d) * 16, 192);  Visible = alpha >= 64
+```
 
-### The 4-level system
+Distances are centre to centre, and there is one player term for each player
+tank.
+- A player sees an enemy mine within **100 px** (remake 200). At that edge the
+  alpha is 64, and it reaches the full 192 from 36 px in.
+- The base reveals mines within 148 px.
+- A tank that is **flying** sees 64 px further.
+- An anti-ice tank sees 32 px further.
+- The flag `+0x12c` that marks a tank as airborne is set in the tank's
+  constructor and on landing, and cleared by `TFlyingTank`.
+- Player mines are always drawn fully opaque.
+- A level-3 enemy mine re-checks only during the part of each ring loop that
+  rounds to frame 3, so it can lag up to about 1.1 s behind.
 
-12. **Level sets the mine's sprite row and its blast strength (rule 10), and unlocks the fly effect.** In the `B_Mine` sheet (64×80 px = **4 columns × 5 rows** of 16×16; the 4 columns are the blink-animation frames, **not** levels), **the row = the level**: row 1 → lvl 1 … row 4 → lvl 4 (row 0 unused). Level 3 additionally switches to a slower "hot" blink on row 4 (a visual quirk — see Part B).
+## 3. A tank touches a mine
 
-13. **Level 1: blast only** — no direct contact damage, no fly.
+`TTankSprite.DoCollision` (`0x00491aac`). L is the mine level. The add-on byte
+`+0x12d` is 1 anti-water, 2 anti-ice, 3 moon shield or 4 memory-save.
 
-14. **Level ≥ 2 (the "fly" levels — SEE PART B, this may instead be levels 3–4): blast + a small direct hit + the victim is launched into the air.** Direct contact damage applied just before launch is small: **`level − 1` HP** to a basic tank, **`level − 2` HP** to other tank types — on top of the area blast. Higher level = longer/higher/farther fly (see rule 16).
+1. An **anti-ice tank ignores mines below L3**. It rolls over them, and the mine
+   stays.
+2. The mine's own side never sets it off.
+3. **The mine goes off**, spawning its blast.
+4. **Slow.** This applies at L ≥ 1, unless the tank is invulnerable, has
+   anti-ice, or has memory-save and L < 3. The slow quarters the tank's move
+   speed (`0x00492f24`: `speed >> 2`).
+5. **Flight.** This applies at L ≥ 2, unless the tank has memory-save.
+   1. The tank goes airborne (`+0x12c = 0`).
+   2. Unless it is invulnerable, it pays a direct hit:
+      - Anti-ice is torn off, with no damage.
+      - Any other add-on is torn off, plus `Damage(L-2)`.
+      - With no add-on, `Damage(L-1)`.
 
-### The fly mechanic
+      A torn-off add-on is simply cleared; no cookie drops.
+   3. `TFlyingTank` throws it. The launch speed is 5 × (tank centre − mine
+      centre), rising speed L+2, gravity −5 and spin L×200. The flight lasts
+      1.2 s at L2 and 1.5 s at L3.
+   4. It lands facing where the spin stopped. A **neutral** blast (side −1) goes
+      off at the landing spot, at the **victim's own gun level**, and hits
+      everyone, the victim included.
 
-15. **On a qualifying hit the victim tank is thrown into the air as a `TFlyingTank`.** The real tank sprite is **hidden and deactivated (not destroyed)**; a stand-in "flying" sprite draws in its place, using the tank's own image. **The tank is helpless while airborne** — its move/collision flags are cleared and its position is force-set each frame, so it can't be controlled, hit, or hit anything until it lands.
+An airborne tank is uncollidable, so **the mine's own blast misses a tank it
+threw**. In total a flown tank takes the direct hit plus its landing blast.
 
-16. **The throw is a spinning parabolic arc away from the mine.** Launch velocity = **5 × the tank's off-center offset from the mine** (a dead-center hit ≈ straight up; an off-center hit is thrown that direction). Altitude is a parabola (`altVel₀ = level + 2`, gravity `−5`); the sprite **grows as it rises** to fake height (peak size ≈ peak-altitude + 1). It also **tumbles/spins** (`spinVel₀ = level × 200`, decelerating), and a **coin-flip picks clockwise vs counter-clockwise**. Two simulated cases: input value 2 → **~1.2 s aloft, ~2.6× peak size, ~2.3 tumbles**; input value 3 → **~1.5 s aloft, ~3.6× peak size, ~4.3 tumbles** (which mine levels these map to depends on the indexing question in Part B). The tank is clamped to stay inside the 40×30 playfield.
+| Mine | Plain tank | Anti-water / moon shield | Anti-ice | Memory-save |
+|---|---|---|---|---|
+| L0 | blast | blast (a front shield blocks it) | ignored | blast |
+| L1 | blast + slow | blast + slow | ignored | blast |
+| L2 | slow + 1 HP + flight | slow + add-on lost + flight | ignored | blast |
+| L3 | slow + 2 HP + flight | slow + add-on lost + 1 HP + flight | anti-ice lost + flight | blast + slow |
 
-17. **On landing (altitude returns to 0) the tank re-appears and gets hit by a SECOND blast.** It's restored to visible/active, dropped facing a **pseudo-random cardinal direction** (wherever the spin stopped), and a fresh `TExploseSprite` detonates on the **landing tile** — this one at **power = the victim's own weapon-upgrade level** (NOT the mine level) and **side = neutral (−1), so it damages the just-landed victim itself**. This is the "explosion effect on return" you described.
+This matches the readme. It also shows the readme overstating one rule:
+memory-save **is** slowed by L3.
+- AntiSkid is safe on enemy LV0-LV2 mines.
+- The moon shield clears LV0 mines safely, because its front blocks the L0
+  blast.
+- Memory of Sea never flies.
 
-18. **Net result: a flown victim can eat up to three damage sources** — the small direct contact hit (rule 14), the mine's blast at the mine tile (rule 10), and the neutral landing blast at the touchdown tile (rule 17).
+**The slow ends only on death, or on a pickup:**
+- **Add-on cookies** (5-8) free the tank that takes them.
+- **MAX** (4) frees every player.
 
-### Interactions
+(When an *enemy* takes MAX or bonus 18, all enemies are freed. The remake has no
+enemy pickups.)
 
-19. **Bullets can detonate a mine remotely, if strong enough.** A shot that hits a mine detonates it only when its power clears the mine's level (orig test: `round(bulletPower/25) − 10 ≥ mine.level`, re-checked after a small penalty). Weak shots do nothing. (Detonating a mine by shooting likely uses orig sound id 11 — inferred.)
+## 4. Going off, and chains
 
-20. **No chain reaction between mines was found, and eagle interaction is not covered by the RE.** A mine's blast damages *tanks* and *terrain*, not other mines, so mines don't set each other off (only bullets or tank-contact do). Whether a mine's blast can destroy the eagle / eagle walls is not evidenced — likely it destroys the surrounding brick like any terrain, but treat this as a remake design decision.
+`Detonate` (`0x0049a360`):
+- Plays `ExploseMine1`/`2` at L ≥ 2 only; L0 and L1 mines go off silently.
+- Spawns a `TExploseSprite` at the mine's level and side, centred on the mine.
+  That is the explosion weapon's blast, with power 250 + 25L and falloff
+  60 − 5L per half-cell.
 
-21. **Type-gating (only if the remake has heavy/special enemy types):** a "heavy" tank (orig type 2) only reacts to **level-3** mines and never flies; a "special" tank (orig type 4) never flies (and only reacts to fly-level mines from level 3 up). Normal tanks follow rules 13–17.
+**Mine chains.** A blast sets off a mine from its `DoCollision`, `0x00497550`.
+Only explosions do this, which matches the readme's "explosive shells detonate
+mines of equal or lower level":
+- The mine must be armed.
+- The mine must not be on the blast's side. A neutral landing blast is on
+  neither side.
+- The blast level must be ≥ the mine level.
+- Then, with `heat` as defined below:
+  `level + heat - (2 if level <= 0 else 3) >= mine level`.
 
-*todo: confirm the level-indexing (does the fly start at level 2 or only 3–4?), the cooldown→seconds conversion, and the eagle behavior before I write any mine code…*
+`heat` (`0x004972a4`) is `Round(best * power / 100000 + 0.25)`. Here `best` is
+the hottest cell overlapping the mine, and each cell holds the best of its four
+half-cells, scaled to per-mille of power. Each half-cell stores
+`Round(power - d * falloff)`, where d is its distance from the blast centre in
+half-cells. Walls shadow cells, and the heat counts only while the wave is
+passing.
 
----
+In practice:
+- A mine of the **same level** goes off only from the next tile.
+- A blast one level stronger reaches 2 tiles.
+- A blast 2-3 levels stronger reaches 3-4 tiles.
 
-## Part B — Notes for the reader
+Your own blasts never touch your own field, but an enemy mine you set off can
+set off yours.
 
-### Recovered constants (original → remake units)
+## 5. Enemy mine levels
 
-| Quantity | Original | Remake |
-|---|---|---|
-| Tile size | 16 px | 32 px |
-| Playfield | 640×480 px = 40×30 tiles | 40×30 tiles (1280×960 px) |
-| Arm delay | ~15 frames (~0.22 s) | ~0.22 s |
-| Placement ring | ~2 tiles (32 px) from tank | ~2 tiles (64 px) |
-| Candidates tried | 12 tiles, facing-rotated | 12 tiles |
-| Ammo per mine / pack size | 1 / 15 | 1 / 15 |
-| Mine lifetime | 0 = infinite | infinite |
-| Cooldown added | `350 × (6 − fireRate)` heat | **needs heat→seconds mapping** |
-| Blast box | 8×8 tiles (128×128 px) | 8×8 tiles (256×256 px) |
-| Blast power / falloff | `250 + 25·L` / `60 − 5·L` | same formula (scale HP to remake) |
-| Direct contact dmg | `L−1` (basic) / `L−2` (other) HP | same |
-| Fly launch velocity | `5 × center-offset` (px/sim-sec) | ×2 for 32 px tiles |
-| Fly altVel₀ / gravity | `L+2` / `−5` | same |
-| Fly spin₀ / spin decel | `L×200` / `−55`, random ± dir | same |
-| Flight duration | 81 / 102 frames (1.215 / 1.530 s) | ~1.2 / 1.5 s |
-| Peak size / spins | ~2.6× / ~2.3 rev vs ~3.6× / ~4.3 rev | same |
-| Landing blast | power = victim's weapon level, side = **neutral** | same |
-| Sounds | lay 5, detonate 8/9, bullet-kill 11 | map to remake SFX |
+The enemy spawn (`0x00499f30`) sets:
+`gun = clamp(TYPE_GUN[type] + DIFFICULTY_BONUS[difficulty], 0, 3)`.
 
-### Flagged UNCERTAIN items
+- `TYPE_GUN` (`0x004d2af0`) runs by family of 4 types: plain 0 1 1 2, rapid
+  0 1 2 3, fire 0 1 2 3, AP 0 1 1 2, explosion 0 1 2 3, mine 0 1 1 2.
+- Difficulty runs 0-5, and a new game starts at 2. `SetDifficulty`
+  (`0x00499130`) copies an 8-value record from `0x004d2860`. The gun bonus is
+  −1 0 0 0 +1 +1, and the speed bonus is −1 −1 0 +1 +1 +1.
+- The per-type add-on table (`0x004d2b50`) matches the remake's `TYPE_ADDONS`
+  exactly.
 
-- **⚠️ BIGGEST ONE — does the fly start at level 2 or only 3–4?** The two REs disagree. The deeper mine-side trace (which actually located `SetLevel` reading `tank[+0x128]` with values **1–4**) reads the fly guard `level ≥ 2` as **levels 2, 3, 4 fly** — which would *correct* your "levels 3–4" understanding. The flying-tank-side trace *assumes* the field is 0-based (0–3) and therefore lands back on **only levels 3–4**, matching you — but it admits it never found the code that writes the field. **My lean: the 1-based reading (fly at ≥ 2) has the stronger evidence, but this is exactly the thing to verify against the powerup/upgrade code before implementing.** It changes rules 14–16.
-- **Cooldown in seconds** — `350 × (6 − fireRate)` is in engine "heat" units; the heat→seconds constant wasn't pinned. Absolute flight seconds (1.2 / 1.5 s) also assume 20 move-units/frame at 15 ms/frame; the *frame counts* are exact, so port the integrator (`alt += 20·altVel/1000` per frame, gravity −5, land at `alt ≤ 0`) rather than hard-coding seconds.
-- **Level-3 "hot" look** — level 3 forces display to row 4 at a slow blink, so **levels 3 and 4 may render the same row**. Unclear if intentional art reuse; check `B_Mine` frame-by-frame.
-- **The pre-launch "stun/immobilize" (orig `0x493644`)** applied on level ≥ 1 hits — its exact effect (freeze? duration?) was not disassembled.
-- **`tank[+0x128]`** is read both as "the tank's mine-weapon level" (when laying) and "the victim's gun/upgrade level" (landing-blast power). Likely one "current weapon/upgrade level" field; confirm from the powerup code.
-- **Chain detonation & eagle** — not evidenced (rule 20). Treat as design choices.
-- **Placement spacing threshold** (min distance to other sprites) — exact units not extracted; only matters for faithful AI mine-spam.
+So mine tanks 21-24 lay L0/L1/L1/L2 mines up to HARD, and L1/L2/L2/L3 on EXPERT
+and INSANE. The remake's difficulty 1-5 is the original's 1-5; the save
+importer copies it straight across. The remake caps enemy mines at L2 (see
+section 6).
 
-### Suggested design choices
+## 6. What the remake does differently
 
-1. **Skip `TMineClient` (VMT 0x0049054c, instsize 21664).** With that instance size and only two `.rsrc` refs plus one code ref, it's almost certainly the **network/replay mine-field serializer**, not the in-game mine. Single-player mines don't route through it — leave it for a future networking pass.
-2. **Reuse what you already have.** The detonation is literally your existing `ExplosionBlast` — instantiate it at the mine tile with `power = mineLevel` (intensity `250 + 25·L`, falloff `60 − 5·L`, LOS + terrain-destroy you already built), and again at the landing tile with `power = victim's weapon level, side = neutral`. No new blast code needed.
-3. **Render the fly with the tank's own sprite:** hide the real tank (disable input/collision, don't free it), spawn a lightweight fly node that draws the tank sprite, drives the parabola + spin from rule 16, and **scales the sprite up with altitude** (`scale = altitude + 1`) for the "in the air" read. On landing, restore the tank facing the spin-derived direction and fire the neutral landing blast. Since the remake already flips `flying`-style flags for other effects, gate player input on that same flag.
+- **Enemy mines stop at level 2** (`EnemyTank.ENEMY_MINE_MAX_LEVEL`), by design.
+  The original's type-24 tank lays ringed L3 mines on EXPERT and INSANE; in the
+  remake it lays L2 there. Only the mine is capped: the tank's gun level stays
+  3, and that still sets its landing blast after a mine flight. Player mines
+  still reach L3.
+- **The flight** is the original's, integrated the same way
+  (`BaseTank._update_flying`). The tank moves at 5 × its offset from the mine
+  centre per time unit, so driving into a mine (contact about 22 px short of its
+  centre) throws it back the way it came: about 11 cells at L2 and 14 at L3. It
+  never lifts off its spot on screen; it only grows to (altitude + 1) times its
+  size, 2.6× and 3.5× at the top, while it tumbles. The one change is the edge
+  clamp. The original kept the tank's centre 32 px from the left and top edges
+  but let it reach the right and bottom edges; the remake keeps the whole tank
+  on the field. (Before 2026-09-23 the remake threw tanks to a random spot.)
+- **Chains** are judged once, when the blast appears. Each chained mine then
+  goes off as the wave ring reaches it, 50 ms a tile. The original re-tests
+  every frame while the wave passes, which gives the same result.
+- **The crowd check** uses bullets' centres. The original used their corner +
+  16 px.
+- **Not modelled:** off-field spots (skipped), enemy pickups, and the
+  random "aim at targets" flag set at spawn (`+0x13c`; mine tanks get it at a
+  third of the usual odds).
+- **Other enemy families' gun levels** do not use the table in section 5. The
+  rapid tanks take theirs from `tank_table.xlsx` (`CookieData.TYPE_WEAPON_LEVELS`),
+  and fire, AP and explosion tanks are still level 0.
+- **Laying cooldown.** The original adds heat `350 × (6 − speed level)`; the
+  remake keeps its own per-level cooldowns in `CookieData.MINE_FIRE_CONFIG`.
+
+## Addresses
+
+| What | Where |
+|---|---|
+| `TTankSprite.Fire`, mine branch / common tail | `0x004931e0` / `0x0049354d` |
+| Placement terrain checks: walls / water | `0x00492cdc` / `0x00492b6c` |
+| Ring table / try order | `0x004d29d0` / `0x004d2d64` |
+| Mine grid | `0x004db404` |
+| `TMineSprite.Create` / `DoMove` / `Detonate` / `SetLevel` | `0x0049a26c` / `0x0049a3e4` / `0x0049a360` / `0x0049a5d4` |
+| `TTankSprite.DoCollision` (mine part) | `0x00491aac` |
+| Slow flag set / speed setter | `0x00493644` / `0x00492e08` |
+| `TFlyingTank.Create` / landing | `0x0049a5ec` / `0x0049a740` |
+| Blast sets off a mine / heat lookup / heat grid | `0x00497550` / `0x004972a4` / `0x004967cc` |
+| Enemy spawn / `SetDifficulty` / difficulty records | `0x00499f30` / `0x00499130` / `0x004d2860` |
+| Pickup dispatch (type → handler bytes, jump table) | `0x004959d4`, `0x004959ed` |

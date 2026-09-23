@@ -39,6 +39,9 @@ enum TileCategory {
 class StageData:
 	var caption: String = ""
 	var bg_bitmap: String = ""  # background image filename (e.g. "BG02.jpg")
+	## Flat colour painted behind the background image. Stages that ship no
+	## image rely on this alone, so it is what keeps them from rendering black.
+	var bg_color: Color = Color.BLACK
 	var bg_grid: Array = []   # 30 rows of 40 ints (hex codes)
 	var fg_grid: Array = []   # 30 rows of 40 ints (hex codes)
 	var enemy_count: Array = []  # parsed from EnemyCount line
@@ -207,6 +210,8 @@ const DAT_BG_OFFSET: int = 1200
 const DAT_FG_OFFSET: int = 3600
 const DAT_COL_STRIDE: int = 60  # 30 rows * 2 bytes per cell
 const DAT_BGBITMAP_OFFSET: int = 64
+## Delphi TColor, stored little-endian as $00BBGGRR (low byte is red).
+const DAT_BGCOLOR_OFFSET: int = 128
 const DAT_ENEMY_OFFSET: int = 144
 const DAT_MAXCOUNT_OFFSET: int = 208
 
@@ -245,6 +250,10 @@ static func load_stages_from_dat(path: String) -> Array:
 		if bg_len > 0 and bg_len < 64:
 			var bg_bytes := all_data.slice(base + DAT_BGBITMAP_OFFSET + 1, base + DAT_BGBITMAP_OFFSET + 1 + bg_len)
 			sd.bg_bitmap = bg_bytes.get_string_from_ascii()
+
+		# Parse BG_Color (Delphi TColor: low byte red, then green, then blue)
+		var col_off := base + DAT_BGCOLOR_OFFSET
+		sd.bg_color = Color8(all_data[col_off], all_data[col_off + 1], all_data[col_off + 2])
 
 		# Parse enemy count (24 x LE16 at offset 144, we use first 4)
 		for i in range(24):
@@ -321,6 +330,8 @@ static func load_stages_from_file(path: String) -> Array:
 				current_stage.caption = line.substr(8)
 			elif line.begins_with("BG_Bitmap="):
 				current_stage.bg_bitmap = line.substr(10).strip_edges()
+			elif line.begins_with("BG_Color="):
+				current_stage.bg_color = _parse_bg_color(line.substr(9).strip_edges())
 			elif line.begins_with("EnemyCount="):
 				var parts := line.substr(11).split(",")
 				for p in parts:
@@ -572,6 +583,23 @@ static func get_stage_bg_bitmap(stage_num: int) -> String:
 		return ""
 	var stage: StageData = stages[idx]
 	return stage.bg_bitmap
+
+## Background colour behind the image for a stage (1-indexed).
+static func get_stage_bg_color(stage_num: int) -> Color:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return Color.BLACK
+	var stage: StageData = stages[idx]
+	return stage.bg_color
+
+## "$BBGGRR" as the map editor writes it, same byte order as the .dat field.
+static func _parse_bg_color(text: String) -> Color:
+	var digits := text.lstrip("$").strip_edges()
+	if digits.is_empty() or not digits.is_valid_hex_number(false):
+		return Color.BLACK
+	var raw := digits.hex_to_int()
+	return Color8(raw & 0xFF, (raw >> 8) & 0xFF, (raw >> 16) & 0xFF)
 
 ## Get max concurrent enemies for a stage
 static func get_max_concurrent(stage_num: int) -> int:

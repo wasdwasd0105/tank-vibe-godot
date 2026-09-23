@@ -1,13 +1,21 @@
 extends Node
-## Headless integration test for the mine weapon. Run as an override main scene:
+## Headless integration test for the mine weapon against the original game's
+## rules (docs/mine_weapon_original_spec.md). Run as an override main scene:
 ##   Godot --headless res://scenes/test/mine_test.tscn
-## Drives placement, arming, contact-trigger, blast, the fly effect and the slow.
 ##
-## Test enemies run with physics (AI) disabled so the harness is deterministic —
-## the mine detects them via the physics-server overlap query regardless, and the
-## fly is stepped manually. (Enemy AI is exercised by the real game, not here.)
+## Test enemies run with physics (AI) disabled so the harness is deterministic;
+## the mine still sees them through the physics-server overlap query, and a
+## flight is stepped by hand.
+
+const IRON := 0x39
+const WATER := 0x05
+const GRASS := 0x09
 
 var _fail := 0
+var _game: Node
+var _lm: LevelManager
+var _player: PlayerTank
+
 
 func check(cond: bool, msg: String) -> void:
 	if cond:
@@ -16,20 +24,102 @@ func check(cond: bool, msg: String) -> void:
 		_fail += 1
 		print("  FAIL: ", msg)
 
+
 func _ready() -> void:
 	_run()
 
-func _spawn_enemy(game: Node, tile: Vector2i, hp: int = 10) -> EnemyTank:
-	var scene := load("res://scenes/tanks/enemy_tank.tscn")
-	var e: EnemyTank = scene.instantiate()
-	e.tank_type_id = 1
-	game.get_node("Entities/Enemies").add_child(e)
+
+# --- helpers -------------------------------------------------------------
+
+func _frames(n: int = 2) -> void:
+	for i in range(n):
+		await get_tree().physics_frame
+	await get_tree().process_frame
+
+
+## Long enough for a contact to register (a physics step) and the mine's next
+## frame to act on it, and for the blast it spawns to land its damage.
+func _settle() -> void:
+	await get_tree().create_timer(0.25).timeout
+
+
+func _at(local: Vector2) -> Vector2:
+	return _lm.global_position + local
+
+
+func _place(tank: BaseTank, local: Vector2, facing: Vector2) -> void:
+	tank.global_position = _at(local)
+	tank.current_direction = facing
+	tank._update_sprite_direction()
+
+
+func _spawn_enemy(local: Vector2, type_id: int = 1, hp: int = 10) -> EnemyTank:
+	var e: EnemyTank = load("res://scenes/tanks/enemy_tank.tscn").instantiate()
+	e.tank_type_id = type_id
+	_game.get_node("Entities/Enemies").add_child(e)
 	e.set_physics_process(false)  # no AI in the test harness
-	var lm: LevelManager = game.get_level_manager()
-	e.global_position = lm.tile_to_world(tile)
+	e.global_position = _at(local)
 	e.max_health = hp
 	e.health = hp
 	return e
+
+
+## Lays for [param tank] and returns the new mine (or null), with its centre.
+func _lay(tank: BaseTank, level: int) -> Mine:
+	var before := _lm.get_mines()
+	if not _lm.try_place_mine(tank, level):
+		return null
+	for mine in _lm.get_mines():
+		if not before.has(mine):
+			return mine
+	return null
+
+
+func _offset_of(mine: Mine, tank: BaseTank) -> Vector2:
+	return _lm.mine_center(mine.cell) - tank.global_position
+
+
+func _arm(mine: Mine) -> void:
+	mine._age = Mine.ARM_TIME + 0.001
+
+
+func _reset() -> void:
+	_lm._clear_mines()
+	for e in get_tree().get_nodes_in_group("enemies"):
+		e.queue_free()
+	for b in get_tree().get_nodes_in_group("effects_container")[0].get_children():
+		b.queue_free()
+	_player.is_invincible = false
+	_player.is_mine_slowed = false
+	_place(_player, Vector2(96, 96), Vector2.UP)   # parked in the top-left corner
+	await _frames(3)
+
+
+func _clear_arena() -> void:
+	# Keep only the base's own block (bottom middle); everything else open ground.
+	for tile in _lm._fg_tile_data.keys():
+		if tile.x < 16 or tile.x > 23 or tile.y < 25:
+			_lm._remove_fg_tile(tile)
+			_lm._brick_damage.erase(tile)
+			_lm._hard_brick_hp.erase(tile)
+	for tile in _lm._bg_tile_data.keys():
+		_lm._remove_bg_tile(tile)
+
+
+func _put_fg(tile: Vector2i, code: int) -> void:
+	_lm._remove_fg_tile(tile)
+	_lm._place_fg_tile(tile, code)
+
+
+func _blast_count() -> int:
+	var n := 0
+	for b in get_tree().get_nodes_in_group("effects_container")[0].get_children():
+		if b is ExplosionBlast and not b.is_queued_for_deletion():
+			n += 1
+	return n
+
+
+# --- the test ------------------------------------------------------------
 
 func _run() -> void:
 	var tree := get_tree()
@@ -39,92 +129,436 @@ func _run() -> void:
 	GameManager.player_active[0] = true
 	GameManager.player_active[1] = false
 
-	var game: Node = load("res://scenes/game.tscn").instantiate()
-	tree.root.add_child(game)
+	_game = load("res://scenes/game.tscn").instantiate()
+	tree.root.add_child(_game)
 	for i in range(5):
 		await tree.process_frame
-	await tree.create_timer(0.2).timeout
-
-	var lm: LevelManager = game.get_level_manager()
-	var player: PlayerTank = null
+	_lm = _game.get_level_manager()
+	_game.get_node("EnemySpawner").spawn_timer.stop()
 	for p in tree.get_nodes_in_group("players"):
-		player = p
-	check(lm != null and player != null, "level_manager + player available")
+		_player = p
+	check(_lm != null and _player != null, "level_manager + player available")
+	while _player.is_materializing:
+		await tree.process_frame
+	_clear_arena()
+	await _reset()
 
-	var base_tile := Vector2i(20, 10)
-	player.global_position = lm.tile_to_world(base_tile)
-	player.current_direction = Vector2.UP
-	player.is_invincible = false
+	# The tank's block top-left is (10,10), so its centre is the corner (352, 352).
+	var home := Vector2(352, 352)
 
-	print("\n[A] Laying a mine behind the tank")
-	var laid: bool = lm.try_place_mine(player.global_position, Vector2.UP, 1, true)
-	check(laid, "mine placed on a free tile")
-	check(lm.has_mine(base_tile + Vector2i(0, 1)), "mine laid on the tile behind an up-facing tank")
+	print("\n[A] A mine goes 2 tiles straight behind, on a tile corner")
+	var want := {
+		Vector2.UP: Vector2(0, 64), Vector2.RIGHT: Vector2(-64, 0),
+		Vector2.DOWN: Vector2(0, -64), Vector2.LEFT: Vector2(64, 0),
+	}
+	for facing in want:
+		_lm._clear_mines()
+		_place(_player, home, facing)
+		var m := _lay(_player, 0)
+		check(m != null and _offset_of(m, _player) == want[facing],
+			"facing %s -> mine at %s (got %s)" % [facing, want[facing], _offset_of(m, _player) if m else "none"])
+	await _frames()
+	var corner_ok := true
+	for m in _lm.get_mines():
+		var local := m.global_position - _lm.global_position
+		corner_ok = corner_ok and fmod(local.x, 32.0) == 0.0 and fmod(local.y, 32.0) == 0.0
+	check(corner_ok, "mine nodes sit on tile corners, not tile centres")
 
-	print("\n[B] One mine per tile — second lay uses a different tile")
-	var n_before := lm._mine_tiles.size()
-	var again: bool = lm.try_place_mine(player.global_position, Vector2.UP, 1, true)
-	check(again and lm._mine_tiles.size() == n_before + 1, "second mine went to a different tile")
+	print("\n[B] Ring order: behind, then the neighbour either side, then round")
+	_lm._clear_mines()
+	_place(_player, home, Vector2.UP)
+	_put_fg(Vector2i(11, 12), IRON)   # right column of the block behind
+	var m1 := _lay(_player, 0)
+	check(m1 != null and _offset_of(m1, _player) == Vector2(-32, 64), "right half walled -> shifts one tile left (%s)" % (_offset_of(m1, _player) if m1 else "none"))
+	_lm._remove_fg_tile(Vector2i(11, 12))
+	_lm._clear_mines()
+	_put_fg(Vector2i(10, 12), IRON)   # left column: blocks behind AND behind-left
+	var m2 := _lay(_player, 0)
+	check(m2 != null and _offset_of(m2, _player) == Vector2(32, 64), "left half walled -> shifts one tile right (%s)" % (_offset_of(m2, _player) if m2 else "none"))
+	_lm._remove_fg_tile(Vector2i(10, 12))
+	_lm._clear_mines()
+	var laid: Array[Vector2] = []
+	for i in range(3):
+		var m := _lay(_player, 0)
+		if m:
+			laid.append(_offset_of(m, _player))
+	check(laid == [Vector2(0, 64), Vector2(-32, 64), Vector2(32, 64)],
+		"standing still, unarmed mines fill behind, behind-left, behind-right (%s)" % str(laid))
 
-	print("\n[C] Arm delay + own side never triggers")
-	lm._clear_mines()
-	var mtile := Vector2i(20, 14)
-	lm._spawn_mine(mtile, 1, true)  # player mine
-	await tree.process_frame
-	var mine = lm._mine_tiles[mtile]
-	check(is_instance_valid(mine) and not mine._armed, "mine starts un-armed")
-	player.global_position = lm.tile_to_world(mtile)   # owner (player) on a player mine
-	await tree.create_timer(0.4).timeout
-	check(lm._mine_tiles.has(mtile), "player mine ignores the player (same side)")
-	player.global_position = lm.tile_to_world(base_tile)
+	print("\n[C] Delphi rounding when the tank sits between tiles")
+	_lm._clear_mines()
+	_place(_player, Vector2(688, 352), Vector2.UP)   # x/32 - 1 = 20.5 -> 20 (even)
+	var r1 := _lay(_player, 0)
+	check(r1 != null and _offset_of(r1, _player) == Vector2(-16, 64), "20.5 rounds down to even (%s)" % (_offset_of(r1, _player) if r1 else "none"))
+	_lm._clear_mines()
+	_place(_player, Vector2(720, 352), Vector2.UP)   # 21.5 -> 22 (even)
+	var r2 := _lay(_player, 0)
+	check(r2 != null and _offset_of(r2, _player) == Vector2(16, 64), "21.5 rounds up to even (%s)" % (_offset_of(r2, _player) if r2 else "none"))
+	_lm._clear_mines()
+	_place(_player, Vector2(352, 368), Vector2.UP)   # y 10.5 -> 10: its own body blocks behind
+	var r3 := _lay(_player, 0)
+	check(r3 != null and _offset_of(r3, _player) == Vector2(-64, 16), "a tank between rows blocks its own rear slots -> side (%s)" % (_offset_of(r3, _player) if r3 else "none"))
 
-	print("\n[D] Enemy contact detonates (level 1: blast, no fly)")
-	lm._clear_mines()
-	var enemy := _spawn_enemy(game, Vector2i(20, 14), 10)
-	lm._spawn_mine(mtile, 1, true)
-	await tree.create_timer(0.3).timeout   # arm
-	await tree.create_timer(0.15).timeout  # detect overlap + detonate
-	check(not lm._mine_tiles.has(mtile), "mine consumed on enemy contact")
-	check(is_instance_valid(enemy) and enemy.health < 10, "enemy took blast damage (-> %d)" % enemy.health)
-	check(is_instance_valid(enemy) and not enemy.is_flying, "level-1 mine does NOT fly the tank")
+	print("\n[D] What blocks a spot")
+	_lm._clear_mines()
+	_place(_player, home, Vector2.UP)
+	_put_fg(Vector2i(10, 12), GRASS)
+	var g := _lay(_player, 0)
+	check(g != null and _offset_of(g, _player) == Vector2(0, 64), "grass does not block")
+	_lm._remove_fg_tile(Vector2i(10, 12))
+	_lm._clear_mines()
+	_lm._place_bg_tile(Vector2i(10, 13), WATER)
+	var w1 := _lay(_player, 0)
+	check(w1 != null and _offset_of(w1, _player) == Vector2(32, 64), "water blocks a normal tank")
+	_lm._clear_mines()
+	_player.apply_addon("anti-water")
+	var w2 := _lay(_player, 0)
+	check(w2 != null and _offset_of(w2, _player) == Vector2(0, 64), "anti-water lays on water")
+	_player._remove_utility_addon()
+	_lm._remove_bg_tile(Vector2i(10, 13))
+	_lm._clear_mines()
+	var blocker := _spawn_enemy(home + Vector2(0, 64))
+	await _frames()
+	var p1 := _lay(_player, 0)
+	check(p1 != null and _offset_of(p1, _player) == Vector2(-64, 32), "a tank near the rear spots pushes the mine to the side (%s)" % (_offset_of(p1, _player) if p1 else "none"))
+	blocker.queue_free()
+	_lm._clear_mines()
+	_place(_player, Vector2(5 * 32, 29 * 32), Vector2.UP)  # bottom edge, facing up
+	var e1 := _lay(_player, 0)
+	check(e1 != null and _offset_of(e1, _player) == Vector2(-64, 0), "off-field rear spots are skipped (%s)" % (_offset_of(e1, _player) if e1 else "none"))
+	_lm._clear_mines()
+	_place(_player, home, Vector2.UP)
+	var walls: Array[Vector2i] = []
+	for y in range(8, 14):
+		for x in range(8, 14):
+			if x < 10 or x > 11 or y < 10 or y > 11:
+				walls.append(Vector2i(x, y))
+				_put_fg(Vector2i(x, y), IRON)
+	_player.set_secondary_weapon("mine")
+	var ammo := _player.secondary_weapon_count
+	_player._shoot_secondary_mine()
+	check(_lm.get_mines().is_empty() and _player.secondary_weapon_count == ammo and _player.can_shoot,
+		"all 12 spots blocked: nothing laid, no ammo or cooldown spent")
+	for t in walls:
+		_lm._remove_fg_tile(t)
+	await _frames()
 
-	print("\n[E] Level 2 mine slows the victim")
-	var slot := Vector2i(24, 14)
-	var e2 := _spawn_enemy(game, slot, 10)
-	lm._spawn_mine(slot, 2, true)
-	await tree.create_timer(0.3).timeout
-	await tree.create_timer(0.15).timeout
-	check(is_instance_valid(e2) and e2.is_mine_slowed, "level-2 mine slowed the enemy")
-	# A cookie / clear lifts it.
-	if is_instance_valid(e2):
-		e2.clear_mine_slow()
-		check(not e2.is_mine_slowed, "clear_mine_slow lifts the slow")
+	print("\n[E] Level = gun level 0-3, sprite row = level, hidden while deploying")
+	await _reset()
+	_place(_player, home, Vector2.UP)
+	for lvl in range(4):
+		_lm._clear_mines()
+		_player.weapon_level = lvl
+		_player.can_shoot = true
+		_player._shoot_secondary_mine()
+		var mines := _lm.get_mines()
+		check(mines.size() == 1 and mines[0].level == lvl, "gun level %d lays a level-%d mine" % [lvl, lvl])
+	_player.weapon_level = 0
+	_lm._clear_mines()
+	var dep := _lm._spawn_mine(Vector2i(20, 6), 1, true)
+	await get_tree().create_timer(0.1).timeout
+	check(not dep.visible and not dep.is_armed(), "0.1 s in: still hidden and inert")
+	await get_tree().create_timer(0.25).timeout
+	check(dep.visible and dep.is_armed(), "0.35 s in: surfaced and armed")
+	check(dep._sprite.texture == Mine._load_row(1)[3], "level 1 holds the last frame of sheet row 1")
+	for lvl in [0, 2]:
+		var mm := _lm._spawn_mine(Vector2i(4 + lvl * 3, 6), lvl, true)
+		await _frames()
+		_arm(mm)
+		mm._age = 1.0
+		await _frames()
+		check(mm._sprite.texture == Mine._load_row(lvl)[3], "level %d shows sheet row %d, last frame" % [lvl, lvl])
+	var l3 := _lm._spawn_mine(Vector2i(14, 6), 3, true)
+	await _frames()
+	l3._age = 1.0
+	await _frames()
+	check(Mine._load_row(4).has(l3._sprite.texture), "level 3 loops the ringed row (sheet row 4)")
 
-	print("\n[F] Level 3 mine flies the victim, then a landing blast")
-	var ftile := Vector2i(20, 20)
-	var e3 := _spawn_enemy(game, ftile, 30)
-	lm._spawn_mine(ftile, 3, true)
-	await tree.create_timer(0.3).timeout
-	await tree.create_timer(0.15).timeout
-	check(is_instance_valid(e3) and e3.is_flying, "level-3 mine launched the tank")
-	check(is_instance_valid(e3) and e3.collision_layer == 0, "flying tank is uncollidable/helpless")
-	var mines_before_land := lm._mine_tiles.size()
-	# Step the fly to completion manually (physics is disabled on the test enemy).
-	var steps := 0
-	while is_instance_valid(e3) and e3.is_flying and steps < 300:
-		e3._update_flying(1.0 / 60.0)
-		steps += 1
-	check(is_instance_valid(e3) and not e3.is_flying, "tank landed (fly ended after %d steps)" % steps)
-	check(is_instance_valid(e3) and e3.collision_layer != 0, "collision restored after landing")
+	print("\n[F] Enemy mines fade in near a player or the base")
+	await _reset()
+	var em := _lm._spawn_mine(Vector2i(20, 6), 0, false)
+	await _frames()
+	_arm(em)
+	var mc := _lm.mine_center(em.cell) - _lm.global_position
+	var cases := [
+		[Vector2(0, 192), true, 64], [Vector2(0, 200), true, 64],
+		[Vector2(0, 208), false, 48], [Vector2(0, 96), true, 160], [Vector2(0, 48), true, 192],
+	]
+	for c in cases:
+		_place(_player, mc + c[0], Vector2.UP)
+		await _frames()
+		var a := roundi(em._sprite.modulate.a * 255.0)
+		check(em.visible == c[1] and a == c[2], "player %d px away: visible=%s alpha=%d (got %s, %d)" % [int(c[0].y), c[1], c[2], em.visible, a])
+	_place(_player, mc + Vector2(0, 320), Vector2.UP)
+	_player.set_physics_process(false)  # hold it "airborne" without a real flight
+	_player.is_flying = true
+	await _frames()
+	check(em.visible, "an airborne player spots it 8 steps further out (320 px)")
+	_player.is_flying = false
+	_player.set_physics_process(true)
+	_player.apply_addon("anti-ice")
+	_place(_player, mc + Vector2(0, 256), Vector2.UP)
+	await _frames()
+	check(em.visible, "anti-ice spots it 4 steps further out (256 px)")
+	_place(_player, mc + Vector2(0, 288), Vector2.UP)
+	await _frames()
+	check(not em.visible, "anti-ice at 288 px: still hidden")
+	_player._remove_utility_addon()
+	var eagle: Node2D = get_tree().get_first_node_in_group("eagle")
+	var near_base := _lm._spawn_mine(_lm.world_to_tile(eagle.global_position + Vector2(-32, -32 - 288)), 0, false)
+	var far_base := _lm._spawn_mine(_lm.world_to_tile(eagle.global_position + Vector2(-32, -32 - 320)), 0, false)
+	_place(_player, Vector2(96, 96), Vector2.UP)
+	await _frames()
+	_arm(near_base)
+	_arm(far_base)
+	await _frames()
+	check(near_base.global_position.distance_to(eagle.global_position) == 288.0 and near_base.visible, "the base reveals a mine 288 px away")
+	check(far_base.global_position.distance_to(eagle.global_position) == 320.0 and not far_base.visible, "but not 320 px away")
+	var pm := _lm._spawn_mine(Vector2i(30, 6), 0, true)
+	await _frames()
+	_arm(pm)
+	await _frames()
+	check(pm.visible and pm._sprite.modulate.a == 1.0, "a player's own mine is always fully drawn")
 
-	print("\n[G] Mines refuse solid tiles")
-	var solid_found := false
-	for pos in lm._fg_tile_data.keys():
-		if LevelData.is_solid_tile(LevelData.get_tile_category(lm._fg_tile_data[pos].get("code", 0))):
-			solid_found = true
-			check(not lm._mine_tile_placeable(pos), "cannot place a mine on a brick %s" % str(pos))
-			break
-	check(solid_found, "found a solid tile to test placement rejection")
+	print("\n[G] What a mine does to the tank that touches it")
+	await _reset()
+	# [level, enemy type (add-on), exploded, slowed, flying, hp lost before landing, add-on left]
+	var rows := [
+		[0, 1, true, false, false, -1, ""],
+		[1, 1, true, true, false, -1, ""],
+		[2, 1, true, true, true, 1, ""],
+		[3, 1, true, true, true, 2, ""],
+		[2, 6, false, false, false, 0, "anti-ice"],     # anti-ice skates over L0-L2
+		[3, 6, true, false, true, 0, ""],               # L3: loses anti-ice instead of HP
+		[2, 4, true, true, true, 0, ""],                # moon shield soaks the L2 hit
+		[3, 4, true, true, true, 1, ""],
+		[2, 8, true, false, false, -1, "memory-save"],  # memory-save: no slow below L3, never flies
+		[3, 8, true, true, false, -1, "memory-save"],
+	]
+	var col := 0
+	for row in rows:
+		var cell := Vector2i(3 + (col % 5) * 7, 6 + (col / 5) * 8)
+		col += 1
+		var mine := _lm._spawn_mine(cell, row[0], true)
+		await _frames()
+		_arm(mine)
+		var local := _lm.mine_center(cell) - _lm.global_position
+		var e := _spawn_enemy(local, row[1], 10)
+		e._hits_taken = 5  # keep the remake's second-hit add-on drop out of this
+		await _settle()
+		var label := "L%d on type %d" % [row[0], row[1]]
+		check(_lm.has_mine(cell) != row[2], "%s: mine %s" % [label, "went off" if row[2] else "stayed"])
+		check(e.is_mine_slowed == row[3], "%s: slowed=%s" % [label, row[3]])
+		check(e.is_flying == row[4], "%s: flying=%s" % [label, row[4]])
+		if row[5] >= 0:
+			check(e.health == 10 - row[5], "%s: direct hit %d, blast can't reach it airborne (hp %d)" % [label, row[5], e.health])
+		else:
+			check(e.health < 10 or not row[2], "%s: the blast hit it (hp %d)" % [label, e.health])
+		var left: String = e.addons[0] if not e.addons.is_empty() else ""
+		check(left == row[6], "%s: add-on left = '%s' (got '%s')" % [label, row[6], left])
+		e.queue_free()
+		await _frames()
+	check(is_equal_approx(BaseTank.MINE_SLOW_FACTOR, 0.25), "the slow is a quarter of move speed")
+	_player.apply_mine_slow()
+	_player.try_move(Vector2.UP)
+	check(is_equal_approx(_player.velocity.length(), _player.move_speed * 0.25), "a slowed player moves at quarter speed")
+	_player.stop_moving()
+	await _reset()
+	var own := _lm._spawn_mine(Vector2i(20, 12), 3, true)
+	await _frames()
+	_arm(own)
+	_place(_player, _lm.mine_center(own.cell) - _lm.global_position, Vector2.UP)
+	await _settle()
+	check(_lm.has_mine(own.cell), "the layer's own side never sets it off")
+	await _reset()
+	var enemy_l3 := _lm._spawn_mine(Vector2i(20, 12), 3, false)
+	await _frames()
+	_arm(enemy_l3)
+	_player.is_invincible = true
+	_player.invincible_timer = 30.0
+	var hp := _player.health
+	_place(_player, _lm.mine_center(Vector2i(20, 12)) - _lm.global_position, Vector2.UP)
+	await _settle()
+	check(not _lm.has_mine(Vector2i(20, 12)) and _player.is_flying and not _player.is_mine_slowed and _player.health == hp,
+		"an invulnerable player still flies, but takes no hit and no slow")
+	while _player.is_flying:
+		_player._update_flying(1.0 / 60.0)
+	_player.is_invincible = false
 
+	print("\n[H] Flight: thrown back the way it came, as the original's TFlyingTank")
+	# A tank touches a mine 44 px short of its centre (its 60 px box against the
+	# mine's 32 px), and is thrown 8x that at L2 (352 px, 11 tiles), 10x at L3.
+	# [level, mine cell, where the tank sat when it touched, relative to the mine]
+	var throws := [
+		[2, Vector2i(26, 12), Vector2(-44, 0)],   # drove in from the left: thrown left
+		[3, Vector2i(26, 12), Vector2(-44, 0)],
+		[2, Vector2i(14, 5), Vector2(0, 44)],     # drove up into it: thrown back down
+	]
+	for t in throws:
+		await _reset()
+		var lvl: int = t[0]
+		var fm := _lm._spawn_mine(t[1], lvl, true)
+		await _frames()
+		_arm(fm)
+		var fmc := _lm.mine_center(t[1]) - _lm.global_position
+		var fe := _spawn_enemy(fmc + t[2], 1, 10)
+		fe.current_direction = -(t[2] as Vector2).normalized()   # facing the mine it drove at
+		fe._update_sprite_direction()
+		fe.special_weapon_level = 1
+		var start: Vector2 = fe.global_position
+		var z_before := fe.z_index
+		await _settle()
+		check(fe.is_flying and fe.z_index > z_before, "L%d: airborne, drawn above the field" % lvl)
+		var base_scale: float = fe._fly_base_sprite_scale.x
+		var facing_before := BaseTank.FACINGS.find(fe.current_direction)
+		var steps := 0
+		var peak := 1.0
+		var lifted := false
+		while fe.is_flying and steps < 400:
+			fe._update_flying(1.0 / 60.0)
+			steps += 1
+			if fe.is_flying:
+				peak = maxf(peak, fe.sprite.scale.x / base_scale)
+				lifted = lifted or fe.sprite.position != Vector2.ZERO
+		var aloft := steps / 60.0
+		var want_aloft := 1.2 if lvl == 2 else 1.5
+		check(absf(aloft - want_aloft) <= 0.05, "L%d: aloft %.2f s (original %.1f s)" % [lvl, aloft, want_aloft])
+		var moved: Vector2 = fe.global_position - start
+		var want_moved: Vector2 = (t[2] as Vector2) * (8.0 if lvl == 2 else 10.0)
+		check(moved.distance_to(want_moved) < 16.0, "L%d: thrown %s, back the way it came (got %s)" % [lvl, want_moved, moved.round()])
+		var want_peak := 2.6 if lvl == 2 else 3.5
+		check(absf(peak - want_peak) < 0.1 and not lifted, "L%d: grows to %.1fx at the top without leaving its spot (got %.2fx)" % [lvl, want_peak, peak])
+		var units := aloft / BaseTank.FLY_TIME_UNIT
+		var want_turns := (lvl * 200.0 * units - 55.0 * units * units / 2.0) / 256.0
+		check(absf(absf(fe._fly_angle) / 256.0 - want_turns) < 0.03, "L%d: tumbles %.2f turns (got %.2f)" % [lvl, want_turns, absf(fe._fly_angle) / 256.0])
+		var quarter := posmod(roundi(fe._fly_angle), 256) >> 6
+		check(fe.current_direction == BaseTank.FACINGS[(facing_before + quarter) % 4], "L%d: lands facing where the tumble stopped" % lvl)
+		check(fe.z_index == z_before and fe.collision_layer != 0, "L%d: back on the ground, collidable, normal draw order" % lvl)
+		await _frames()
+		var landing: ExplosionBlast = null
+		for b in get_tree().get_nodes_in_group("effects_container")[0].get_children():
+			if b is ExplosionBlast and b.neutral:
+				landing = b
+		check(landing != null and landing.level == 1 and landing.global_position == fe.global_position,
+			"L%d: neutral landing blast at the victim's gun level 1, where it came down" % lvl)
+		fe.queue_free()
+	await _reset()
+	# Near the edge the throw stops at the field's border.
+	var edge_cell := Vector2i(36, 12)
+	var edge_mine := _lm._spawn_mine(edge_cell, 3, true)
+	await _frames()
+	_arm(edge_mine)
+	var edge := _spawn_enemy(_lm.mine_center(edge_cell) - _lm.global_position + Vector2(44, 0), 1, 10)
+	await _settle()
+	var edge_steps := 0
+	while edge.is_flying and edge_steps < 400:
+		edge._update_flying(1.0 / 60.0)
+		edge_steps += 1
+	check(is_equal_approx(edge.global_position.x, BaseTank.PLAYFIELD_MAX_X), "thrown towards the edge, it lands against the border (x %.0f)" % edge.global_position.x)
+	edge.queue_free()
+	await get_tree().create_timer(0.6).timeout
+
+	print("\n[I] Explosions set off opposing mines, if strong and close enough")
+	# [blast level, blast side (player?), neutral, mine level, mine side (player?), armed, offset in tiles, wall between, goes off]
+	var chains := [
+		[2, true, false, 1, false, true, Vector2i(2, 0), false, true],
+		[2, true, false, 2, false, true, Vector2i(2, 0), false, false],   # equal level: next tile only
+		[2, true, false, 2, false, true, Vector2i(1, 0), false, true],
+		[2, true, false, 3, false, true, Vector2i(1, 0), false, false],   # blast weaker than the mine
+		[3, true, false, 0, true, true, Vector2i(1, 0), false, false],    # own side never
+		[3, true, false, 0, false, false, Vector2i(1, 0), false, false],  # still deploying
+		[1, true, true, 0, true, true, Vector2i(2, 0), false, true],      # neutral hits player mines
+		[1, true, true, 0, false, true, Vector2i(0, 2), false, true],     # ... and enemy mines
+		[3, true, false, 0, false, true, Vector2i(3, 0), false, true],
+		[3, true, false, 0, false, true, Vector2i(3, 0), true, false],    # a wall shadows it
+	]
+	var blast_cell := Vector2i(20, 12)
+	for c in chains:
+		await _reset()
+		var mine := _lm._spawn_mine(blast_cell + c[6], c[3], c[4])
+		await _frames()
+		if c[5]:
+			_arm(mine)
+		else:
+			mine._age = -100.0  # keep it deploying for the whole case
+		if c[7]:
+			_put_fg(blast_cell + Vector2i(2, 0), IRON)
+			_put_fg(blast_cell + Vector2i(2, 1), IRON)
+		await _frames()
+		_lm.spawn_explosion_blast(_lm.mine_center(blast_cell), c[0], c[1], c[2])
+		await get_tree().create_timer(0.4).timeout
+		var gone := not _lm.has_mine(blast_cell + c[6])
+		check(gone == c[8], "L%d %s blast vs %s L%d mine %s tiles off%s%s: %s" % [
+			c[0], "neutral" if c[2] else ("player" if c[1] else "enemy"),
+			"player" if c[4] else "enemy", c[3], str(c[6]),
+			"" if c[5] else " (unarmed)", " behind a wall" if c[7] else "",
+			"goes off" if c[8] else "stays"])
+		if c[7]:
+			_lm._remove_fg_tile(blast_cell + Vector2i(2, 0))
+			_lm._remove_fg_tile(blast_cell + Vector2i(2, 1))
+	await _reset()
+	# Across sides: a player blast sets off an enemy mine, whose blast sets off
+	# the player's mine next to it that the first blast would never touch.
+	var ea := _lm._spawn_mine(blast_cell + Vector2i(1, 0), 0, false)
+	var pb := _lm._spawn_mine(blast_cell + Vector2i(2, 0), 0, true)
+	await _frames()
+	_arm(ea)
+	_arm(pb)
+	await _frames()
+	_lm.spawn_explosion_blast(_lm.mine_center(blast_cell), 0, true)
+	await get_tree().create_timer(0.5).timeout
+	check(not _lm.has_mine(blast_cell + Vector2i(1, 0)) and not _lm.has_mine(blast_cell + Vector2i(2, 0)),
+		"chains cross sides: player blast -> enemy mine -> player mine")
+
+	print("\n[J] Only add-on and MAX pickups lift the slow")
+	await _reset()
+	var cookie_scene := load("res://scenes/powerups/powerup.tscn")
+	for c in [[CookieData.CookieType.HP_UP, false], [CookieData.CookieType.SCORE_500, false],
+			[CookieData.CookieType.ANTI_ICE_COOKIE, true], [CookieData.CookieType.MAX_UP, true]]:
+		_player.apply_mine_slow()
+		var cookie = cookie_scene.instantiate()
+		cookie.setup(c[0])
+		_game.get_node("Entities/PowerUps").add_child(cookie)
+		cookie._apply_effect(_player)
+		cookie.queue_free()
+		check(_player.is_mine_slowed != c[1], "cookie %d %s the slow" % [c[0], "lifts" if c[1] else "keeps"])
+		_player._remove_utility_addon()
+
+	print("\n[K] Enemies lay mines at their special-weapon level, with the lay sound")
+	await _reset()
+	var layer := _spawn_enemy(home, 21, 10)
+	layer.special_weapon_level = 2
+	layer.current_direction = Vector2.DOWN
+	await get_tree().create_timer(0.1).timeout  # clear the lay-sound repeat guard
+	await _frames()
+	var sound_before: int = SoundManager._last_played.get(&"lay_mine", -1)
+	check(layer._lay_mine_special(), "enemy laid a mine")
+	check(SoundManager._last_played.get(&"lay_mine", -1) > sound_before, "an enemy laying a mine plays the lay sound")
+	var laid_mines := _lm.get_mines()
+	check(laid_mines.size() == 1 and laid_mines[0].level == 2 and not laid_mines[0].from_player
+		and _offset_of(laid_mines[0], layer) == Vector2(0, -64), "level 2, enemy side, behind a down-facing tank")
+
+	print("\n[L] Mine tanks' levels follow the original's type table and difficulty")
+	# Types 21-24 have base gun levels 0/1/1/2; EXPERT and above add one.
+	var by_difficulty := {1: [0, 1, 1, 2], 2: [0, 1, 1, 2], 3: [0, 1, 1, 2], 4: [1, 2, 2, 3], 5: [1, 2, 2, 3], 7: [1, 2, 2, 3]}
+	for d in by_difficulty:
+		var got: Array[int] = []
+		for t in range(21, 25):
+			got.append(CookieData.get_enemy_weapon_level(t, d))
+		check(got == by_difficulty[d], "difficulty %d: types 21-24 have gun levels %s (got %s)" % [d, str(by_difficulty[d]), str(got)])
+	var saved_difficulty: int = GameManager.difficulty
+	GameManager.difficulty = 5
+	var hard_layer := _spawn_enemy(home + Vector2(256, 0), 24, 10)
+	GameManager.difficulty = saved_difficulty
+	hard_layer.current_direction = Vector2.DOWN
+	await _frames()
+	_lm._clear_mines()
+	check(hard_layer._lay_mine_special() and _lm.get_mines().size() == 1 and _lm.get_mines()[0].level == 2
+		and hard_layer.special_weapon_level == 3,
+		"an INSANE type-24 tank (gun level 3) lays level-2 mines: enemy mines stop at L2")
+
+	# The last lay sound (0.92 s) must finish, or the engine reports its playback
+	# as leaked when the test quits.
+	await get_tree().create_timer(1.2).timeout
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

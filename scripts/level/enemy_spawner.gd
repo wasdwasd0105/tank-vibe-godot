@@ -94,6 +94,11 @@ func _spawn_enemy() -> void:
 	_active_enemies += 1
 
 func _on_enemy_removed() -> void:
+	# Leaving the game (menu, restart, game over) takes every tank out of the tree
+	# along with the spawner. That is not the enemies being beaten, and a stage
+	# clear fired from the closing scene crashed on its null get_tree().
+	if not is_inside_tree():
+		return
 	_active_enemies -= 1
 	if _spawn_queue.is_empty() and _active_enemies <= 0:
 		Events.all_enemies_defeated.emit()

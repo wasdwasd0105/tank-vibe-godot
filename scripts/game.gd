@@ -11,6 +11,8 @@ extends Node2D
 @onready var hud: Control = $HUD
 @onready var pause_menu: Control = $PauseLayer/PauseMenu
 
+var debug_freeze: DebugFreeze
+
 var _game_over_pending: bool = false
 var _stage_clear_pending: bool = false
 var _game_over_countdown: float = -1.0
@@ -41,6 +43,11 @@ func _ready() -> void:
 		pause_menu.restart_requested.connect(_on_pause_restart)
 		pause_menu.main_menu_requested.connect(_on_pause_main_menu)
 		pause_menu.exit_requested.connect(_on_pause_exit)
+
+	debug_freeze = DebugFreeze.new()
+	debug_freeze.name = "DebugFreeze"
+	debug_freeze.setup(level_manager)
+	add_child(debug_freeze)
 
 	# Snapshot state at stage start (for restart)
 	GameManager.save_stage_start_snapshot()
@@ -96,6 +103,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_QUOTELEFT:  # ` backtick
 			Events.bomb_all_enemies.emit()
+		elif event.keycode == KEY_BACKSLASH:  # \ freeze / unfreeze the world
+			debug_freeze.toggle()
 
 func _process(delta: float) -> void:
 	# Block pause menu during game over / stage clear
@@ -143,7 +152,8 @@ func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	_update_hud()
 
 func _on_all_enemies_defeated() -> void:
-	if _stage_clear_pending:
+	# A stage only clears while the game is running, never while it is closing.
+	if _stage_clear_pending or not is_inside_tree():
 		return
 	_stage_clear_pending = true
 	Events.stage_cleared.emit()

@@ -38,6 +38,7 @@ var _ground_fire_scene := preload("res://scripts/effects/ground_fire.gd")
 
 # Background image
 var _bg_image_sprite: Sprite2D
+var _bg_color_rect: ColorRect
 
 # Base wall fortification. Key: wall tile (Vector2i) -> its initial tile code, so
 # reverting the shovel restores the map's original base walls (not a fixed brick).
@@ -54,6 +55,7 @@ func _ready() -> void:
 	terrain_node = $TerrainLayer
 	tree_node = $TreeLayer
 	_bg_image_sprite = $BackgroundImage
+	_bg_color_rect = $BackgroundColor
 
 	# Get textures from ThemeManager (procedural or image-based)
 	_tile_textures = ThemeManager.get_all_tile_textures()
@@ -139,7 +141,10 @@ func load_stage(stage_num: int) -> void:
 
 	var stage_data: LevelData.StageData = stages[stage_index]
 
-	# Load background image if available
+	# The stage's flat colour sits behind the image; stages with no image (and
+	# any whose image is missing) show it instead of a black void.
+	if _bg_color_rect:
+		_bg_color_rect.color = stage_data.bg_color
 	_load_background_image(stage_data.bg_bitmap)
 
 	for y in range(LevelData.GRID_HEIGHT):
@@ -711,6 +716,10 @@ func clear_spawn_area(global_center: Vector2) -> void:
 const FIRE_FIELD_CAP: int = 40  # safety: max simultaneous fire fields
 
 var _fire_fields: Array = []          # Array[FireField]
+## Enemy-lit fires paused by the debug freeze (see DebugFreeze). Fires lit while
+## frozen are not in here: only a player can have lit them.
+var _frozen_fire_fields: Array = []   # Array[FireField]
+var _frozen_grass_tiles: Dictionary = {}  # Vector2i -> true
 var _fire_index: Dictionary = {}      # world tile (Vector2i) -> FireField burning it
 
 # Grass fire: a neutral wildfire that burns green grass to grey and creeps to
@@ -807,75 +816,175 @@ func _ap_chip_tile(tile: Vector2i, pool: int, from_direction: Vector2) -> void:
 # Mine Weapon
 # =====================================================================
 
-# Placed mines: Key: Vector2i tile, Value: Mine node (one mine per tile).
+# Laid mines: Key: top-left tile of the mine's 2x2 block, Value: Mine.
+# One mine per key, the original's mine grid (0x004db404).
 var _mine_tiles: Dictionary = {}
 
-## Candidate tiles for laying a mine, in preference order: the tile directly
-## behind the tank first, then the ones beside/further back. Rotated by facing.
-const MINE_PLACE_OFFSETS: Array[Vector2i] = [
-	Vector2i(0, 1), Vector2i(-1, 1), Vector2i(1, 1),
-	Vector2i(0, 2), Vector2i(-1, 2), Vector2i(1, 2),
-	Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, 3),
+## The 12 spots a mine may go, as offsets of the mine's 2x2 block from the
+## tank's own block (both by top-left tile) that are SUBTRACTED from the tank's:
+## the original's ring table at 0x004d29d0. Each is 2 tiles out, so a mine sits
+## 64 px from the tank centre on a tile corner. Index 0 is straight behind a tank
+## facing up, then the ring runs round the tank.
+const MINE_RING: Array[Vector2i] = [
+	Vector2i(0, -2), Vector2i(1, -2), Vector2i(2, -1), Vector2i(2, 0),
+	Vector2i(2, 1), Vector2i(1, 2), Vector2i(0, 2), Vector2i(-1, 2),
+	Vector2i(-2, 1), Vector2i(-2, 0), Vector2i(-2, -1), Vector2i(-1, -2),
 ]
+## The order the ring is tried in, relative to the tank's facing (0x004d2d64):
+## straight behind first, then the neighbours either side of that, working
+## round both sides and ending straight ahead. Each facing turns the ring by 3.
+const MINE_RING_ORDER: Array[int] = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6]
+## A spot is refused while anything collidable has its reference point this
+## close to the mine centre on both axes: the original's 48 px box, doubled.
+const MINE_CLEARANCE: float = 48.0
+## An armed mine's reference point: its 16 px image's corner + 16 px lands half
+## a tile past its centre.
+const MINE_POINT_OFFSET: Vector2 = Vector2(16, 16)
 
 
-## Try to lay a mine near [param tank_world]/[param facing] (a unit Vector2).
-## Picks the first placeable candidate tile behind the tank. Returns true if laid.
-func try_place_mine(tank_world: Vector2, facing: Vector2, level: int, from_player: bool) -> bool:
-	var origin := world_to_tile(tank_world)
-	for offset in MINE_PLACE_OFFSETS:
-		var tile: Vector2i = origin + _rotate_offset_by_facing(offset, facing)
-		if _mine_tile_placeable(tile):
-			_spawn_mine(tile, level, from_player)
+## Lay a level-[param level] mine for [param tank] on the first free spot of the
+## ring around it. Returns false, spending nothing, when all 12 are blocked.
+func try_place_mine(tank: BaseTank, level: int) -> bool:
+	var turn := 3 * _facing_index(tank.current_direction)
+	var local: Vector2 = tank.global_position - global_position
+	# The tank's own 2x2 block by its top-left tile, rounded as Delphi does.
+	var origin := Vector2i(
+		Mine.round_half_even(local.x / TILE_SIZE - 1.0),
+		Mine.round_half_even(local.y / TILE_SIZE - 1.0))
+	var floats: bool = "anti-water" in tank.get_addon_names()
+	for step in MINE_RING_ORDER:
+		var cell: Vector2i = origin - MINE_RING[posmod(turn + step, MINE_RING.size())]
+		if _mine_spot_free(cell, floats):
+			_spawn_mine(cell, level, tank.is_in_group("players"))
 			return true
 	return false
 
 
-func has_mine(tile: Vector2i) -> bool:
-	return _mine_tiles.has(tile)
+## True if a mine may go on the 2x2 block whose top-left tile is [param cell]:
+## all four tiles on the field and wall-free (grass is fine), no water unless
+## the layer floats (anti-water), no mine already keyed there, and nothing
+## standing close to its centre.
+func _mine_spot_free(cell: Vector2i, floats: bool) -> bool:
+	# The original read off-field tiles as open ground and could drop a mine
+	# where no tank ever reaches; the remake keeps every mine on the field.
+	if cell.x < 0 or cell.y < 0 or cell.x > GRID_WIDTH - 2 or cell.y > GRID_HEIGHT - 2:
+		return false
+	if _mine_tiles.has(cell):
+		return false
+	for dy in range(2):
+		for dx in range(2):
+			var tile := cell + Vector2i(dx, dy)
+			if is_tile_solid(tile):
+				return false
+			if not floats and _is_water_tile(tile):
+				return false
+	return not _mine_spot_crowded(mine_center(cell))
 
 
-func unregister_mine(tile: Vector2i, mine: Node) -> void:
-	if _mine_tiles.get(tile) == mine:
-		_mine_tiles.erase(tile)
+## The original refused a spot when any collidable sprite's reference point (its
+## top-left corner + 16 px: the centre of a tank, the base or a bonus) fell in a
+## box around the mine centre. That includes the layer itself, which can block
+## its own side spots while it sits between tiles, and armed mines, whose point
+## lies off-centre (their image is half a tank wide).
+func _mine_spot_crowded(center: Vector2) -> bool:
+	var points: Array[Vector2] = []
+	for node in get_tree().get_nodes_in_group("tanks"):
+		var tank := node as BaseTank
+		if tank and is_instance_valid(tank) and tank.collision_layer != 0:
+			points.append(tank.global_position)
+	var eagle := get_tree().get_first_node_in_group("eagle") as Node2D
+	if eagle:
+		points.append(eagle.global_position)
+	for group in ["powerups_container", "bullets_container"]:
+		var container := get_tree().get_first_node_in_group(group)
+		if container:
+			for child in container.get_children():
+				if child is Node2D:
+					points.append((child as Node2D).global_position)
+	for mine in get_mines():
+		if mine.is_armed():
+			points.append(mine.global_position + MINE_POINT_OFFSET)
+	for p in points:
+		var d: Vector2 = p - center
+		if d.x >= -MINE_CLEARANCE and d.x < MINE_CLEARANCE \
+				and d.y >= -MINE_CLEARANCE and d.y < MINE_CLEARANCE:
+			return true
+	return false
 
 
-func _spawn_mine(tile: Vector2i, level: int, from_player: bool) -> void:
-	var mine_scene := preload("res://scripts/effects/mine.gd")
-	var mine = mine_scene.new()
-	mine.setup(tile, level, from_player, self)
-	mine.position = Vector2(tile.x * TILE_SIZE + TILE_SIZE / 2, tile.y * TILE_SIZE + TILE_SIZE / 2)
+## World position of the centre of the mine block keyed by [param cell]: the
+## corner its four tiles share.
+func mine_center(cell: Vector2i) -> Vector2:
+	return global_position + Vector2((cell.x + 1) * TILE_SIZE, (cell.y + 1) * TILE_SIZE)
+
+
+## How many of the four tiles under a tank centred at [param world_center] are
+## ice: its 2x2 block, found the original's way (as for laying mines).
+func ice_tiles_under(world_center: Vector2) -> int:
+	var local: Vector2 = world_center - global_position
+	var origin := Vector2i(
+		Mine.round_half_even(local.x / TILE_SIZE - 1.0),
+		Mine.round_half_even(local.y / TILE_SIZE - 1.0))
+	var count := 0
+	for dy in range(2):
+		for dx in range(2):
+			var tile := origin + Vector2i(dx, dy)
+			if _bg_tile_data.has(tile) and LevelData.get_tile_category(
+					_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.ICE:
+				count += 1
+	return count
+
+
+func has_mine(cell: Vector2i) -> bool:
+	return _mine_tiles.has(cell)
+
+
+## Every mine still on the field.
+func get_mines() -> Array[Mine]:
+	var mines: Array[Mine] = []
+	for cell in _mine_tiles:
+		var mine = _mine_tiles[cell]
+		if is_instance_valid(mine):
+			mines.append(mine)
+	return mines
+
+
+func unregister_mine(mine: Mine) -> void:
+	if _mine_tiles.get(mine.cell) == mine:
+		_mine_tiles.erase(mine.cell)
+
+
+func _spawn_mine(cell: Vector2i, level: int, from_player: bool) -> Mine:
+	var mine_script := preload("res://scripts/effects/mine.gd")
+	var mine: Mine = mine_script.new()
+	mine.setup(cell, level, from_player, self)
+	mine.position = mine_center(cell) - global_position
 	# Deferred: mines can be laid from inside a physics step (enemy AI move).
 	terrain_node.add_child.call_deferred(mine)
-	_mine_tiles[tile] = mine
+	_mine_tiles[cell] = mine
+	return mine
 
 
-func _mine_tile_placeable(tile: Vector2i) -> bool:
-	if not _is_in_bounds(tile):
+func _is_water_tile(tile: Vector2i) -> bool:
+	if not _bg_tile_data.has(tile):
 		return false
-	if _mine_tiles.has(tile):
-		return false
-	# No mine on solid foreground (brick/steel) or water.
-	if _fg_tile_data.has(tile):
-		if LevelData.is_solid_tile(LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))):
-			return false
-	if _bg_tile_data.has(tile):
-		if LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.WATER:
-			return false
-	return true
+	return LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.WATER
 
 
-## Rotate a tank-local offset (authored for facing UP, where +y = "behind the
-## tank") into world tile-space for the tank's actual facing.
-func _rotate_offset_by_facing(offset: Vector2i, facing: Vector2) -> Vector2i:
-	var right := Vector2(-facing.y, facing.x)   # tank-local +x in world space
-	var world := right * float(offset.x) - facing * float(offset.y)
-	return Vector2i(roundi(world.x), roundi(world.y))
+## The original's facing numbers: 0 up, 1 right, 2 down, 3 left.
+static func _facing_index(direction: Vector2) -> int:
+	if direction == Vector2.RIGHT:
+		return 1
+	if direction == Vector2.DOWN:
+		return 2
+	if direction == Vector2.LEFT:
+		return 3
+	return 0
 
 
 func _clear_mines() -> void:
-	for tile in _mine_tiles.keys():
-		var mine = _mine_tiles[tile]
+	for cell in _mine_tiles.keys():
+		var mine = _mine_tiles[cell]
 		if is_instance_valid(mine):
 			mine.queue_free()
 	_mine_tiles.clear()
@@ -885,12 +994,27 @@ func _tick_fire(delta: float) -> void:
 	if _fire_fields.is_empty():
 		return
 	for field in _fire_fields:
-		field.update(delta)
+		if field not in _frozen_fire_fields:
+			field.update(delta)
 	var alive: Array = []
 	for field in _fire_fields:
 		if not field.is_dead():
 			alive.append(field)
 	_fire_fields = alive
+
+
+## Debug freeze: pause the fires the enemy side has already lit, or resume them.
+func freeze_enemy_fire(frozen: bool) -> void:
+	_frozen_fire_fields.clear()
+	_frozen_grass_tiles.clear()
+	if not frozen:
+		return
+	for field in _fire_fields:
+		if not field.from_player:
+			_frozen_fire_fields.append(field)
+	for rec in _grass_fires:
+		if not rec["from_player"]:
+			_frozen_grass_tiles[rec["tile"]] = true
 
 
 ## Ignite the ground where a fire bullet died. If the impact tile is already
@@ -981,6 +1105,8 @@ func _tick_grass_fire(delta: float) -> void:
 		return
 	# Tick a snapshot so fires spawned by this frame's spread wait until next frame.
 	for rec in _grass_fires.duplicate():
+		if _frozen_grass_tiles.has(rec["tile"]):
+			continue
 		rec["burn"] -= delta
 		if not rec["spread_done"]:
 			rec["spread"] -= delta
