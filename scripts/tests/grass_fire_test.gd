@@ -16,10 +16,13 @@ func _run() -> void:
 	GameManager.player_active[0] = true
 	GameManager.player_active[1] = false
 	var game: Node = load("res://scenes/game.tscn").instantiate()
+	game.show_intro = false  # straight into play
 	tree.root.add_child(game)
 	for i in range(5):
 		await tree.process_frame
 	await tree.create_timer(0.2).timeout
+	# No enemies: a fire tank's shots would light more grass mid-test.
+	game.get_node("EnemySpawner").halt()
 
 	var lm: LevelManager = game.get_level_manager()
 

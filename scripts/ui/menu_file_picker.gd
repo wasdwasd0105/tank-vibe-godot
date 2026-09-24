@@ -2,7 +2,8 @@ class_name MenuFilePicker
 extends RefCounted
 ## File picker shared by the menu screens: the operating system's own dialog
 ## when the display server offers one, otherwise Godot's in-game FileDialog.
-## Remembers the last folder used per purpose (see InputSettings.save_import_dir).
+## Opens a file, or in save mode names one to write. Remembers the last folder
+## used per purpose (see InputSettings.save_import_dir).
 
 signal file_picked(path: String)
 
@@ -12,28 +13,34 @@ var _host: Node
 var _title: String
 var _filters: PackedStringArray
 var _purpose: String
+var _save_mode: bool
 var _dialog: FileDialog  # in-game fallback, created on first use
 
 
-func _init(host: Node, title: String, filters: PackedStringArray, purpose: String) -> void:
+## [param save_mode] names a file to write instead of picking one to open.
+func _init(host: Node, title: String, filters: PackedStringArray, purpose: String, save_mode := false) -> void:
 	_host = host
 	_title = title
 	_filters = filters
 	_purpose = purpose
+	_save_mode = save_mode
 	host.tree_exiting.connect(_free_dialog)
 
 
-## Opens the picker; [signal file_picked] fires with the chosen absolute path.
-func open() -> void:
+## Opens the picker, in save mode suggesting [param file_name]; [signal
+## file_picked] fires with the chosen absolute path.
+func open(file_name := "") -> void:
 	var dir := start_dir()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
-		var err := DisplayServer.file_dialog_show(_title, dir, "", false,
-			DisplayServer.FILE_DIALOG_MODE_OPEN_FILE, _filters, _on_native_picked)
+		var mode := DisplayServer.FILE_DIALOG_MODE_SAVE_FILE if _save_mode else DisplayServer.FILE_DIALOG_MODE_OPEN_FILE
+		var err := DisplayServer.file_dialog_show(_title, dir, file_name, false, mode, _filters, _on_native_picked)
 		if err == OK:
 			return
 		push_warning("MenuFilePicker: system file picker failed (%s), using the in-game dialog" % error_string(err))
 	var dialog := fallback_dialog()
 	dialog.current_dir = dir
+	if _save_mode:
+		dialog.current_file = file_name
 	dialog.popup_centered()
 
 
@@ -62,7 +69,7 @@ func make_fallback_dialog(embedded_run: bool) -> FileDialog:
 	dialog.title = _title
 	dialog.mode_overrides_title = false
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE if _save_mode else FileDialog.FILE_MODE_OPEN_FILE
 	dialog.filters = _filters
 	dialog.use_native_dialog = false
 	dialog.size = Vector2i(1100, 720)

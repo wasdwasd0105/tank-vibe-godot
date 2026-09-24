@@ -10,6 +10,9 @@ var special_weapon_level: int = 0
 var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
+## The player credited with destroying this tank: the owner of the weapon that
+## dealt its last point (-1: an enemy's weapon, grass fire, or nobody).
+var killed_by: int = -1
 var _alive_time: float = 0.0  # Time since spawn (for initial downward push)
 var _collision_cooldown: float = 0.0  # Prevents eagle bias right after a collision
 var _near_eagle: bool = false  # True when within attack range of eagle
@@ -697,6 +700,10 @@ func lose_addon(addon_name: String) -> void:
 		_remove_addon(addon_name)
 
 func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
+	var attacker := hit_by
+	hit_by = -1
+	if health <= 0:
+		return  # already destroyed this frame: nothing more to take
 	health -= 1
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
@@ -710,12 +717,17 @@ func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	# Addon drop on 2nd hit: only if tank started with hp>2 and has addon(s)
 	if _hits_taken == 2 and max_health > 2 and not addons.is_empty():
 		_drop_addon_cookie()
+	if attacker >= 0:
+		GameManager.note_hit(attacker)
 	if health <= 0:
+		killed_by = attacker
 		destroy()
 	else:
 		SoundManager.play(&"tank_hit")
 
 func destroy() -> void:
+	if is_queued_for_deletion():
+		return  # a bomb reaching a tank a shell has just finished: one kill
 	Events.enemy_destroyed.emit(self, points_value)
 	# Death drop: any tank with max_health>1 has 60% chance to drop a cookie
 	if max_health > 1:

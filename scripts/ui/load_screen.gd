@@ -1,20 +1,40 @@
 extends Control
-## Load Game screen: every saved game is a clickable row with its own DELETE button.
+## Load Game screen: every saved game is a clickable row with a MORE button
+## that pops up a small window of its options: DUPLICATE, EXPORT and DELETE.
 ##
-## Mouse: click a row to continue it; click DELETE, then CONFIRM?, to remove it;
-## IMPORT .SAV picks an original Tank.exe save file and adds it to the list.
-## Keyboard: up/down move through the saves and the footer buttons, left/right
-## jump between a save and its DELETE button (or IMPORT and BACK), fire / Enter
-## activate, Esc returns to the title screen.
+## Mouse: click a row to continue it. MORE pops up its options under it:
+## DUPLICATE copies the save into a new one beside it, EXPORT writes it to a
+## file of your choosing, DELETE and then CONFIRM? removes it. A click outside
+## the window closes it. IMPORT brings in an original Tank.exe .sav or an
+## exported .tsave.
+## Keyboard / controller: up/down move through the saves and the footer, right
+## goes from a save to its MORE and left comes back (and moves between IMPORT
+## and BACK), fire / Enter / A activate. In the window up/down pick an option
+## and Esc / B / left close it; elsewhere Esc / B return to the title screen.
 
 const TITLE_SCENE := "res://scenes/main.tscn"
+const MORE_TEXT := "MORE"
+const DUPLICATE_TEXT := "DUPLICATE"
+const EXPORT_TEXT := "EXPORT"
 const DELETE_TEXT := "DELETE"
 const CONFIRM_TEXT := "CONFIRM?"
-const DEFAULT_HINT := "Click a save to continue it   ·   IMPORT .SAV brings in a Tank.exe save   ·   Esc goes back"
+const DEFAULT_HINT := "Click a save to continue it   ·   MORE duplicates, exports or deletes it   ·   Esc goes back"
+const OPTIONS_HINT := "DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes"
 const CONFIRM_HINT := "Press CONFIRM? again to delete this save. Moving away cancels."
 const ROW_HEIGHT := 84.0
-const IMPORT_TITLE := "Import a Tank.exe save"
-const IMPORT_FILTERS: PackedStringArray = ["*.sav, *.SAV ; Tank.exe save files"]
+const MORE_WIDTH := 130.0
+## The options window: its width, its gap from MORE, and how much it dims the rest.
+const POPUP_WIDTH := 230.0
+const POPUP_GAP := 8.0
+const POPUP_DIM := Color(0, 0, 0, 0.35)
+const IMPORT_TITLE := "Import a save"
+const IMPORT_FILTERS: PackedStringArray = [
+	"*.sav, *.SAV, *.tsave ; Saves (Tank.exe .sav or an exported .tsave)",
+	"*.sav, *.SAV ; Tank.exe save files",
+	"*.tsave ; Battle City saves",
+]
+const EXPORT_TITLE := "Export a save"
+const EXPORT_FILTERS: PackedStringArray = ["*.tsave ; Battle City saves"]
 const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 
 @onready var _scroll: ScrollContainer = %SaveScroll
@@ -27,9 +47,22 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 var _nav: MenuFocus
 var _saves: Array = []  # save info dictionaries from SaveManager.get_save_list()
 var _rows: Array[Button] = []
-var _delete_buttons: Array[Button] = []
-var _pending_delete: Button = null
+var _more_buttons: Array[Button] = []
+## What up/down walk through while the window is closed: the saves and the footer.
+var _main_items: Array[Control] = []
+# The options window, one for every save: a layer that dims the screen and
+# catches clicks outside, the window on it, its title and its buttons.
+var _popup_layer: Control
+var _popup: PanelContainer
+var _popup_title: Label
+var _popup_buttons: Array[Button] = []  # DUPLICATE, EXPORT, DELETE
+var _delete_button: Button
+var _popup_info: Dictionary = {}  # the save the window is open for
+var _open_more: Button = null      # and the MORE button that opened it
+var _pending_delete := false
 var _picker: MenuFilePicker
+var _export_picker: MenuFilePicker
+var _export_info: Dictionary = {}  # the save EXPORT was pressed on
 # Horizontal keyboard neighbours: control -> the control to its right / left.
 var _right_of: Dictionary = {}
 var _left_of: Dictionary = {}
@@ -39,10 +72,14 @@ func _ready() -> void:
 	_nav = MenuFocus.new(get_viewport())
 	_picker = MenuFilePicker.new(self, IMPORT_TITLE, IMPORT_FILTERS, "save")
 	_picker.file_picked.connect(_import_file)
+	_export_picker = MenuFilePicker.new(self, EXPORT_TITLE, EXPORT_FILTERS, "export", true)
+	_export_picker.file_picked.connect(_export_to)
 	_import_button.pressed.connect(_picker.open)
 	_import_button.mouse_entered.connect(_import_button.grab_focus)
 	_back_button.pressed.connect(_go_back)
 	_back_button.mouse_entered.connect(_back_button.grab_focus)
+	get_viewport().gui_focus_changed.connect(_on_focus_changed)
+	_build_popup()
 	_rebuild_list(0)
 
 
@@ -59,12 +96,17 @@ func _input(event: InputEvent) -> void:
 	elif MenuFocus.is_pressed(event, MenuFocus.RIGHT_ACTIONS):
 		_focus_neighbour(_right_of)
 	elif MenuFocus.is_pressed(event, MenuFocus.LEFT_ACTIONS):
-		_focus_neighbour(_left_of)
+		if _open_more:
+			_close_options(true)
+		else:
+			_focus_neighbour(_left_of)
 	elif MenuFocus.is_pressed(event, MenuFocus.ACCEPT_ACTIONS):
 		_nav.activate()
 	elif MenuFocus.is_pressed(event, MenuFocus.BACK_ACTIONS):
 		if _pending_delete:
-			_set_pending_delete(null)
+			_set_pending_delete(false)
+		elif _open_more:
+			_close_options(true)
 		else:
 			_go_back()
 	else:
@@ -84,15 +126,15 @@ func _focus_neighbour(neighbours: Dictionary) -> void:
 # =====================================================================
 
 func _rebuild_list(focus_index: int) -> void:
+	_close_options(false)
 	for child in _list.get_children():
 		_list.remove_child(child)
 		child.queue_free()
 	_rows.clear()
-	_delete_buttons.clear()
+	_more_buttons.clear()
 	_nav.aliases.clear()
 	_right_of.clear()
 	_left_of.clear()
-	_pending_delete = null
 	_set_hint(DEFAULT_HINT)
 
 	_saves = SaveManager.get_save_list()
@@ -103,11 +145,10 @@ func _rebuild_list(focus_index: int) -> void:
 	_scroll.visible = not _saves.is_empty()
 	_right_of[_import_button] = _back_button
 	_left_of[_back_button] = _import_button
-	var items: Array[Control] = []
-	items.assign(_rows)
-	items.append(_import_button)
-	items.append(_back_button)
-	_nav.items = items
+	_main_items.assign(_rows)
+	_main_items.append(_import_button)
+	_main_items.append(_back_button)
+	_nav.items = _main_items
 	SoundManager.attach_ui_sounds(self)
 	if _rows.is_empty():
 		_import_button.grab_focus()
@@ -115,6 +156,7 @@ func _rebuild_list(focus_index: int) -> void:
 		_rows[clampi(focus_index, 0, _rows.size() - 1)].grab_focus()
 
 
+## One save: its row, and the MORE button beside it.
 func _add_save_entry(info: Dictionary) -> void:
 	var entry := HBoxContainer.new()
 	entry.add_theme_constant_override("separation", 10)
@@ -138,22 +180,28 @@ func _add_save_entry(info: Dictionary) -> void:
 	row.mouse_entered.connect(row.grab_focus)
 	entry.add_child(row)
 
-	var delete_button := Button.new()
-	delete_button.text = DELETE_TEXT
-	delete_button.theme_type_variation = &"DangerButton"
-	delete_button.focus_mode = Control.FOCUS_ALL
-	delete_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	delete_button.custom_minimum_size = Vector2(130, 0)
-	delete_button.pressed.connect(_on_delete_pressed.bind(delete_button, info))
-	delete_button.mouse_entered.connect(delete_button.grab_focus)
-	delete_button.focus_exited.connect(_on_delete_focus_exited.bind(delete_button))
-	entry.add_child(delete_button)
+	var more := _make_row_button(MORE_TEXT, &"RowActionButton", MORE_WIDTH)
+	more.toggle_mode = true  # shown pressed while its window is open
+	more.pressed.connect(_toggle_options.bind(_rows.size()))
+	entry.add_child(more)
 
-	_nav.aliases[delete_button] = row
-	_right_of[row] = delete_button
-	_left_of[delete_button] = row
+	# MORE stands in for its row when moving up and down.
+	_nav.aliases[more] = row
+	_right_of[row] = more
+	_left_of[more] = row
 	_rows.append(row)
-	_delete_buttons.append(delete_button)
+	_more_buttons.append(more)
+
+
+func _make_row_button(text: String, variation: StringName, min_width: float) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.theme_type_variation = variation
+	button.focus_mode = Control.FOCUS_ALL
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	button.custom_minimum_size = Vector2(min_width, 0)
+	button.mouse_entered.connect(button.grab_focus)
+	return button
 
 
 func _make_label(text: String, variation: StringName, min_width: float, expand: bool = false) -> Label:
@@ -203,6 +251,118 @@ func _format_score(score: int) -> String:
 
 
 # =====================================================================
+# The options window MORE opens
+# =====================================================================
+
+## Builds the window, hidden: a panel titled with the save's name over a layer
+## that dims the screen and closes the window when clicked.
+func _build_popup() -> void:
+	_popup_layer = Control.new()
+	_popup_layer.name = "OptionsLayer"
+	_popup_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_popup_layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	_popup_layer.visible = false
+	_popup_layer.gui_input.connect(_on_popup_layer_input)
+	add_child(_popup_layer)
+	var dim := ColorRect.new()
+	dim.color = POPUP_DIM
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_popup_layer.add_child(dim)
+
+	_popup = PanelContainer.new()
+	_popup.name = "OptionsWindow"
+	_popup.theme_type_variation = &"MenuPanel"
+	var style := (get_theme_stylebox(&"panel", &"MenuPanel") as StyleBoxFlat).duplicate() as StyleBoxFlat
+	style.set_content_margin_all(14.0)
+	style.bg_color.a = 0.98
+	style.border_color = Color(0.98, 0.78, 0.22)
+	_popup.add_theme_stylebox_override(&"panel", style)
+	_popup.custom_minimum_size = Vector2(POPUP_WIDTH, 0)
+	_popup_layer.add_child(_popup)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	_popup.add_child(column)
+	_popup_title = _make_label("", &"HintLabel", 0)
+	_popup_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_popup_title)
+	for option: Array in [[DUPLICATE_TEXT, &"RowActionButton", _on_duplicate_pressed],
+			[EXPORT_TEXT, &"RowActionButton", _on_export_pressed],
+			[DELETE_TEXT, &"DangerButton", _on_delete_pressed]]:
+		var button := _make_row_button(option[0], option[1], 0)
+		button.pressed.connect(option[2])
+		column.add_child(button)
+		_popup_buttons.append(button)
+	_delete_button = _popup_buttons[2]
+	_delete_button.focus_exited.connect(_on_delete_focus_exited)
+
+
+## Opens the window for save [param index], or closes it if it is open for it.
+func _toggle_options(index: int) -> void:
+	var more := _more_buttons[index]
+	if _open_more == more:
+		_close_options(true)
+		return
+	_close_options(false)
+	_open_more = more
+	_popup_info = _saves[index]
+	_popup_title.text = str(_popup_info.get("save_name", ""))
+	more.set_pressed_no_signal(true)
+	_popup_layer.visible = true
+	_place_popup(more)
+	# Up and down stay in the window while it is open.
+	var buttons: Array[Control] = []
+	buttons.assign(_popup_buttons)
+	_nav.items = buttons
+	_popup_buttons[0].grab_focus()
+	_set_hint(OPTIONS_HINT)
+
+
+## Right under [param more], lined up with its right edge; above it when there
+## is no room below.
+func _place_popup(more: Button) -> void:
+	_popup.reset_size()
+	var window_size := _popup.get_combined_minimum_size()
+	var anchor := more.get_global_rect()
+	var at := Vector2(anchor.end.x - window_size.x, anchor.end.y + POPUP_GAP)
+	if at.y + window_size.y > get_viewport_rect().size.y - POPUP_GAP:
+		at.y = anchor.position.y - POPUP_GAP - window_size.y
+	_popup.position = at - _popup_layer.get_global_rect().position
+	_popup.size = window_size
+
+
+## Closes the window; [param refocus_more] puts the focus back on its MORE.
+func _close_options(refocus_more: bool) -> void:
+	if _open_more == null:
+		return
+	var more := _open_more
+	_set_pending_delete(false)
+	_popup_layer.visible = false
+	_open_more = null
+	_popup_info = {}
+	_nav.items = _main_items
+	_set_hint(DEFAULT_HINT)
+	if is_instance_valid(more):
+		more.set_pressed_no_signal(false)
+		if refocus_more:
+			more.grab_focus()
+
+
+## A click anywhere outside the window closes it.
+func _on_popup_layer_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed:
+		_popup_layer.accept_event()
+		_close_options(true)
+
+
+## The focus leaving the window closes it.
+func _on_focus_changed(control: Control) -> void:
+	if _open_more == null or control == null or _popup.is_ancestor_of(control):
+		return
+	_close_options(false)
+
+
+# =====================================================================
 # Actions
 # =====================================================================
 
@@ -210,28 +370,72 @@ func _load_save(info: Dictionary) -> void:
 	SaveManager.load_game(info["filepath"])
 
 
-func _on_delete_pressed(button: Button, info: Dictionary) -> void:
-	if _pending_delete == button:
-		var index := _delete_buttons.find(button)
-		_pending_delete = null
-		SaveManager.delete_save(info["filepath"])
-		_rebuild_list(index)
+func _on_duplicate_pressed() -> void:
+	_duplicate(_popup_info)
+
+
+func _on_export_pressed() -> void:
+	_export(_popup_info)
+
+
+func _duplicate(info: Dictionary) -> void:
+	var result: Dictionary = SaveManager.duplicate_save(info["filepath"])
+	if not result.get("ok", false):
+		_set_hint("Duplicate failed: %s" % result.get("error", "unknown error"), true)
+		return
+	_rebuild_list(0)
+	_focus_save(result["filepath"])
+	_set_hint("Duplicated \"%s\" as \"%s\"" % [info.get("save_name", "?"), result["save_name"]])
+
+
+## Asks where to write [param info]'s save; _export_to() writes it there.
+func _export(info: Dictionary) -> void:
+	_export_info = info
+	_close_options(true)
+	_export_picker.open(str(info.get("save_name", "save")) + ".tsave")
+
+
+func _export_to(path: String) -> void:
+	if _export_info.is_empty():
+		return
+	var result: Dictionary = SaveManager.export_save(_export_info["filepath"], path)
+	if result.get("ok", false):
+		_set_hint("Exported \"%s\" to %s" % [_export_info.get("save_name", "?"), result["path"]])
 	else:
-		_set_pending_delete(button)
+		_set_hint("Export failed: %s" % result.get("error", "unknown error"), true)
 
 
-func _set_pending_delete(button: Button) -> void:
-	if _pending_delete and is_instance_valid(_pending_delete):
-		_pending_delete.text = DELETE_TEXT
-	_pending_delete = button
-	if button:
-		button.text = CONFIRM_TEXT
-	_set_hint(CONFIRM_HINT if button else DEFAULT_HINT)
+## Focuses the row of the save stored at [param filepath].
+func _focus_save(filepath: String) -> void:
+	for i in _saves.size():
+		if _saves[i].get("filepath", "") == filepath:
+			_rows[i].grab_focus()
+			return
 
 
-func _on_delete_focus_exited(button: Button) -> void:
-	if _pending_delete == button:
-		_set_pending_delete(null)
+## DELETE asks first: its first press turns it into CONFIRM?, the second deletes.
+func _on_delete_pressed() -> void:
+	if not _pending_delete:
+		_set_pending_delete(true)
+		return
+	var filepath: String = _popup_info["filepath"]
+	var index := _saves.find(_popup_info)
+	SaveManager.delete_save(filepath)
+	_rebuild_list(index)
+
+
+func _set_pending_delete(pending: bool) -> void:
+	_pending_delete = pending
+	_delete_button.text = CONFIRM_TEXT if pending else DELETE_TEXT
+	if pending:
+		_set_hint(CONFIRM_HINT)
+	elif _open_more:
+		_set_hint(OPTIONS_HINT)
+
+
+func _on_delete_focus_exited() -> void:
+	if _pending_delete:
+		_set_pending_delete(false)
 
 
 func _go_back() -> void:
@@ -247,17 +451,14 @@ func _set_hint(text: String, is_error: bool = false) -> void:
 
 
 # =====================================================================
-# Importing original Tank.exe saves
+# Importing saves: original Tank.exe .sav files and exported .tsave files
 # =====================================================================
 
 func _import_file(path: String) -> void:
-	var result: Dictionary = SaveManager.import_original_save(path)
+	var result: Dictionary = SaveManager.import_save_file(path)
 	if not result.get("ok", false):
 		_set_hint("Import failed: %s" % result.get("error", "unknown error"), true)
 		return
 	_rebuild_list(0)
-	for i in _saves.size():
-		if _saves[i].get("filepath", "") == result["filepath"]:
-			_rows[i].grab_focus()
-			break
+	_focus_save(result["filepath"])
 	_set_hint("Imported \"%s\" from %s   ·   click it to continue" % [result["save_name"], path.get_file()])

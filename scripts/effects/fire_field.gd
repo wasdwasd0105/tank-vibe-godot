@@ -20,6 +20,7 @@ const TILE_ARM: float = 0.05
 var center: Vector2i
 var size: int = MIN_SIZE
 var from_player: bool = true
+var owner_id: int = -1  # the player whose shell lit or last fed it (-1: an enemy's)
 
 var _lm: LevelManager
 var _burn_timer: float = BURN_TIME
@@ -30,9 +31,10 @@ var _tiles: Dictionary = {}  # offset (Vector2i) -> GroundFire node
 static var _offset_cache: Dictionary = {}
 
 
-func _init(p_center: Vector2i, p_from_player: bool, p_lm: LevelManager) -> void:
+func _init(p_center: Vector2i, p_from_player: bool, p_lm: LevelManager, p_owner: int = -1) -> void:
 	center = p_center
 	from_player = p_from_player
+	owner_id = p_owner
 	_lm = p_lm
 	for off in offsets_for(MIN_SIZE):
 		_add_tile(off)
@@ -40,8 +42,9 @@ func _init(p_center: Vector2i, p_from_player: bool, p_lm: LevelManager) -> void:
 
 ## A new fire bullet reached this burning area (rule 3): grow one ring and
 ## refresh the burn timer so continued fire keeps it alive and expanding.
-func feed(p_from_player: bool) -> void:
+func feed(p_from_player: bool, p_owner: int = -1) -> void:
 	from_player = p_from_player
+	owner_id = p_owner
 	if size < MAX_SIZE:
 		var next := size + 1
 		for off in _ring(next):
@@ -103,7 +106,7 @@ func _add_tile(off: Vector2i) -> void:
 		return
 	if _lm._fire_index.has(world) or _lm._grass_index.has(world):
 		return  # already burning (weapon fire or grass fire) — don't stack tiles
-	var tile = _lm._spawn_fire_tile(world, from_player, TILE_ARM)
+	var tile = _lm._spawn_fire_tile(world, from_player, TILE_ARM, owner_id)
 	if tile == null:
 		return
 	_lm._fire_index[world] = self

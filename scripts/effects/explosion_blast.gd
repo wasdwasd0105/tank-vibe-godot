@@ -27,6 +27,7 @@ var level: int = 0
 var from_player: bool = true
 var neutral: bool = false  # neutral blast (e.g. a mine-fly landing) hurts BOTH sides
 var exclude_tank: Node = null  # a directly-hit tank already took the direct hit; skip it
+var owner_id: int = -1  # the player whose shell or mine this is (-1: an enemy's, or nobody's)
 var _level_manager: LevelManager = null
 
 var _t: float = 0.0
@@ -37,8 +38,9 @@ var _max_step: int = 0
 static var _frames: Array[Texture2D] = []
 
 
-func setup(p_level: int, p_from_player: bool, p_level_manager: LevelManager, p_neutral: bool = false, p_exclude: Node = null) -> void:
+func setup(p_level: int, p_from_player: bool, p_level_manager: LevelManager, p_neutral: bool = false, p_exclude: Node = null, p_owner: int = -1) -> void:
 	level = clampi(p_level, 0, 3)
+	owner_id = p_owner
 	from_player = p_from_player
 	neutral = p_neutral
 	exclude_tank = p_exclude
@@ -146,6 +148,7 @@ func _apply_tank_damage() -> void:
 			continue
 		for i in range(dmg):
 			if is_instance_valid(tank) and tank.health > 0:
+				tank.hit_by = owner_id
 				tank.take_damage()
 
 

@@ -88,6 +88,7 @@ func _process(delta: float) -> void:
 			_revert_fortification()
 	_tick_fire(delta)
 	_tick_grass_fire(delta)
+	_tick_ice_melt(delta)
 	_tick_tile_anim(delta)
 
 func _on_theme_changed(_theme_name: String) -> void:
@@ -731,6 +732,13 @@ const GRASS_FIRE_CAP: int = 150       # safety cap on simultaneous grass fires
 var _grass_fires: Array = []          # Array of {tile, node, from_player, burn, spread, spread_done}
 var _grass_index: Dictionary = {}     # tile (Vector2i) -> GroundFire node
 
+# Fire melts ice (Tank.exe's fire terrain step, 0x497a4e: a fire whose owner is
+# a player erases ice, ids 0..3 of the ice/water layer, from under itself, once,
+# Rnd(500)+500 ticks after it lands; enemy and grass fires, owner -1, never do).
+const ICE_MELT_DELAY_MIN: float = 0.375
+const ICE_MELT_DELAY_MAX: float = 0.75
+var _ice_melts: Dictionary = {}       # ice tile (Vector2i) -> seconds until it melts
+
 
 # =====================================================================
 # AP Weapon — wall drilling
@@ -855,7 +863,7 @@ func try_place_mine(tank: BaseTank, level: int) -> bool:
 	for step in MINE_RING_ORDER:
 		var cell: Vector2i = origin - MINE_RING[posmod(turn + step, MINE_RING.size())]
 		if _mine_spot_free(cell, floats):
-			_spawn_mine(cell, level, tank.is_in_group("players"))
+			_spawn_mine(cell, level, tank.is_in_group("players"), tank.get_player_index())
 			return true
 	return false
 
@@ -954,13 +962,14 @@ func unregister_mine(mine: Mine) -> void:
 		_mine_tiles.erase(mine.cell)
 
 
-func _spawn_mine(cell: Vector2i, level: int, from_player: bool) -> Mine:
+func _spawn_mine(cell: Vector2i, level: int, from_player: bool, owner_id: int = -1) -> Mine:
 	var mine_script := preload("res://scripts/effects/mine.gd")
 	var mine: Mine = mine_script.new()
 	mine.setup(cell, level, from_player, self)
+	mine.owner_id = owner_id
 	mine.position = mine_center(cell) - global_position
 	# Deferred: mines can be laid from inside a physics step (enemy AI move).
-	terrain_node.add_child.call_deferred(mine)
+	_add_deferred(terrain_node, mine)
 	_mine_tiles[cell] = mine
 	return mine
 
@@ -980,6 +989,20 @@ static func _facing_index(direction: Vector2) -> int:
 	if direction == Vector2.LEFT:
 		return 3
 	return 0
+
+
+## Adds [param node] under [param parent] at the end of the frame: fires, mines
+## and blasts are spawned from inside physics callbacks. One cleared away before
+## then (a fire lit and put out in the same frame) is dropped instead: added
+## after being queued for deletion, it crashed the engine a few frames later.
+func _add_deferred(parent: Node, node: Node) -> void:
+	_add_if_kept.call_deferred(parent, node)
+
+
+func _add_if_kept(parent: Node, node: Variant) -> void:
+	if not is_instance_valid(node) or node.is_queued_for_deletion():
+		return
+	parent.add_child(node)
 
 
 func _clear_mines() -> void:
@@ -1019,28 +1042,33 @@ func freeze_enemy_fire(frozen: bool) -> void:
 
 ## Ignite the ground where a fire bullet died. If the impact tile is already
 ## burning, grow that field by one ring (rule 3); otherwise start a new size-4
-## field (rules 1/4/5/6). [param from_player] decides which side it can burn.
-func ignite_fire_patch(center: Vector2i, from_player: bool) -> void:
+## field (rules 1/4/5/6). [param from_player] decides which side it can burn;
+## [param owner_id] is the player whose shell it was (-1: an enemy's).
+func ignite_fire_patch(center: Vector2i, from_player: bool, owner_id: int = -1) -> void:
 	if _fire_index.has(center):
 		var field = _fire_index[center]
 		if field != null and not field.is_dead():
-			field.feed(from_player)
+			field.feed(from_player, owner_id)
 			return
 	if _fire_fields.size() >= FIRE_FIELD_CAP:
 		return
-	var new_field := FireField.new(center, from_player, self)
+	var new_field := FireField.new(center, from_player, self, owner_id)
 	_fire_fields.append(new_field)
 
 
 ## Spawn one GroundFire tile node at [param world] (deferred; ignition often
 ## fires from inside a physics callback). Returns null if the tile can't burn.
-func _spawn_fire_tile(world: Vector2i, from_player: bool, arm_delay: float) -> GroundFire:
+## A player's fire landing on ice starts melting it.
+func _spawn_fire_tile(world: Vector2i, from_player: bool, arm_delay: float, owner_id: int = -1) -> GroundFire:
 	if not _fire_tile_ignitable(world):
 		return null
 	var fire: GroundFire = _ground_fire_scene.new()
 	fire.setup(world, from_player, arm_delay)
+	fire.owner_id = owner_id
 	fire.position = Vector2(world.x * TILE_SIZE + TILE_SIZE / 2, world.y * TILE_SIZE + TILE_SIZE / 2)
-	terrain_node.add_child.call_deferred(fire)
+	_add_deferred(terrain_node, fire)
+	if from_player and _is_ice(world) and not _ice_melts.has(world):
+		_ice_melts[world] = randf_range(ICE_MELT_DELAY_MIN, ICE_MELT_DELAY_MAX)
 	return fire
 
 
@@ -1048,17 +1076,32 @@ func _fire_tile_ignitable(tile: Vector2i) -> bool:
 	if not _is_in_bounds(tile):
 		return false
 	# No fire on solid walls (brick/steel/super). Burned grass DOES burn — it's
-	# scorched ground now, no different from regular open dirt.
+	# scorched ground now, no different from regular open dirt. Water and ice
+	# burn like ground too (as in the original, whose placement never looks at
+	# that layer); a player's fire then melts the ice under it.
 	if _fg_tile_data.has(tile):
 		var cat := LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))
 		if LevelData.is_solid_tile(cat):
 			return false
-	# Water burns like regular ground; ice does NOT — a fire tile would hide/erase
-	# the frozen floor, so ice stays fire-free.
-	if _bg_tile_data.has(tile):
-		if LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.ICE:
-			return false
 	return true
+
+
+func _is_ice(tile: Vector2i) -> bool:
+	return _bg_tile_data.has(tile) and LevelData.get_tile_category(
+			_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.ICE
+
+
+## Melts the ice tiles whose fire has burned long enough: bare ground is left,
+## and tanks no longer slide there.
+func _tick_ice_melt(delta: float) -> void:
+	if _ice_melts.is_empty():
+		return
+	for tile: Vector2i in _ice_melts.keys():
+		_ice_melts[tile] -= delta
+		if _ice_melts[tile] <= 0.0:
+			_ice_melts.erase(tile)
+			if _is_ice(tile):
+				_remove_bg_tile(tile)
 
 
 func _is_in_bounds(tile: Vector2i) -> bool:
@@ -1075,6 +1118,7 @@ func _clear_fire() -> void:
 			rec["node"].queue_free()
 	_grass_fires.clear()
 	_grass_index.clear()
+	_ice_melts.clear()
 
 
 ## Set a green grass tile alight: scorch it to grey immediately, spawn a neutral
@@ -1092,7 +1136,7 @@ func ignite_grass(tile: Vector2i, from_player: bool) -> void:
 	fire.is_grass_fire = true
 	fire.setup(tile, from_player, GroundFire.ARM_DELAY)
 	fire.position = Vector2(tile.x * TILE_SIZE + TILE_SIZE / 2, tile.y * TILE_SIZE + TILE_SIZE / 2)
-	terrain_node.add_child.call_deferred(fire)
+	_add_deferred(terrain_node, fire)
 	_grass_index[tile] = fire
 	_grass_fires.append({
 		"tile": tile, "node": fire, "from_player": from_player,
@@ -1153,14 +1197,14 @@ func _convert_grass_to_burned(tile: Vector2i) -> void:
 ## Detonate a shockwave at [param world_pos]. Called from an explosion bullet's
 ## death (and, later, mines). Deferred add_child because detonation usually fires
 ## from inside a physics callback (a bullet's collision).
-func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null) -> void:
+func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null, owner_id: int = -1) -> void:
 	var blast := ExplosionBlast.new()
-	blast.setup(level, from_player, self, neutral, exclude)
+	blast.setup(level, from_player, self, neutral, exclude, owner_id)
 	blast.global_position = world_pos
 	var container: Node = get_tree().get_first_node_in_group("effects_container")
 	if container == null:
 		container = terrain_node
-	container.add_child.call_deferred(blast)
+	_add_deferred(container, blast)
 
 
 ## Break destructible terrain within [param radius_half_tiles] of the blast center,

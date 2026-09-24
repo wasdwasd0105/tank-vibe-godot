@@ -47,6 +47,7 @@ func _run() -> void:
 	GameManager.player_active[1] = false
 
 	var game: Node = load("res://scenes/game.tscn").instantiate()
+	game.show_intro = false  # straight into play
 	tree.root.add_child(game)
 	for i in range(5):
 		await tree.process_frame
@@ -68,7 +69,7 @@ func _run() -> void:
 	await tree.create_timer(0.8).timeout  # > 6 * 0.09s
 	check(_count_bursts(tree) == 0, "spawn burst freed after its 6 frames")
 
-	print("\n[C] Player invincibility shows the shield wreath, then hides it")
+	print("\n[C] Only the helmet shows the shield wreath; every other invincibility blinks")
 	var players := tree.get_nodes_in_group("players")
 	check(players.size() >= 1, "player present")
 	var player: PlayerTank = players[0]
@@ -78,15 +79,44 @@ func _run() -> void:
 	var want_p1 := Vector2(pf.x + 15 * 32 + 32, pf.y + 28 * 32 + 32)
 	check(player.global_position.distance_to(want_p1) < 4.0,
 		"player at clear spawn %s (got %s)" % [str(want_p1), str(player.global_position)])
-	player._activate_invincibility(5.0)
+	var seen := func() -> Array:   # the tank's visibility over the next 6 frames
+		var out: Array = []
+		for i in range(6):
+			await tree.process_frame
+			out.append(player.visible)
+		return out
+	while player.is_invincible:   # let the spawn protection run out first
+		await tree.process_frame
 	await tree.process_frame
+	player.activate_helmet(5.0)
+	var frames_helmet: Array = await seen.call()
 	check(player._state_fx_sprite != null and player._state_fx_sprite.visible,
-		"shield overlay visible while invincible")
-	player.invincible_timer = 0.05  # force it to lapse
+		"helmet: the wreath shows")
+	check(not frames_helmet.has(false), "helmet: the tank stays solid under the wreath")
+	player.invincible_timer = 2.0   # into the helmet's last 2.25 s
+	var frames_ending: Array = await seen.call()
+	check(not player._state_fx_sprite.visible and frames_ending.has(true) and frames_ending.has(false),
+		"helmet running out: the wreath goes and the tank blinks (%s)" % str(frames_ending))
+	player.invincible_timer = 0.05
 	await tree.create_timer(0.3).timeout
-	check(not player.is_invincible, "invincibility expired")
-	check(player._state_fx_sprite != null and not player._state_fx_sprite.visible,
-		"shield overlay hidden after invincibility ends")
+	check(not player.is_invincible and player.visible and not player._state_fx_sprite.visible,
+		"invincibility over: solid tank, no wreath")
+	player.activate_pickup_invincibility()
+	var frames_pickup: Array = await seen.call()
+	var alternates := true
+	for i in range(1, frames_pickup.size()):
+		alternates = alternates and frames_pickup[i] != frames_pickup[i - 1]
+	check(not player._state_fx_sprite.visible and alternates,
+		"pickup invincibility: no wreath, drawn every other frame (%s)" % str(frames_pickup))
+	while player.visible:   # catch the blink on a blank frame, then pause there
+		await tree.process_frame
+	tree.paused = true
+	await tree.process_frame
+	check(player.visible, "paused on a blank blink frame: the tank is shown, not left invisible")
+	tree.paused = false
+	player.invincible_timer = 0.05
+	await tree.create_timer(0.3).timeout
+	check(player.visible and not player.is_invincible, "blink over: solid tank")
 
 	print("\n[D] Frozen enemies show the frost wreath, then hide it")
 	var enemy := _spawn_enemy(enemies_container, lm.tile_to_world(_open_tile(lm)))

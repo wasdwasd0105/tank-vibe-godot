@@ -41,6 +41,30 @@ const ADDON_CONFIG: Dictionary = {
 }
 
 const SPAWN_INVINCIBILITY: float = 3.0
+## Tank.exe showed the shield wreath only while at least 3000 ticks (2.25 s) of
+## invulnerability were left, which in practice means the helmet cookie. Any
+## shorter invulnerability, and the helmet's last 2.25 s, blinked instead: the
+## tank drawn on every other frame (its DoDraw, 0x0049208c).
+const WREATH_MIN_LEFT: float = 2.25
+var _helmet_invincible: bool = false
+var _wreath_shown: bool = false
+## A player who survives a hit is untouchable for 750 ticks (0.5625 s), blinking
+## like any short invincibility (Tank.exe's Damage, 0x00492640). Bots get none,
+## and neither does a tank hit while airborne.
+const HIT_GRACE: float = 0.5625
+## The frame whose hit started the grace. The original dealt a blast's or a
+## shell's damage in one go before the grace began, so the rest of that same
+## hit still lands.
+var _hit_grace_frame: int = -1
+
+# Controller rumble [weak motor, strong motor, seconds]: a jolt per hit that
+# costs HP, a big one when the tank is destroyed or a mine throws it.
+const HIT_RUMBLE: Array[float] = [0.45, 0.6, 0.2]
+const DEATH_RUMBLE: Array[float] = [0.9, 1.0, 0.55]
+const MINE_THROW_RUMBLE: Array[float] = [0.6, 0.9, 0.35]
+
+const MOVE_ACTIONS: Array[String] = ["up", "down", "left", "right"]
+const MOVE_DIRECTIONS: Array[Vector2] = [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]
 const POWERUP_INVINCIBILITY: float = 10.0
 
 var _input_prefix: String = "p1_"
@@ -126,17 +150,10 @@ func _physics_process(delta: float) -> void:
 		invincible_timer -= delta
 		if invincible_timer <= 0:
 			is_invincible = false
-			_update_shield_visual(false)
+			_helmet_invincible = false
+			_sync_wreath()
 
-	var input_dir := Vector2.ZERO
-	if Input.is_action_pressed(_input_prefix + "up"):
-		input_dir = Vector2.UP
-	elif Input.is_action_pressed(_input_prefix + "down"):
-		input_dir = Vector2.DOWN
-	elif Input.is_action_pressed(_input_prefix + "left"):
-		input_dir = Vector2.LEFT
-	elif Input.is_action_pressed(_input_prefix + "right"):
-		input_dir = Vector2.RIGHT
+	var input_dir := _read_move_direction()
 
 	# Check for ice under tank
 	_check_ice()
@@ -320,6 +337,9 @@ func is_bullet_blocked(bullet_direction: Vector2) -> bool:
 
 func get_gun_level() -> int:
 	return weapon_level
+
+func get_player_index() -> int:
+	return player_id
 
 ## The moon shield first: it is what a hit would cost first, too.
 func get_addon_names() -> Array:
@@ -521,7 +541,36 @@ func _sink_if_stranded_on_water() -> void:
 func _activate_invincibility(duration: float) -> void:
 	is_invincible = true
 	invincible_timer = maxf(invincible_timer, duration)
-	_update_shield_visual(true)
+	_sync_wreath()
+
+## The invincible helmet cookie: the one invincibility that shows the wreath.
+func activate_helmet(duration: float) -> void:
+	_helmet_invincible = true
+	_activate_invincibility(duration)
+
+func _process(delta: float) -> void:
+	super(delta)
+	_sync_wreath()
+	_blink_while_invincible()
+
+func _sync_wreath() -> void:
+	var wreath := is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT
+	if wreath != _wreath_shown:
+		_wreath_shown = wreath
+		_update_shield_visual(wreath)
+
+## Any other invincibility blinks the tank: drawn one frame, gone the next.
+func _blink_while_invincible() -> void:
+	if is_materializing:
+		return  # still hidden behind its spawn burst
+	if is_invincible and not _wreath_shown:
+		visible = not visible
+	elif not visible:
+		visible = true
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PAUSED and not is_materializing:
+		visible = true  # never sit out a pause on a blank blink frame
 
 func _update_shield_visual(active: bool) -> void:
 	# The old procedural arc is replaced by the animated shield wreath (Tank_T row 1).
@@ -609,14 +658,41 @@ func _apply_hit_punishment() -> void:
 			GameManager.set_weapon_level(player_id, weapon_level)
 			_apply_weapon_upgrade()
 
+## The way the player is pushing: the strongest of the four directions, so a
+## stick held off the diagonal drives along its main axis. Keys all push at full
+## strength, and a tie keeps the old order: up, down, left, right.
+func _read_move_direction() -> Vector2:
+	var best := Vector2.ZERO
+	var best_strength := 0.0
+	for i in MOVE_ACTIONS.size():
+		var strength := Input.get_action_strength(_input_prefix + MOVE_ACTIONS[i])
+		if strength > best_strength:
+			best_strength = strength
+			best = MOVE_DIRECTIONS[i]
+	return best
+
+func _rumble(pattern: Array[float]) -> void:
+	InputSettings.rumble(player_id, pattern[0], pattern[1], pattern[2])
+
 func take_damage() -> void:
-	if is_invincible:
+	if is_invincible and _hit_grace_frame != Engine.get_process_frames():
 		return
-	if not has_memory_save:
+	# An airborne tank (a mine throw) loses no level for the hit, as in the original.
+	if not has_memory_save and not is_flying:
 		_apply_hit_punishment()
+	_rumble(HIT_RUMBLE)  # a fatal hit's destroy() takes over with the big one
 	super.take_damage()  # reduces health + triggers the shared damage flash
+	if health > 0 and not is_flying:
+		_hit_grace_frame = Engine.get_process_frames()
+		_activate_invincibility(HIT_GRACE)
+
+func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
+	if not is_flying:
+		_rumble(MINE_THROW_RUMBLE)
+	super.launch_mine_fly(mine_level, mine_center, landing_hit, owner_id)
 
 func destroy() -> void:
+	_rumble(DEATH_RUMBLE)
 	if has_memory_save:
 		# Spray the memory-save addon cookie
 		var mem_cookie_type: int = CookieData.ADDON_TO_COOKIE.get("memory-save", -1)

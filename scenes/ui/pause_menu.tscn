@@ -1,0 +1,114 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/pause_menu.gd" id="1_pause"]
+[ext_resource type="Theme" path="res://assets/ui/menu_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/controls_page.tscn" id="3_controls"]
+
+[node name="PauseMenu" type="Control"]
+process_mode = 3
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("2_theme")
+script = ExtResource("1_pause")
+
+[node name="Dim" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.02, 0.02, 0.04, 0.72)
+
+[node name="PanelAnchor" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="MainPanel" type="PanelContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(480, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
+
+[node name="Items" type="VBoxContainer" parent="PanelAnchor/MainPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Header" type="Label" parent="PanelAnchor/MainPanel/Items"]
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
+text = "PAUSED"
+horizontal_alignment = 1
+
+[node name="ResumeButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "RESUME"
+
+[node name="RestartButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "RESTART STAGE"
+
+[node name="MainMenuButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "MAIN MENU"
+
+[node name="SettingsButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "SETTINGS"
+
+[node name="QuitButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "QUIT GAME"
+
+[node name="SettingsPanel" type="PanelContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(880, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
+
+[node name="Layout" type="VBoxContainer" parent="PanelAnchor/SettingsPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Header" type="Label" parent="PanelAnchor/SettingsPanel/Layout"]
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
+text = "SETTINGS"
+horizontal_alignment = 1
+
+[node name="SettingsRows" type="VBoxContainer" parent="PanelAnchor/SettingsPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="SettingsBackButton" type="Button" parent="PanelAnchor/SettingsPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "BACK"
+
+[node name="ControlsPage" parent="PanelAnchor" instance=ExtResource("3_controls")]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2

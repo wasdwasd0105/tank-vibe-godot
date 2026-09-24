@@ -31,6 +31,19 @@ var player_hp: Array[int] = [4, 4]                          # current HP, persis
 var player_addons: Array[Array] = [[], []]                   # addon name lists, persists across stages
 var player_kills: Array[Dictionary] = [{}, {}]  # kills by enemy type per player
 
+# --- This stage's best chains, for the results panel (the original's MaxHits and
+# MaxCombos). A hit chain goes on while each hit on an enemy lands within
+# HIT_CHAIN_WINDOW of the last (60 frames); a combo while each kill lands within
+# COMBO_WINDOW (180 frames). Folded into the best when it lapses (0x498dac).
+const HIT_CHAIN_WINDOW: float = 0.9
+const COMBO_WINDOW: float = 2.7
+var player_max_hits: Array[int] = [0, 0]
+var player_max_combos: Array[int] = [0, 0]
+var _hit_chains: Array[int] = [0, 0]
+var _hit_chain_timers: Array[float] = [0.0, 0.0]
+var _combos: Array[int] = [0, 0]
+var _combo_timers: Array[float] = [0.0, 0.0]
+
 var enemies_remaining: int = 20
 var freeze_timer: float = 0.0
 var _stage_start_snapshot: Dictionary = {}
@@ -45,6 +58,7 @@ func _process(delta: float) -> void:
 		freeze_timer -= delta
 		if freeze_timer <= 0:
 			enemies_frozen = false
+	_tick_chains(delta)
 
 func reset() -> void:
 	current_stage = 1
@@ -68,11 +82,12 @@ func reset() -> void:
 	save_created_iso = ""
 	start_difficulty = difficulty
 
+## A new game: fresh state, then the join screen (which counts the game as
+## played once it really starts).
 func start_game() -> void:
 	reset()
 	start_difficulty = difficulty
 	save_created_iso = Time.get_datetime_string_from_system(false, true)
-	InputSettings.increment_games_played()
 	get_tree().change_scene_to_file("res://scenes/join_screen.tscn")
 
 func next_stage() -> void:
@@ -85,7 +100,7 @@ func next_stage() -> void:
 		difficulty += 1    # Increase difficulty on map loop
 	# Auto-save after stage number is updated so loaded game starts on the correct stage
 	SaveManager.save_game()
-	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
+	get_tree().change_scene_to_file("res://scenes/game.tscn")
 
 func get_max_stages() -> int:
 	return LevelData.get_stage_count()
@@ -265,8 +280,52 @@ func restart_current_stage() -> void:
 	enemies_frozen = false
 	player_kills = [{}, {}]
 	is_game_over = false
-	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
+	get_tree().change_scene_to_file("res://scenes/game.tscn")
 
 func trigger_game_over() -> void:
 	is_game_over = true
 	Events.game_over.emit()
+
+# --- Stage statistics ---
+
+## A fresh stage: no kills, hits or combos counted yet.
+func reset_stage_stats() -> void:
+	player_kills = [{}, {}]
+	player_max_hits = [0, 0]
+	player_max_combos = [0, 0]
+	_hit_chains = [0, 0]
+	_hit_chain_timers = [0.0, 0.0]
+	_combos = [0, 0]
+	_combo_timers = [0.0, 0.0]
+
+## [param player_id]'s weapon took a point off an enemy.
+func note_hit(player_id: int) -> void:
+	_hit_chains[player_id] += 1
+	_hit_chain_timers[player_id] = HIT_CHAIN_WINDOW
+
+## [param player_id] destroyed an enemy.
+func note_kill(player_id: int) -> void:
+	_combos[player_id] += 1
+	_combo_timers[player_id] = COMBO_WINDOW
+
+## Ends every chain now, counting it: the stage is over. (The original stopped
+## folding them at its mission screen, so a stage's last chain slipped into the
+## next stage's best; the remake counts it where it was made.)
+func settle_chains() -> void:
+	for pid in range(2):
+		_hit_chain_timers[pid] = 0.0
+		_combo_timers[pid] = 0.0
+	_tick_chains(0.0)
+
+func _tick_chains(delta: float) -> void:
+	for pid in range(2):
+		if _hit_chain_timers[pid] > 0.0:
+			_hit_chain_timers[pid] -= delta
+		elif _hit_chains[pid] > 0:
+			player_max_hits[pid] = maxi(player_max_hits[pid], _hit_chains[pid])
+			_hit_chains[pid] = 0
+		if _combo_timers[pid] > 0.0:
+			_combo_timers[pid] -= delta
+		elif _combos[pid] > 0:
+			player_max_combos[pid] = maxi(player_max_combos[pid], _combos[pid])
+			_combos[pid] = 0

@@ -130,6 +130,7 @@ func _run() -> void:
 	GameManager.player_active[1] = false
 
 	_game = load("res://scenes/game.tscn").instantiate()
+	_game.show_intro = false  # straight into play
 	tree.root.add_child(_game)
 	for i in range(5):
 		await tree.process_frame
@@ -322,18 +323,21 @@ func _run() -> void:
 
 	print("\n[G] What a mine does to the tank that touches it")
 	await _reset()
-	# [level, enemy type (add-on), exploded, slowed, flying, hp lost before landing, add-on left]
+	# [level, enemy type (add-on), exploded, slowed, thrown, hp lost on landing, add-on left]
+	# Levels 0-3 here are 1-4 in play. A thrown tank loses nothing in the air; on
+	# landing it loses its moon shield or else another add-on, and 1 HP (L2) or 2
+	# (L3) (Sean's rule).
 	var rows := [
 		[0, 1, true, false, false, -1, ""],
 		[1, 1, true, true, false, -1, ""],
 		[2, 1, true, true, true, 1, ""],
 		[3, 1, true, true, true, 2, ""],
 		[2, 6, false, false, false, 0, "anti-ice"],     # anti-ice skates over L0-L2
-		[3, 6, true, false, true, 0, ""],               # L3: loses anti-ice instead of HP
-		[2, 4, true, true, true, 0, ""],                # moon shield soaks the L2 hit
-		[3, 4, true, true, true, 1, ""],
-		[2, 8, true, false, false, -1, "memory-save"],  # memory-save: no slow below L3, never flies
-		[3, 8, true, true, false, -1, "memory-save"],
+		[3, 6, true, false, true, 2, ""],               # L3: thrown; lands without anti-ice, 2 HP down
+		[2, 4, true, true, true, 1, ""],                # the moon shield goes on landing, and 1 HP
+		[3, 4, true, true, true, 2, ""],
+		[2, 8, true, false, true, 1, ""],               # memory-save: no slow below L3, but thrown all
+		[3, 8, true, true, true, 2, ""],                # the same, and it lands without it
 	]
 	var col := 0
 	for row in rows:
@@ -345,13 +349,21 @@ func _run() -> void:
 		var local := _lm.mine_center(cell) - _lm.global_position
 		var e := _spawn_enemy(local, row[1], 10)
 		e._hits_taken = 5  # keep the remake's second-hit add-on drop out of this
+		var addon_before: String = e.addons[0] if not e.addons.is_empty() else ""
 		await _settle()
 		var label := "L%d on type %d" % [row[0], row[1]]
 		check(_lm.has_mine(cell) != row[2], "%s: mine %s" % [label, "went off" if row[2] else "stayed"])
 		check(e.is_mine_slowed == row[3], "%s: slowed=%s" % [label, row[3]])
-		check(e.is_flying == row[4], "%s: flying=%s" % [label, row[4]])
-		if row[5] >= 0:
-			check(e.health == 10 - row[5], "%s: direct hit %d, blast can't reach it airborne (hp %d)" % [label, row[5], e.health])
+		check(e.is_flying == row[4], "%s: thrown=%s" % [label, row[4]])
+		if row[4]:
+			var aloft_addon: String = e.addons[0] if not e.addons.is_empty() else ""
+			check(e.health == 10 and aloft_addon == addon_before,
+				"%s: nothing lost in the air, the blast can't reach it (hp %d, add-on '%s')" % [label, e.health, aloft_addon])
+			while e.is_flying:
+				e._update_flying(1.0 / 60.0)
+			check(e.health == 10 - row[5], "%s: lands and loses %d HP (hp %d)" % [label, row[5], e.health])
+		elif row[5] == 0:
+			check(e.health == 10, "%s: untouched (hp %d)" % [label, e.health])
 		else:
 			check(e.health < 10 or not row[2], "%s: the blast hit it (hp %d)" % [label, e.health])
 		var left: String = e.addons[0] if not e.addons.is_empty() else ""
@@ -376,14 +388,76 @@ func _run() -> void:
 	_arm(enemy_l3)
 	_player.is_invincible = true
 	_player.invincible_timer = 30.0
+	_player.apply_addon("moon-shield")
 	var hp := _player.health
 	_place(_player, _lm.mine_center(Vector2i(20, 12)) - _lm.global_position, Vector2.UP)
 	await _settle()
 	check(not _lm.has_mine(Vector2i(20, 12)) and _player.is_flying and not _player.is_mine_slowed and _player.health == hp,
-		"an invulnerable player still flies, but takes no hit and no slow")
+		"an invincible player is thrown all the same, but takes no slow")
 	while _player.is_flying:
 		_player._update_flying(1.0 / 60.0)
+	check(_player.health == hp and _player.has_moon_shield,
+		"and, still invincible when it lands, keeps its HP and its moon shield")
 	_player.is_invincible = false
+	_player.invincible_timer = 0.0
+	# Not invincible: the moon shield goes first, then the HP; the landing hit
+	# costs no level and starts no hit grace.
+	await _reset()
+	var thrower := _lm._spawn_mine(Vector2i(20, 12), 3, false)
+	await _frames()
+	_arm(thrower)
+	_player.apply_addon("anti-water")
+	_player.health = 4
+	var levels := [_player.speed_level, _player.weapon_level]
+	_place(_player, _lm.mine_center(Vector2i(20, 12)) - _lm.global_position, Vector2.UP)
+	await _settle()
+	check(_player.is_flying and _player.health == 4 and _player.has_moon_shield and _player.has_boat,
+		"a player thrown by an L3 mine loses nothing in the air")
+	while _player.is_flying:
+		_player._update_flying(1.0 / 60.0)
+	check(_player.health == 2 and not _player.has_moon_shield and _player.has_boat,
+		"on landing: the moon shield goes (the boat stays), and 2 HP (hp %d)" % _player.health)
+	check([_player.speed_level, _player.weapon_level] == levels and not _player.is_invincible,
+		"no level lost and no hit grace for it")
+	await _settle()   # the landing blast
+	_player.lose_addon("anti-water")
+	_player.health = 4
+	var bare := _lm._spawn_mine(Vector2i(20, 12), 2, false)
+	await _frames()
+	_arm(bare)
+	_player.apply_addon("anti-ice")
+	_player.is_invincible = false
+	_place(_player, _lm.mine_center(Vector2i(20, 12)) - _lm.global_position, Vector2.UP)
+	await _settle()
+	# Anti-ice skates over an L2 mine, so this one has nothing else to lose: the
+	# add-on stays and the mine too.
+	check(_lm.has_mine(Vector2i(20, 12)) and not _player.is_flying, "anti-ice skates over an L2 mine")
+	_player.lose_addon("anti-ice")
+	await _settle()
+	check(_player.is_flying, "without it, the L2 mine throws the player")
+	while _player.is_flying:
+		_player._update_flying(1.0 / 60.0)
+	check(_player.health == 3, "and with no add-on to lose it lands 1 HP down (hp %d)" % _player.health)
+	await _settle()
+	_player.health = 4
+	# Sean's case (2026-09-24): memory-save and a moon shield, driving into an
+	# enemy L2 mine. The original kept a memory-save tank on the ground.
+	var sean := _lm._spawn_mine(Vector2i(20, 12), 2, false)
+	await _frames()
+	_arm(sean)
+	_player.apply_addon("memory-save")
+	_player.apply_addon("moon-shield")
+	_player.is_invincible = false
+	_place(_player, _lm.mine_center(Vector2i(20, 12)) - _lm.global_position + Vector2(0, 44), Vector2.UP)
+	await _settle()
+	check(not _lm.has_mine(Vector2i(20, 12)) and _player.is_flying, "memory-save no longer keeps a player on the ground")
+	while _player.is_flying:
+		_player._update_flying(1.0 / 60.0)
+	check(_player.health == 3 and not _player.has_moon_shield and _player.has_memory_save,
+		"it lands without its moon shield (memory-save stays), 1 HP down (hp %d)" % _player.health)
+	await _settle()
+	_player.lose_addon("memory-save")
+	_player.health = 4
 
 	print("\n[H] Flight: thrown back the way it came, as the original's TFlyingTank")
 	# A tank touches a mine 44 px short of its centre (its 60 px box against the

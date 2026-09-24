@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3 uid="uid://cmain01"]
+[gd_scene load_steps=5 format=3 uid="uid://cmain01"]
 
 [ext_resource type="Script" uid="uid://b3c0p0g04j1nc" path="res://scripts/ui/title_screen.gd" id="1_title"]
 [ext_resource type="Theme" path="res://assets/ui/menu_theme.tres" id="2_theme"]
 [ext_resource type="PackedScene" path="res://scenes/ui/menu_backdrop.tscn" id="3_backdrop"]
+[ext_resource type="PackedScene" path="res://scenes/ui/controls_page.tscn" id="4_controls"]
 
 [node name="TitleScreen" type="Control"]
 layout_mode = 3
@@ -65,17 +66,17 @@ theme_type_variation = &"MenuPanel"
 layout_mode = 2
 theme_override_constants/separation = 12
 
-[node name="NewGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "NEW GAME"
-
 [node name="LoadGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "LOAD GAME"
+
+[node name="NewGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "NEW GAME"
 
 [node name="SettingsButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
 unique_name_in_owner = true
@@ -117,55 +118,10 @@ layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "BACK"
 
-[node name="KeybindPanel" type="PanelContainer" parent="PanelAnchor"]
+[node name="KeybindPanel" parent="PanelAnchor" instance=ExtResource("4_controls")]
 unique_name_in_owner = true
 visible = false
-custom_minimum_size = Vector2(700, 0)
 layout_mode = 2
-theme_type_variation = &"MenuPanel"
-
-[node name="Layout" type="VBoxContainer" parent="PanelAnchor/KeybindPanel"]
-layout_mode = 2
-theme_override_constants/separation = 10
-
-[node name="KeybindTitle" type="Label" parent="PanelAnchor/KeybindPanel/Layout"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"HeaderLabel"
-text = "P1 KEYS"
-horizontal_alignment = 1
-
-[node name="KeybindRows" type="VBoxContainer" parent="PanelAnchor/KeybindPanel/Layout"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="Actions" type="HBoxContainer" parent="PanelAnchor/KeybindPanel/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 12
-
-[node name="KeybindResetButton" type="Button" parent="PanelAnchor/KeybindPanel/Layout/Actions"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_type_variation = &"MenuItemButton"
-text = "RESET KEYS"
-
-[node name="KeybindBackButton" type="Button" parent="PanelAnchor/KeybindPanel/Layout/Actions"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_type_variation = &"MenuItemButton"
-text = "BACK"
-
-[node name="KeybindPrompt" type="Label" parent="PanelAnchor/KeybindPanel/Layout"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 34)
-layout_mode = 2
-theme_type_variation = &"PromptLabel"
-horizontal_alignment = 1
-vertical_alignment = 1
-autowrap_mode = 3
 
 [node name="Footer" type="HBoxContainer" parent="."]
 layout_mode = 1

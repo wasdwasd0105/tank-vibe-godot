@@ -1,10 +1,11 @@
 extends Control
-## Title screen: the main menu with its settings and key-binding pages.
+## Title screen: the main menu, its settings page, and each player's controls
+## page (the ControlsPage the pause menu shows too).
 ##
 ## Mouse: hovering a button focuses it, clicking activates it; the < > arrows
 ## change a setting. Keyboard: P1/P2 movement keys or the arrow keys move the
 ## focus, fire / Enter / Space activate, left/right change a setting and Esc
-## goes back one page.
+## goes back one page. Controller: the same with the D-pad or stick, A and B.
 
 enum Page { MAIN, SETTINGS, KEYBIND }
 
@@ -15,9 +16,9 @@ const MIN_CREDITS := 1
 const MAX_CREDITS := 50
 const MIN_DIFFICULTY := 1
 const MAX_DIFFICULTY := 5
-const MAP_IMPORT_TITLE := "Import a map file"
-const MAP_IMPORT_HINT := "Tank.exe Stage.dat or a .txt map"
-const MAP_IMPORT_FILTERS: PackedStringArray = ["*.dat, *.DAT ; Tank.exe map files (Stage.dat)", "*.txt ; Battle City text maps"]
+const MAP_IMPORT_TITLE := "Import a Tank.exe map"
+const MAP_IMPORT_HINT := "a Tank.exe Stage.dat"
+const MAP_IMPORT_FILTERS: PackedStringArray = ["*.dat, *.DAT ; Tank.exe map files (Stage.dat)"]
 const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 
 # --- Main page ---
@@ -32,13 +33,8 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 @onready var _settings_rows: VBoxContainer = %SettingsRows
 @onready var _settings_back_button: Button = %SettingsBackButton
 
-# --- Key binding page ---
-@onready var _keybind_page: Control = %KeybindPanel
-@onready var _keybind_title: Label = %KeybindTitle
-@onready var _keybind_rows: VBoxContainer = %KeybindRows
-@onready var _keybind_reset_button: Button = %KeybindResetButton
-@onready var _keybind_back_button: Button = %KeybindBackButton
-@onready var _keybind_prompt: Label = %KeybindPrompt
+# --- Controls page ---
+@onready var _keybind_page: ControlsPage = %KeybindPanel
 
 # --- Footer ---
 @onready var _footer: Control = $Footer
@@ -48,16 +44,14 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 var _page: Page = Page.MAIN
 var _nav: MenuFocus
 
-# Settings rows, built in _ready()
+# Settings rows, built in _ready(): the title's own, then the ones the pause
+# menu shares (sound, vibration, each player's controls).
 var _map_row: Button
 var _import_map_row: Button
-var _sfx_row: Button
-var _music_row: Button
 var _theme_row: Button
 var _credits_row: Button
 var _difficulty_row: Button
-var _p1_keys_row: Button
-var _p2_keys_row: Button
+var _common: CommonSettings
 
 var _available_themes: Array[String] = []
 var _theme_index: int = 0
@@ -65,11 +59,11 @@ var _available_pools: Array = []  # Array of LevelData.MapPool
 var _pool_index: int = 0
 var _map_picker: MenuFilePicker
 
-# Key binding state
+# Controls page state
 var _keybind_player: String = "p1"
-var _keybind_actions: Array[String] = []
-var _action_rows: Array[Button] = []
-var _capture_action: String = ""  # action waiting for a key press; "" when idle
+## True while the menus are driven with a controller, so the controls page opens
+## on its GAMEPAD tab.
+var _using_pad: bool = false
 
 
 func _ready() -> void:
@@ -78,19 +72,19 @@ func _ready() -> void:
 	_map_picker.file_picked.connect(_import_map_file)
 	_load_saved_settings()
 	_build_settings_rows()
-	_build_keybind_rows()
 	_connect_buttons()
 	_refresh_settings_values()
 	_refresh_footer()
-	_show_page(Page.MAIN, _new_game_button, false)
+	_show_page(Page.MAIN, _load_game_button, false)
 	SoundManager.attach_ui_sounds(self)
 
 
 func _input(event: InputEvent) -> void:
-	if _capture_action != "":
-		_handle_capture_input(event)
-		return
-	if not MenuFocus.is_navigation_event(event):
+	var device := MenuFocus.device_of(event)
+	if device >= 0:
+		_using_pad = device == 1
+	# The controls page handles its own input (it gets each event first).
+	if _page == Page.KEYBIND or not MenuFocus.is_navigation_event(event):
 		return
 	# Activating a button can change scene, which removes this node from the
 	# tree at once (get_viewport() then returns null), so keep the viewport.
@@ -147,10 +141,8 @@ func _build_settings_rows() -> void:
 	_theme_row = _add_value_row("THEME", _cycle_theme)
 	_credits_row = _add_value_row("CREDITS", _cycle_credits)
 	_difficulty_row = _add_value_row("DIFFICULTY", _cycle_difficulty)
-	_sfx_row = _add_value_row("SFX VOLUME", _cycle_sfx_volume)
-	_music_row = _add_value_row("MUSIC VOLUME", _cycle_music_volume)
-	_p1_keys_row = _add_keys_row("P1 KEYS", "p1")
-	_p2_keys_row = _add_keys_row("P2 KEYS", "p2")
+	_common = CommonSettings.new(_settings_rows, false)
+	_common.controls_requested.connect(_open_keybinds)
 
 
 func _add_value_row(title: String, cycle: Callable) -> Button:
@@ -175,34 +167,16 @@ func _add_action_row(title: String, hint: String, action: Callable) -> Button:
 	return row
 
 
-func _add_keys_row(title: String, player: String) -> Button:
-	var row := MenuRows.make_keycap_row(title)
-	_settings_rows.add_child(row)
-	_focus_on_hover(row)
-	row.pressed.connect(_open_keybinds.bind(player))
-	return row
-
-
-func _build_keybind_rows() -> void:
-	for i in InputSettings.ACTION_DISPLAY_NAMES.size():
-		var row := MenuRows.make_keycap_row(InputSettings.ACTION_DISPLAY_NAMES[i])
-		_keybind_rows.add_child(row)
-		_focus_on_hover(row)
-		row.pressed.connect(_begin_capture.bind(i))
-		_action_rows.append(row)
-
-
 func _connect_buttons() -> void:
-	for button: Button in [_new_game_button, _load_game_button, _settings_button, _quit_button,
-			_settings_back_button, _keybind_reset_button, _keybind_back_button]:
+	for button: Button in [_load_game_button, _new_game_button, _settings_button, _quit_button,
+			_settings_back_button]:
 		_focus_on_hover(button)
 	_new_game_button.pressed.connect(GameManager.start_game)
 	_load_game_button.pressed.connect(_open_load_screen)
 	_settings_button.pressed.connect(_open_settings)
 	_quit_button.pressed.connect(get_tree().quit)
 	_settings_back_button.pressed.connect(_close_settings)
-	_keybind_reset_button.pressed.connect(_reset_keybinds)
-	_keybind_back_button.pressed.connect(_close_keybinds)
+	_keybind_page.closed.connect(_close_keybinds)
 
 
 ## Hovering a button focuses it, so mouse and keyboard share one highlight.
@@ -215,7 +189,6 @@ func _focus_on_hover(button: Button) -> void:
 # =====================================================================
 
 func _show_page(page: Page, focus_target: Control, animate: bool = true) -> void:
-	_cancel_capture()
 	_set_import_hint(MAP_IMPORT_HINT)
 	_page = page
 	_main_page.visible = page == Page.MAIN
@@ -231,7 +204,7 @@ func _show_page(page: Page, focus_target: Control, animate: bool = true) -> void
 		create_tween().tween_property(shown, "modulate:a", 1.0, PAGE_FADE_TIME)
 	if focus_target:
 		focus_target.grab_focus()
-	else:
+	elif not _nav.items.is_empty():
 		_nav.focus_first()
 
 
@@ -248,23 +221,18 @@ func _page_items(page: Page) -> Array[Control]:
 	var items: Array[Control] = []
 	match page:
 		Page.MAIN:
-			items.assign([_new_game_button, _load_game_button, _settings_button, _quit_button])
+			items.assign([_load_game_button, _new_game_button, _settings_button, _quit_button])
 		Page.SETTINGS:
-			items.assign([_map_row, _import_map_row, _theme_row, _credits_row, _difficulty_row,
-					_sfx_row, _music_row, _p1_keys_row, _p2_keys_row, _settings_back_button])
-		Page.KEYBIND:
-			items.assign(_action_rows)
-			items.append(_keybind_reset_button)
-			items.append(_keybind_back_button)
+			items.assign([_map_row, _import_map_row, _theme_row, _credits_row, _difficulty_row])
+			items.append_array(_common.rows())
+			items.append(_settings_back_button)
+		# Page.KEYBIND: the controls page runs its own navigation.
 	return items
 
 
 func _go_back() -> void:
-	match _page:
-		Page.SETTINGS:
-			_close_settings()
-		Page.KEYBIND:
-			_close_keybinds()
+	if _page == Page.SETTINGS:
+		_close_settings()
 
 
 func _open_settings() -> void:
@@ -287,11 +255,7 @@ func _adjust_focused_value(direction: int) -> void:
 	if _page != Page.SETTINGS:
 		return
 	var focused := _nav.focus_owner()
-	if focused == _sfx_row:
-		_cycle_sfx_volume(direction)
-		return
-	if focused == _music_row:
-		_cycle_music_volume(direction)
+	if _common.adjust(focused, direction):
 		return
 	if focused == _map_row:
 		_cycle_pool(direction)
@@ -334,30 +298,6 @@ func _cycle_difficulty(direction: int) -> void:
 	_refresh_settings_values()
 
 
-## Volume steps in tenths, the granularity the row can show as a bar.
-func _cycle_sfx_volume(direction: int) -> void:
-	SoundManager.set_sfx_volume(_stepped_volume(SoundManager.get_sfx_volume(), direction))
-	_refresh_settings_values()
-	SoundManager.play(&"ui_select")  # audible preview of the new level
-
-
-func _cycle_music_volume(direction: int) -> void:
-	SoundManager.set_music_volume(_stepped_volume(SoundManager.get_music_volume(), direction))
-	_refresh_settings_values()
-
-
-func _stepped_volume(current: float, direction: int) -> float:
-	return clampf(snappedf(current, 0.1) + 0.1 * direction, 0.0, 1.0)
-
-
-## "OFF" or a ten-segment bar plus the percentage.
-func _format_volume(value: float) -> String:
-	var steps := int(roundf(clampf(value, 0.0, 1.0) * 10.0))
-	if steps == 0:
-		return "OFF"
-	return "%s%s  %d%%" % ["\u2588".repeat(steps), "\u2591".repeat(10 - steps), steps * 10]
-
-
 func _refresh_settings_values() -> void:
 	var map_text := "(no maps found)"
 	if not _available_pools.is_empty():
@@ -373,16 +313,7 @@ func _refresh_settings_values() -> void:
 	MenuRows.arrow(_credits_row, "Right").disabled = GameManager.max_credits >= MAX_CREDITS
 	MenuRows.arrow(_difficulty_row, "Left").disabled = difficulty <= MIN_DIFFICULTY
 	MenuRows.arrow(_difficulty_row, "Right").disabled = difficulty >= MAX_DIFFICULTY
-	var sfx := SoundManager.get_sfx_volume()
-	var music := SoundManager.get_music_volume()
-	MenuRows.value_label(_sfx_row).text = _format_volume(sfx)
-	MenuRows.value_label(_music_row).text = _format_volume(music)
-	MenuRows.arrow(_sfx_row, "Left").disabled = sfx <= 0.0
-	MenuRows.arrow(_sfx_row, "Right").disabled = sfx >= 1.0
-	MenuRows.arrow(_music_row, "Left").disabled = music <= 0.0
-	MenuRows.arrow(_music_row, "Right").disabled = music >= 1.0
-	MenuRows.value_label(_p1_keys_row).text = InputSettings.get_player_controls_text("p1")
-	MenuRows.value_label(_p2_keys_row).text = InputSettings.get_player_controls_text("p2")
+	_common.refresh()
 
 
 ## Called with the file chosen in the IMPORT MAP picker.
@@ -421,95 +352,18 @@ func _refresh_footer() -> void:
 
 
 # =====================================================================
-# Key bindings
+# Controls page
 # =====================================================================
 
+## Opens [param player]'s controls page, on the GAMEPAD tab when a controller
+## is driving the menus.
 func _open_keybinds(player: String) -> void:
 	_keybind_player = player
-	_keybind_actions = InputSettings.get_player_actions(player)
-	_keybind_title.text = "%s KEYS" % player.to_upper()
-	_refresh_keybind_rows()
-	_show_page(Page.KEYBIND, _action_rows[0])
-	_set_prompt("Click a row, or press fire on it, to change that key.")
+	_show_page(Page.KEYBIND, null)
+	_keybind_page.open(player, _using_pad)
 
 
 func _close_keybinds() -> void:
 	_refresh_settings_values()
 	_refresh_footer()
-	_show_page(Page.SETTINGS, _p1_keys_row if _keybind_player == "p1" else _p2_keys_row)
-
-
-func _reset_keybinds() -> void:
-	InputSettings.reset_to_defaults(_keybind_player)
-	_refresh_keybind_rows()
-	_set_prompt("%s keys reset to defaults." % _keybind_player.to_upper())
-
-
-func _refresh_keybind_rows() -> void:
-	if _keybind_actions.size() != _action_rows.size():
-		return
-	for i in _action_rows.size():
-		var keycap := MenuRows.value_label(_action_rows[i])
-		if _keybind_actions[i] == _capture_action:
-			keycap.text = "..."
-		else:
-			keycap.text = InputSettings.get_key_name(_keybind_actions[i])
-
-
-func _begin_capture(index: int) -> void:
-	_capture_action = _keybind_actions[index]
-	_refresh_keybind_rows()
-	_set_prompt("Press a key for %s   (Esc cancels)" % InputSettings.ACTION_DISPLAY_NAMES[index])
-
-
-func _cancel_capture() -> void:
-	if _capture_action == "":
-		return
-	_capture_action = ""
-	_refresh_keybind_rows()
-	_set_prompt("")
-
-
-func _handle_capture_input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.is_pressed() or event.is_echo():
-		return
-	get_viewport().set_input_as_handled()
-	var physical_key: Key = (event as InputEventKey).physical_keycode
-	if physical_key == KEY_NONE:
-		return
-	if physical_key == KEY_ESCAPE:
-		_cancel_capture()
-		return
-	if physical_key == KEY_F11:
-		_set_prompt("F11 is reserved for fullscreen. Press another key.")
-		return
-	if physical_key == KEY_BACKSLASH or physical_key == KEY_QUOTELEFT:
-		_set_prompt("%s is reserved for a debug key. Press another key." % ("\\" if physical_key == KEY_BACKSLASH else "`"))
-		return
-	var action := _capture_action
-	var conflict := _find_conflicting_action(physical_key, action)
-	InputSettings.save_binding(action, physical_key)
-	_capture_action = ""
-	_refresh_keybind_rows()
-	_refresh_settings_values()
-	_refresh_footer()
-	if conflict != "":
-		_set_prompt("%s bound. Note: it is also used by %s." % [InputSettings.get_key_name(action), conflict])
-	else:
-		_set_prompt("")
-
-
-## Display name ("P2 FIRE 1") of another action already using [param physical_key], or "".
-func _find_conflicting_action(physical_key: int, action: String) -> String:
-	for other: String in InputSettings.DEFAULTS:
-		if other == action or InputSettings.get_binding(other) != physical_key:
-			continue
-		var parts := other.split("_", true, 1)
-		var suffix_index := InputSettings.PLAYER_ACTION_SUFFIXES.find(parts[1])
-		var action_name: String = InputSettings.ACTION_DISPLAY_NAMES[suffix_index] if suffix_index >= 0 else parts[1]
-		return "%s %s" % [parts[0].to_upper(), action_name]
-	return ""
-
-
-func _set_prompt(text: String) -> void:
-	_keybind_prompt.text = text
+	_show_page(Page.SETTINGS, _common.controls_row(_keybind_player))

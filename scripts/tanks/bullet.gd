@@ -5,6 +5,8 @@ extends Area2D
 var direction: Vector2 = Vector2.UP
 var owner_tank: BaseTank = null
 var is_player_bullet: bool = true
+## The player who fired it (-1: an enemy): who its hits are credited to.
+var owner_player: int = -1
 ## Lets an ordinary bullet clear an iron block. NOTHING grants this today: in the
 ## original only the AP shell gets through steel, and it does so on its own path
 ## (see pierces / LevelManager.ap_drill_tiles), spending a damage pool per tile.
@@ -254,6 +256,7 @@ func _on_body_entered(body: Node2D) -> void:
 		if explodes:
 			_explode_direct_hit(body)
 		else:
+			body.hit_by = owner_player
 			body.take_damage(direction)
 		_destroy()
 	elif not is_player_bullet and body is PlayerTank:
@@ -278,6 +281,7 @@ func _explode_direct_hit(tank: Node2D) -> void:
 	_direct_hit_tank = tank  # its own wave should not double-hit it
 	for i in range(damage):
 		if is_instance_valid(tank) and tank.health > 0:
+			tank.hit_by = owner_player
 			tank.take_damage()
 
 ## AP shell hitting a body: spend the damage pool, pierce through dead tanks.
@@ -306,6 +310,7 @@ func _ap_on_body(body: Node2D) -> void:
 		var dealt: int = mini(damage, tank.health)
 		for i in range(dealt):
 			if is_instance_valid(tank) and tank.health > 0:
+				tank.hit_by = owner_player
 				tank.take_damage()  # no direction -> no retaliation while being drilled
 		damage -= dealt
 		if damage <= 0:
@@ -369,13 +374,13 @@ func _destroy() -> void:
 	# hit, or map border. If they land on already-burning ground the field grows.
 	if ignites_ground and _level_manager:
 		_level_manager.ignite_fire_patch(
-			_level_manager.world_to_tile(global_position), is_player_bullet)
+			_level_manager.world_to_tile(global_position), is_player_bullet, owner_player)
 
 	# Explosion bullets detonate a shockwave wherever they die (a directly-hit
 	# tank already took the direct hit, so it's excluded from the wave).
 	if explodes and _level_manager:
 		_level_manager.spawn_explosion_blast(
-			global_position, explosion_level, is_player_bullet, false, _direct_hit_tank)
+			global_position, explosion_level, is_player_bullet, false, _direct_hit_tank, owner_player)
 
 	var effects_container = get_tree().get_first_node_in_group("effects_container")
 	var parent_node = effects_container if effects_container else get_tree().current_scene

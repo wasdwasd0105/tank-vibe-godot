@@ -37,8 +37,13 @@ enum TileCategory {
 
 # --- Parsed Stage Data ---
 class StageData:
-	var caption: String = ""
+	var caption: String = ""   # the caption's first line
+	## Every line of the caption, as the stage intro shows it ("Name", "(Easy)").
+	var caption_lines: PackedStringArray = []
 	var bg_bitmap: String = ""  # background image filename (e.g. "BG02.jpg")
+	## The picture the stage intro shows, a file in the original's Map folder
+	## ("SI01.JPG"); "" for none.
+	var intro_picture: String = ""
 	## Flat colour painted behind the background image. Stages that ship no
 	## image rely on this alone, so it is what keeps them from rendering black.
 	var bg_color: Color = Color.BLACK
@@ -49,10 +54,10 @@ class StageData:
 
 # --- Map Pool ---
 class MapPool:
-	var id: String = ""            # unique identifier (filename or folder name)
+	var id: String = ""            # unique identifier (the file name)
 	var display_name: String = ""  # user-facing name
-	var type: String = ""          # "dat" or "folder"
-	var path: String = ""          # full res:// path to .dat file or folder
+	var type: String = ""          # "dat": a Tank.exe Stage.dat
+	var path: String = ""          # full path to the .dat file
 
 # --- Cached stages & pools ---
 static var _loaded_stages: Array = []
@@ -210,6 +215,8 @@ const DAT_BG_OFFSET: int = 1200
 const DAT_FG_OFFSET: int = 3600
 const DAT_COL_STRIDE: int = 60  # 30 rows * 2 bytes per cell
 const DAT_BGBITMAP_OFFSET: int = 64
+## The stage intro's picture name, length-prefixed like the background's.
+const DAT_PICTURE_OFFSET: int = 0xE0
 ## Delphi TColor, stored little-endian as $00BBGGRR (low byte is red).
 const DAT_BGCOLOR_OFFSET: int = 128
 const DAT_ENEMY_OFFSET: int = 144
@@ -232,18 +239,25 @@ static func load_stages_from_dat(path: String) -> Array:
 		var base := stage_idx * DAT_STAGE_SIZE
 		var sd := StageData.new()
 
-		# Parse stage name (length-prefixed string at offset 0)
-		# 0xFF is used as separator between caption and subtitle, e.g. "Name\xFF(Easy)"
+		# Parse stage name (length-prefixed string at offset 0). 0xFF separates its
+		# lines, e.g. "Name\xFF(Easy)"; like the original (0x4c7758), any byte from
+		# 0x80 up breaks the line too, as the bitmap font has no glyphs there.
 		var name_len: int = all_data[base]
 		if name_len > 0 and name_len < 64:
-			# Find 0xFF separator and only take the part before it
-			var actual_len := name_len
-			for i in range(name_len):
-				if all_data[base + 1 + i] == 0xFF:
-					actual_len = i
-					break
-			var name_bytes := all_data.slice(base + 1, base + 1 + actual_len)
-			sd.caption = name_bytes.get_string_from_ascii()
+			var line := PackedByteArray()
+			for i in range(name_len + 1):
+				var b: int = all_data[base + 1 + i] if i < name_len else 0xFF
+				if b >= 0x80:
+					sd.caption_lines.append(line.get_string_from_ascii())
+					line = PackedByteArray()
+				else:
+					line.append(b)
+			sd.caption = sd.caption_lines[0]
+
+		var pic_len: int = all_data[base + DAT_PICTURE_OFFSET]
+		if pic_len > 0 and pic_len < 64:
+			sd.intro_picture = all_data.slice(base + DAT_PICTURE_OFFSET + 1,
+					base + DAT_PICTURE_OFFSET + 1 + pic_len).get_string_from_ascii()
 
 		# Parse BG_Bitmap (length-prefixed string at offset 64)
 		var bg_len: int = all_data[base + DAT_BGBITMAP_OFFSET]
@@ -297,80 +311,11 @@ static func load_stages_from_dat(path: String) -> Array:
 	return stages
 
 # =====================================================================
-# Text Map File Parser
-# =====================================================================
-
-## Load all stages from a .txt map file
-static func load_stages_from_file(path: String) -> Array:
-	var stages: Array = []
-	var file := FileAccess.open(path, FileAccess.READ)
-	if not file:
-		push_error("LevelData: Failed to open map file: " + path)
-		return stages
-
-	var current_stage: StageData = null
-
-	while not file.eof_reached():
-		var line := file.get_line().strip_edges()
-		if line.is_empty():
-			continue
-
-		if line.begins_with("[Stage"):
-			current_stage = StageData.new()
-			# Initialize grids with empty rows
-			for i in range(GRID_HEIGHT):
-				current_stage.bg_grid.append([])
-				current_stage.fg_grid.append([])
-		elif line == "[End]":
-			if current_stage:
-				stages.append(current_stage)
-			current_stage = null
-		elif current_stage:
-			if line.begins_with("Caption="):
-				current_stage.caption = line.substr(8)
-			elif line.begins_with("BG_Bitmap="):
-				current_stage.bg_bitmap = line.substr(10).strip_edges()
-			elif line.begins_with("BG_Color="):
-				current_stage.bg_color = _parse_bg_color(line.substr(9).strip_edges())
-			elif line.begins_with("EnemyCount="):
-				var parts := line.substr(11).split(",")
-				for p in parts:
-					var val := p.strip_edges()
-					if not val.is_empty():
-						current_stage.enemy_count.append(val.to_int())
-			elif line.begins_with("MaxCount="):
-				current_stage.max_count = line.substr(9).strip_edges().to_int()
-			elif line.begins_with("BG") and "=" in line:
-				var eq_pos := line.find("=")
-				var row_str := line.substr(2, eq_pos - 2)
-				var row_idx := row_str.to_int()
-				if row_idx >= 0 and row_idx < GRID_HEIGHT:
-					var hex_values := line.substr(eq_pos + 1).strip_edges().split(" ")
-					for hex_str in hex_values:
-						var trimmed := hex_str.strip_edges()
-						if not trimmed.is_empty():
-							current_stage.bg_grid[row_idx].append(trimmed.hex_to_int())
-			elif line.begins_with("FG") and "=" in line:
-				var eq_pos := line.find("=")
-				var row_str := line.substr(2, eq_pos - 2)
-				var row_idx := row_str.to_int()
-				if row_idx >= 0 and row_idx < GRID_HEIGHT:
-					var hex_values := line.substr(eq_pos + 1).strip_edges().split(" ")
-					for hex_str in hex_values:
-						var trimmed := hex_str.strip_edges()
-						if not trimmed.is_empty():
-							current_stage.fg_grid[row_idx].append(trimmed.hex_to_int())
-			# Skip other metadata lines (BG_Bitmap, BG_Color, etc.)
-
-	file.close()
-	return stages
-
-# =====================================================================
 # Map Pool Scanning & Loading
 # =====================================================================
 
-## Scan the bundled maps/ directory and the user's imported maps for pools.
-## A .dat file = one pool. A subfolder with .txt files = one pool.
+## Scan the bundled maps/ directory and the user's imported maps for pools:
+## each Tank.exe .dat file is one.
 static func scan_map_pools() -> Array:
 	_available_pools.clear()
 	_scan_pool_dir(MAP_DIR, "", "", true)
@@ -389,15 +334,7 @@ static func _scan_pool_dir(dir_path: String, id_prefix: String, name_suffix: Str
 	dir.list_dir_begin()
 	var entry := dir.get_next()
 	while not entry.is_empty():
-		if dir.current_is_dir():
-			if not entry.begins_with(".") and _folder_has_txt(dir_path + entry):
-				var pool := MapPool.new()
-				pool.id = id_prefix + entry
-				pool.display_name = entry + name_suffix
-				pool.type = "folder"
-				pool.path = dir_path + entry + "/"
-				_available_pools.append(pool)
-		elif entry.ends_with(".dat"):
+		if not dir.current_is_dir() and entry.get_extension().to_lower() == "dat":
 			var pool := MapPool.new()
 			pool.id = id_prefix + entry.get_basename()
 			pool.display_name = entry.get_basename() + name_suffix
@@ -407,58 +344,30 @@ static func _scan_pool_dir(dir_path: String, id_prefix: String, name_suffix: Str
 		entry = dir.get_next()
 	dir.list_dir_end()
 
-static func _folder_has_txt(folder_path: String) -> bool:
-	var sub_dir := DirAccess.open(folder_path)
-	if not sub_dir:
-		return false
-	var has_txt := false
-	sub_dir.list_dir_begin()
-	var sub_entry := sub_dir.get_next()
-	while not sub_entry.is_empty():
-		if not sub_dir.current_is_dir() and sub_entry.ends_with(".txt"):
-			has_txt = true
-			break
-		sub_entry = sub_dir.get_next()
-	sub_dir.list_dir_end()
-	return has_txt
-
-## Copies a map file into the user's maps folder so it shows up as a pool.
-## Accepts a Tank.exe stage file (.dat, a multiple of 6000 bytes) or one of the
-## remake's .txt map files (stored as a one-file folder pool). Returns
-## {"ok": true, "pool_id": ..., "name": ..., "stage_count": ...} or {"ok": false, "error": ...}.
+## Copies a Tank.exe stage file (a .dat, a multiple of 6000 bytes) into the
+## user's maps folder so it shows up as a pool. Returns {"ok": true, "pool_id":
+## ..., "name": ..., "stage_count": ...} or {"ok": false, "error": ...}.
 static func import_map_file(source_path: String) -> Dictionary:
 	var file_name := source_path.get_file()
 	var extension := source_path.get_extension().to_lower()
-	if extension != "dat" and extension != "txt":
-		return {"ok": false, "error": "unsupported file type .%s (expected .dat or .txt)" % extension}
+	if extension != "dat":
+		return {"ok": false, "error": "unsupported file type .%s (expected a Tank.exe .dat)" % extension}
 	var source := FileAccess.open(source_path, FileAccess.READ)
 	if not source:
 		return {"ok": false, "error": "could not read %s" % file_name}
 	var size := source.get_length()
 	source.close()
 
-	var stages: Array
-	if extension == "dat":
-		if size == 0 or size % DAT_STAGE_SIZE != 0:
-			return {"ok": false, "error": "%s is not a Tank.exe map file (size must be a multiple of %d bytes)" % [file_name, DAT_STAGE_SIZE]}
-		stages = load_stages_from_dat(source_path)
-	else:
-		stages = load_stages_from_file(source_path)
+	if size == 0 or size % DAT_STAGE_SIZE != 0:
+		return {"ok": false, "error": "%s is not a Tank.exe map file (size must be a multiple of %d bytes)" % [file_name, DAT_STAGE_SIZE]}
+	var stages := load_stages_from_dat(source_path)
 	if stages.is_empty():
 		return {"ok": false, "error": "no stages found in %s" % file_name}
 
 	DirAccess.make_dir_recursive_absolute(USER_MAP_DIR)
 	var base := _sanitize_pool_name(file_name.get_basename())
-	var pool_name: String
-	var err: Error
-	if extension == "dat":
-		pool_name = _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(USER_MAP_DIR + n + ".dat"))
-		err = DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + ".dat")
-	else:
-		pool_name = _unique_pool_name(base, func(n: String) -> bool: return DirAccess.dir_exists_absolute(USER_MAP_DIR + n))
-		err = DirAccess.make_dir_recursive_absolute(USER_MAP_DIR + pool_name)
-		if err == OK:
-			err = DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + "/" + file_name)
+	var pool_name := _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(USER_MAP_DIR + n + ".dat"))
+	var err := DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + ".dat")
 	if err != OK:
 		return {"ok": false, "error": "could not copy %s into %s (%s)" % [file_name, USER_MAP_DIR, error_string(err)]}
 
@@ -491,32 +400,7 @@ static func load_pool(pool: MapPool) -> void:
 	_current_pool_id = pool.id
 	if pool.type == "dat":
 		_loaded_stages = load_stages_from_dat(pool.path)
-	elif pool.type == "folder":
-		_loaded_stages = _load_folder_pool(pool.path)
 	print("LevelData: Pool '%s' loaded with %d stages" % [pool.id, _loaded_stages.size()])
-
-## Load all .txt stages from a folder pool (sorted alphabetically)
-static func _load_folder_pool(folder_path: String) -> Array:
-	var all_stages: Array = []
-	var dir := DirAccess.open(folder_path)
-	if not dir:
-		push_error("LevelData: Failed to open pool folder: " + folder_path)
-		return all_stages
-
-	var files: Array[String] = []
-	dir.list_dir_begin()
-	var file_name := dir.get_next()
-	while not file_name.is_empty():
-		if not dir.current_is_dir() and file_name.ends_with(".txt"):
-			files.append(file_name)
-		file_name = dir.get_next()
-	dir.list_dir_end()
-	files.sort()
-
-	for f in files:
-		var stages := load_stages_from_file(folder_path + f)
-		all_stages.append_array(stages)
-	return all_stages
 
 ## Get all loaded stages (lazy load — auto-loads first pool if none loaded)
 static func get_stages() -> Array:
@@ -575,6 +459,24 @@ static func get_stage_caption(stage_num: int) -> String:
 	var stage: StageData = stages[idx]
 	return stage.caption
 
+## Every line of a stage's caption (1-indexed).
+static func get_stage_caption_lines(stage_num: int) -> PackedStringArray:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return PackedStringArray()
+	return (stages[idx] as StageData).caption_lines
+
+
+## The picture a stage's intro shows ("SI01.JPG"), or "" (1-indexed).
+static func get_stage_intro_picture(stage_num: int) -> String:
+	var stages := get_stages()
+	var idx := stage_num - 1
+	if idx < 0 or idx >= stages.size():
+		return ""
+	return (stages[idx] as StageData).intro_picture
+
+
 ## Get background bitmap filename for a stage (1-indexed)
 static func get_stage_bg_bitmap(stage_num: int) -> String:
 	var stages := get_stages()
@@ -592,14 +494,6 @@ static func get_stage_bg_color(stage_num: int) -> Color:
 		return Color.BLACK
 	var stage: StageData = stages[idx]
 	return stage.bg_color
-
-## "$BBGGRR" as the map editor writes it, same byte order as the .dat field.
-static func _parse_bg_color(text: String) -> Color:
-	var digits := text.lstrip("$").strip_edges()
-	if digits.is_empty() or not digits.is_valid_hex_number(false):
-		return Color.BLACK
-	var raw := digits.hex_to_int()
-	return Color8(raw & 0xFF, (raw >> 8) & 0xFF, (raw >> 16) & 0xFF)
 
 ## Get max concurrent enemies for a stage
 static func get_max_concurrent(stage_num: int) -> int:

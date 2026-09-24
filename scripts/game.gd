@@ -1,4 +1,9 @@
 extends Node2D
+## One stage, from its intro to its end, following Tank.exe's sequence: the
+## intro over the new map, play, then "Mission Complete" or "Mission Fail" as
+## the stage-end picture closes in, the results panels, and either the next
+## stage or "Game Over" and the title. The screens themselves are the
+## StageOverlay's; this script runs the stage around them.
 
 @onready var level_manager: LevelManager = $Playfield
 @onready var enemy_spawner: EnemySpawner = $EnemySpawner
@@ -10,16 +15,35 @@ extends Node2D
 @onready var eagle: BaseFlag = $Playfield/Eagle
 @onready var hud: Control = $HUD
 @onready var pause_menu: Control = $PauseLayer/PauseMenu
+@onready var stage_overlay: StageOverlay = $StageLayer/StageOverlay
+
+## False skips the stage intro and starts play at once (tests that only need a
+## running stage set it before adding the scene).
+var show_intro: bool = true
 
 var debug_freeze: DebugFreeze
 
-var _game_over_pending: bool = false
+## Where the stage is: its intro, play, then the original's closing screens.
+enum Phase { INTRO, PLAY, MISSION, RESULTS, GAME_OVER }
+var _phase: Phase = Phase.INTRO
+var _won: bool = false
+
 var _stage_clear_pending: bool = false
+var _clear_wait: float = 0.0
 var _game_over_countdown: float = -1.0
 var _base_destroyed: bool = false
 var _player_dead_timers: Array[float] = [0.0, 0.0]  # Time since each player died (lives < 0)
-const GAME_OVER_COUNTDOWN_DURATION: float = 15.0
+## Who has had a tank on the field this stage: they get a results panel.
+var _played_stage: Array[bool] = [false, false]
+## How long everyone being out waits for a rejoin before the stage is lost
+## (Sean's 5 s; the original's was 5.25 s).
+const GAME_OVER_COUNTDOWN_DURATION: float = 5.0
 const PLAYER_HUD_CLEAR_TIME: float = 15.0
+## The original's first enemies came 3 s into play.
+const FIRST_WAVE_DELAY: float = 3.0
+## A cleared stage waits for its leftover bonus items: up to this long for each
+## one still lying on the field (0x4cbb96).
+const ITEM_WAIT: float = 2.25
 
 func _ready() -> void:
 	add_to_group("game")
@@ -36,13 +60,21 @@ func _ready() -> void:
 	Events.bomb_all_enemies.connect(_on_bomb_all_enemies)
 	Events.freeze_enemies.connect(_on_freeze_enemies)
 	Events.fortify_base.connect(_on_fortify_base)
-	Events.player_died.connect(_on_player_died)
+	# Deferred: a tank reports its death before its life is taken
+	# (PlayerTank.destroy), and the handler needs the count after it.
+	Events.player_died.connect(_on_player_died, CONNECT_DEFERRED)
 
 	# Connect pause menu signals
 	if pause_menu:
 		pause_menu.restart_requested.connect(_on_pause_restart)
 		pause_menu.main_menu_requested.connect(_on_pause_main_menu)
 		pause_menu.exit_requested.connect(_on_pause_exit)
+
+	stage_overlay.intro_finished.connect(_begin_play)
+	stage_overlay.mission_finished.connect(_show_results)
+	stage_overlay.reward_given.connect(_on_reward_given)
+	stage_overlay.results_finished.connect(_on_results_finished)
+	stage_overlay.game_over_finished.connect(_on_game_over_finished)
 
 	debug_freeze = DebugFreeze.new()
 	debug_freeze.name = "DebugFreeze"
@@ -54,21 +86,30 @@ func _ready() -> void:
 
 	_start_stage()
 
+## Builds the map and plays the intro over it; the tanks come when it's done.
 func _start_stage() -> void:
-	# Load level
 	level_manager.load_stage(GameManager.current_stage)
+	GameManager.reset_stage_stats()
+	enemy_spawner.prepare_stage(GameManager.current_stage)
+	if show_intro:
+		_phase = Phase.INTRO
+		stage_overlay.play_intro(GameManager.current_stage)
+	else:
+		_begin_play()
 
-	# Spawn active players
+## The map is revealed: the players' tanks roll in and the enemies follow.
+func _begin_play() -> void:
+	_phase = Phase.PLAY
 	for pid in range(2):
 		if GameManager.player_active[pid]:
 			_spawn_player(pid)
-
-	# Start enemy spawning
-	enemy_spawner.start_stage(GameManager.current_stage)
+	enemy_spawner.begin(FIRST_WAVE_DELAY)
+	Events.stage_started.emit(GameManager.current_stage)
 
 func _spawn_player(player_id: int) -> void:
 	if GameManager.player_lives[player_id] < 0:
 		return
+	_played_stage[player_id] = true
 	var player_scene := preload("res://scenes/tanks/player_tank.tscn")
 	var player: PlayerTank = player_scene.instantiate()
 	player.player_id = player_id
@@ -99,19 +140,24 @@ func _player_revive_position(player_id: int) -> Vector2:
 func get_level_manager() -> LevelManager:
 	return level_manager
 
+## Which part of the stage is on: "intro", "play", "mission", "results" or
+## "game_over".
+func get_phase() -> String:
+	return ["intro", "play", "mission", "results", "game_over"][_phase]
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_QUOTELEFT:  # ` backtick
-			Events.bomb_all_enemies.emit()
+			Events.bomb_all_enemies.emit(-1)
 		elif event.keycode == KEY_BACKSLASH:  # \ freeze / unfreeze the world
 			debug_freeze.toggle()
 
 func _process(delta: float) -> void:
-	# Block pause menu during game over / stage clear
+	# The pause menu opens during play, never over the stage screens.
 	if pause_menu:
-		pause_menu.set_can_open(not _game_over_pending and not _stage_clear_pending)
+		pause_menu.set_can_open(_phase == Phase.PLAY)
 
-	if _game_over_pending or _stage_clear_pending:
+	if _phase != Phase.PLAY:
 		return
 
 	# Mid-game join: inactive or dead player can join by pressing fire
@@ -128,6 +174,7 @@ func _process(delta: float) -> void:
 						_restore_base()
 					if _game_over_countdown >= 0:
 						_game_over_countdown = -1.0  # Cancel countdown
+						enemy_spawner.hold(false)
 						_update_hud()
 
 	# Track per-player dead timers
@@ -144,27 +191,39 @@ func _process(delta: float) -> void:
 		if _game_over_countdown <= 0:
 			_game_over_countdown = -1.0
 			GameManager.trigger_game_over()
+			return
+
+	# A cleared stage ends once its leftover items are picked up or have had
+	# their time, while someone is still in it.
+	if _stage_clear_pending and not GameManager.all_active_players_dead():
+		_clear_wait += delta
+		if _items_on_field() - floori(_clear_wait / ITEM_WAIT) <= 0:
+			_start_mission(true)
+
+## Bonus items still lying on the field.
+func _items_on_field() -> int:
+	var count := 0
+	for cookie in get_tree().get_nodes_in_group("cookies"):
+		if not cookie.is_queued_for_deletion():
+			count += 1
+	return count
 
 func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	GameManager.enemies_remaining -= 1
-	# Award points to closest player (simplified)
-	GameManager.add_score(0, points, enemy.tank_type_id)
+	# The kill is the player's whose weapon dealt the last point: its score, the
+	# results tally and the combo. An enemy's or a grass fire's kill is nobody's.
+	var pid: int = enemy.killed_by
+	if pid >= 0:
+		GameManager.add_score(pid, points, enemy.tank_type_id)
+		GameManager.note_kill(pid)
 	_update_hud()
 
 func _on_all_enemies_defeated() -> void:
-	# A stage only clears while the game is running, never while it is closing.
-	if _stage_clear_pending or not is_inside_tree():
+	# A stage only clears while it is being played, never while it is closing.
+	if _stage_clear_pending or _phase != Phase.PLAY or not is_inside_tree():
 		return
 	_stage_clear_pending = true
-	Events.stage_cleared.emit()
-	# Save live player HP and addons before leaving stage
-	GameManager.save_player_states()
-	# Wait 10s so players can collect remaining cookies
-	await get_tree().create_timer(10.0).timeout
-	# Increment counter (total stages won) and advance stage
-	# (save happens inside next_stage after stage number is updated)
-	GameManager.save_counter += 1
-	GameManager.next_stage()
+	_clear_wait = 0.0
 
 func _on_base_destroyed() -> void:
 	if _base_destroyed:
@@ -194,30 +253,90 @@ func _on_base_destroyed() -> void:
 		if is_instance_valid(tank) and tank is PlayerTank:
 			tank._spawn_explosion()
 			tank.queue_free()
-	# Start countdown for rejoin
-	if _game_over_countdown < 0 and not _game_over_pending:
-		_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
+	_start_lose_countdown()
+
+## Everyone is out. With credits left there's a while to rejoin, and the enemies
+## hold back their reinforcements meanwhile; without, the stage is lost at once.
+func _start_lose_countdown() -> void:
+	if _game_over_countdown >= 0 or _phase != Phase.PLAY:
+		return
+	if GameManager.credits <= 0:
+		GameManager.trigger_game_over()
+		return
+	_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
+	enemy_spawner.hold(true)
 
 func _on_game_over() -> void:
-	if _game_over_pending:  
+	if _phase != Phase.PLAY:
 		return
-	_game_over_pending = true
-	await get_tree().create_timer(2.0).timeout
-	get_tree().change_scene_to_file("res://scenes/game_over_screen.tscn")
+	_start_mission(false)
 
 func _on_player_died(player_id: int) -> void:
 	if GameManager.player_lives[player_id] >= 0:
 		# Respawn after a short delay
 		await get_tree().create_timer(1.0).timeout
-		if not _game_over_pending:
+		if _phase == Phase.PLAY:
 			_spawn_player(player_id)
-	else:
-		# Player is out of lives — check if all active players are dead
-		if GameManager.all_active_players_dead() and _game_over_countdown < 0 and not _game_over_pending:
-			_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
+	elif GameManager.all_active_players_dead():
+		# Player is out of lives, and so is everyone else
+		_start_lose_countdown()
 
-func _on_bomb_all_enemies() -> void:
-	enemy_spawner.destroy_all_enemies()
+## The stage is over: "Mission Complete" ([param won]) or "Mission Fail" over
+## the field, which plays on until the stage-end picture has closed over it.
+func _start_mission(won: bool) -> void:
+	_phase = Phase.MISSION
+	_won = won
+	_game_over_countdown = -1.0
+	enemy_spawner.halt()
+	GameManager.settle_chains()
+	if won:
+		Events.stage_cleared.emit()  # the win jingle (a loss's came with game_over)
+	stage_overlay.play_mission(won)
+	_update_hud()
+
+## The picture has closed: clear the field under it and count up the stage.
+func _show_results() -> void:
+	_phase = Phase.RESULTS
+	if _won:
+		GameManager.save_player_states()  # HP and add-ons go on to the next stage
+	var tallies: Array = []
+	for pid in range(2):
+		if _played_stage[pid]:
+			tallies.append({
+				"player": pid,
+				"kills": GameManager.player_kills[pid],
+				"max_hits": GameManager.player_max_hits[pid],
+				"max_combos": GameManager.player_max_combos[pid],
+			})
+	_clear_field()
+	stage_overlay.play_results(_won, tallies, GameManager.difficulty)
+
+## Tanks, shells, bonus items and effects go: the original cleared all but the
+## picture and the HUD for its results.
+func _clear_field() -> void:
+	for container: Node in [players_container, enemies_container, bullets_container,
+			powerups_container, effects_container]:
+		for child in container.get_children():
+			child.queue_free()
+
+func _on_reward_given(player: int, amount: int) -> void:
+	GameManager.add_score_direct(player, amount)
+
+func _on_results_finished() -> void:
+	if _won:
+		# Stages won in this save; next_stage() then autosaves and plays the
+		# next stage's intro.
+		GameManager.save_counter += 1
+		GameManager.next_stage()
+		return
+	_phase = Phase.GAME_OVER
+	stage_overlay.play_game_over()
+
+func _on_game_over_finished() -> void:
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+func _on_bomb_all_enemies(player_id: int) -> void:
+	enemy_spawner.destroy_all_enemies(player_id)
 
 func _on_freeze_enemies(duration: float) -> void:
 	GameManager.freeze_all_enemies(duration)

@@ -17,7 +17,7 @@ signal player_joined(player_id: int)
 signal cookie_spawned(cookie: Node2D)
 signal cookie_collected(type: int, player_id: int)
 signal freeze_enemies(duration: float)
-signal bomb_all_enemies
+signal bomb_all_enemies(player_id: int)  # -1: nobody's (the debug key)
 signal fortify_base(duration: float)
 
 # Level

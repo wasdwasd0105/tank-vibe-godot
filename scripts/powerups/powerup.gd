@@ -129,7 +129,19 @@ func _on_body_entered(body: Node2D) -> void:
 			return  # Cannot pick up yet
 		Events.cookie_collected.emit(cookie_type, body.player_id)
 		_apply_effect(body)
+		_show_words()
 		queue_free()
+
+## The item's name floats up where it was taken, as in the original (PickupText).
+func _show_words() -> void:
+	var tree := get_tree()
+	var effects := tree.get_first_node_in_group("effects_container")
+	var game := tree.get_first_node_in_group("game")
+	if effects == null or game == null:
+		return
+	var field: Node2D = game.get_level_manager()
+	PickupText.spawn(effects, cookie_type, global_position, field.global_position.x,
+			LevelData.GRID_WIDTH * LevelManager.TILE_SIZE)
 
 ## A mine's slow wears off only through these, as in the original: any add-on
 ## cookie frees the tank that takes it, and MAX frees every player.
@@ -178,13 +190,13 @@ func _apply_effect(player: PlayerTank) -> void:
 			GameManager.add_score_direct(player.player_id, 2000)
 		# utility_special
 		CookieData.CookieType.INVINCIBLE_HELMET:
-			player._activate_invincibility(60.0)
+			player.activate_helmet(60.0)
 		CookieData.CookieType.FLAG_PROTECTION:
 			Events.fortify_base.emit(60.0)
 		CookieData.CookieType.TANK_WEB:
 			Events.freeze_enemies.emit(40.0)
 		CookieData.CookieType.TANK_BOMB:
-			Events.bomb_all_enemies.emit()
+			Events.bomb_all_enemies.emit(player.player_id)
 		CookieData.CookieType.TANK_LIFE:
 			GameManager.add_life(player.player_id)
 		CookieData.CookieType.BULLETS_MAX:

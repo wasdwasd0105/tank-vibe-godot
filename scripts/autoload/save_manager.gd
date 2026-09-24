@@ -1,16 +1,31 @@
 extends Node
 
 ## SaveManager — handles saving/loading game state to .tsave files (JSON format).
-## Save directory: user://save/
+## Save directory: user://save/ (a test run uses its own, see get_save_dir).
 
 const SAVE_DIR := "user://save/"
+## A test run's saves (InputSettings.is_test_run), emptied at startup: no test
+## ever reads or writes the player's own.
+const TEST_SAVE_DIR := "user://test_save/"
 ## The bundled copy of the original game's 64-stage map.
 const ORIGINAL_POOL_ID := "v1_2_2"
 
+var _dir: String = SAVE_DIR
+
 func _ready() -> void:
+	if InputSettings.is_test_run():
+		_dir = TEST_SAVE_DIR
+		var old := DirAccess.open(TEST_SAVE_DIR)
+		if old:
+			for f in old.get_files():
+				old.remove(f)
 	# Ensure save directory exists
-	if not DirAccess.dir_exists_absolute(SAVE_DIR):
-		DirAccess.make_dir_recursive_absolute(SAVE_DIR)
+	if not DirAccess.dir_exists_absolute(_dir):
+		DirAccess.make_dir_recursive_absolute(_dir)
+
+## The folder the saves live in.
+func get_save_dir() -> String:
+	return _dir
 
 # =====================================================================
 # Public API
@@ -20,7 +35,7 @@ func _ready() -> void:
 func create_new_save() -> void:
 	var save_name := _generate_save_name()
 	var filename := save_name + ".tsave"
-	GameManager.current_save_file = SAVE_DIR + filename
+	GameManager.current_save_file = _dir + filename
 	save_game()
 
 ## Save the current GameManager state to the active .tsave file.
@@ -42,7 +57,7 @@ func save_game() -> void:
 	else:
 		push_warning("SaveManager: Failed to write save file: " + GameManager.current_save_file)
 
-## Load a save file and restore GameManager state, then go to stage_intro.
+## Load a save file and restore GameManager state, then start its stage.
 func load_game(filepath: String) -> void:
 	var file := FileAccess.open(filepath, FileAccess.READ)
 	if not file:
@@ -62,8 +77,8 @@ func load_game(filepath: String) -> void:
 	_restore_from_data(data)
 	GameManager.current_save_file = filepath
 
-	# Go directly to stage intro (skip join screen)
-	get_tree().change_scene_to_file("res://scenes/stage_intro.tscn")
+	# Straight into the stage, intro first (skip join screen)
+	get_tree().change_scene_to_file("res://scenes/game.tscn")
 
 ## Delete a save file by path.
 func delete_save(filepath: String) -> bool:
@@ -89,7 +104,7 @@ func import_original_save(source_path: String) -> Dictionary:
 	var save_name := _unique_save_name(_sanitize_save_name(source_path.get_file().get_basename()))
 	var data := TankSavCodec.to_tsave(decoded, save_name, source_path.get_file())
 	data["header"]["map_pool"] = _pool_for_imported_save(int(data["header"].get("current_stage", 1)))
-	var filepath := SAVE_DIR + save_name + ".tsave"
+	var filepath := _dir + save_name + ".tsave"
 	var file := FileAccess.open(filepath, FileAccess.WRITE)
 	if not file:
 		return {"ok": false, "error": "could not write %s" % filepath}
@@ -101,7 +116,7 @@ func import_original_save(source_path: String) -> Dictionary:
 ## Returns Array of Dictionaries sorted by saved_iso (newest first).
 func get_save_list() -> Array:
 	var saves: Array = []
-	var dir := DirAccess.open(SAVE_DIR)
+	var dir := DirAccess.open(_dir)
 	if not dir:
 		return saves
 
@@ -109,16 +124,84 @@ func get_save_list() -> Array:
 	var fname := dir.get_next()
 	while fname != "":
 		if not dir.current_is_dir() and fname.ends_with(".tsave"):
-			var info := _read_save_info(SAVE_DIR + fname)
+			var info := _read_save_info(_dir + fname)
 			if not info.is_empty():
-				info["filepath"] = SAVE_DIR + fname
+				info["filepath"] = _dir + fname
 				saves.append(info)
 		fname = dir.get_next()
 	dir.list_dir_end()
 
-	# Sort newest first
-	saves.sort_custom(func(a, b): return a.get("saved_iso", "") > b.get("saved_iso", ""))
+	# Newest first; a copy saved at the same moment follows its original.
+	saves.sort_custom(func(a, b):
+		if a.get("saved_iso", "") != b.get("saved_iso", ""):
+			return a.get("saved_iso", "") > b.get("saved_iso", "")
+		return str(a.get("save_name", "")).naturalnocasecmp_to(str(b.get("save_name", ""))) < 0)
 	return saves
+
+## Copies a save as a new one beside it, named "<name>_copy" (then _copy_2...).
+## Returns {"ok": true, "filepath": ..., "save_name": ...} or {"ok": false, "error": ...}.
+func duplicate_save(filepath: String) -> Dictionary:
+	var data := _read_save_data(filepath)
+	if data.is_empty():
+		return {"ok": false, "error": "could not read %s" % filepath.get_file()}
+	var meta = data.get("meta")
+	var original: String = meta.get("save_name", "") if meta is Dictionary else ""
+	if original.is_empty():
+		original = _get_save_name_from_path(filepath)
+	return _write_as_new(data, _unique_save_name(_sanitize_save_name(original + "_copy")))
+
+## Writes a copy of a save to [param dest_path], outside the game (".tsave" is
+## added to a name without an extension). Returns {"ok": true, "path": ...} or
+## {"ok": false, "error": ...}.
+func export_save(filepath: String, dest_path: String) -> Dictionary:
+	if dest_path.get_extension().is_empty():
+		dest_path += ".tsave"
+	var bytes := FileAccess.get_file_as_bytes(filepath)
+	if bytes.is_empty():
+		return {"ok": false, "error": "could not read %s" % filepath.get_file()}
+	var file := FileAccess.open(dest_path, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": "could not write %s (%s)" % [dest_path.get_file(), error_string(FileAccess.get_open_error())]}
+	file.store_buffer(bytes)
+	file.close()
+	return {"ok": true, "path": dest_path}
+
+## Brings a save file in as a new save: an original Tank.exe .sav, or a .tsave
+## exported from this game (named after the file, like an imported .sav).
+## Returns {"ok": true, "filepath": ..., "save_name": ...} or {"ok": false, "error": ...}.
+func import_save_file(source_path: String) -> Dictionary:
+	match source_path.get_extension().to_lower():
+		"sav":
+			return import_original_save(source_path)
+		"tsave":
+			var data := _read_save_data(source_path)
+			if not (data.get("header") is Dictionary and data.get("players") is Dictionary):
+				return {"ok": false, "error": "%s is not a Battle City save" % source_path.get_file()}
+			var base := _sanitize_save_name(source_path.get_file().get_basename())
+			return _write_as_new(data, _unique_save_name(base))
+	return {"ok": false, "error": "unsupported file type .%s (expected .sav or .tsave)" % source_path.get_extension()}
+
+## A save file's JSON, or {} when it can't be read.
+func _read_save_data(filepath: String) -> Dictionary:
+	var json := JSON.new()
+	if json.parse(FileAccess.get_file_as_string(filepath)) != OK or not (json.data is Dictionary):
+		return {}
+	return json.data
+
+## Stores [param data] in the save folder as the save [param save_name].
+func _write_as_new(data: Dictionary, save_name: String) -> Dictionary:
+	var meta = data.get("meta")
+	if not (meta is Dictionary):
+		meta = {}
+	meta["save_name"] = save_name
+	data["meta"] = meta
+	var filepath := _dir + save_name + ".tsave"
+	var file := FileAccess.open(filepath, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": "could not write %s" % filepath}
+	file.store_string(JSON.stringify(data, "  "))
+	file.close()
+	return {"ok": true, "filepath": filepath, "save_name": save_name}
 
 # =====================================================================
 # Build save data from GameManager
@@ -357,7 +440,7 @@ func _sanitize_save_name(name: String) -> String:
 func _unique_save_name(base: String) -> String:
 	var candidate := base
 	var suffix := 2
-	while FileAccess.file_exists(SAVE_DIR + candidate + ".tsave"):
+	while FileAccess.file_exists(_dir + candidate + ".tsave"):
 		candidate = "%s_%d" % [base, suffix]
 		suffix += 1
 	return candidate

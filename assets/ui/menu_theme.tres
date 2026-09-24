@@ -1,4 +1,4 @@
-[gd_resource type="Theme" load_steps=21 format=3]
+[gd_resource type="Theme" load_steps=29 format=3]
 
 [ext_resource type="FontFile" path="res://assets/ui/fonts/tank_font.fnt" id="1_font"]
 
@@ -226,6 +226,54 @@ corner_radius_top_right = 4
 corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
 
+[sub_resource type="StyleBoxFlat" id="action_normal"]
+content_margin_left = 14.0
+content_margin_top = 6.0
+content_margin_right = 14.0
+content_margin_bottom = 6.0
+bg_color = Color(0.09, 0.1, 0.13, 0.9)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.35, 0.36, 0.42, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="action_focus"]
+content_margin_left = 14.0
+content_margin_top = 6.0
+content_margin_right = 14.0
+content_margin_bottom = 6.0
+bg_color = Color(0.3, 0.23, 0.07, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.98, 0.78, 0.22, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="action_pressed"]
+content_margin_left = 14.0
+content_margin_top = 6.0
+content_margin_right = 14.0
+content_margin_bottom = 6.0
+bg_color = Color(0.5, 0.39, 0.12, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.9, 0.5, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
 [sub_resource type="StyleBoxFlat" id="keycap"]
 content_margin_left = 12.0
 content_margin_top = 2.0
@@ -271,6 +319,85 @@ corner_radius_top_left = 3
 corner_radius_top_right = 3
 corner_radius_bottom_right = 3
 corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="keycap_hover"]
+content_margin_left = 12.0
+content_margin_top = 2.0
+content_margin_right = 12.0
+content_margin_bottom = 3.0
+bg_color = Color(0.2, 0.18, 0.13, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.98, 0.78, 0.22, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+shadow_color = Color(0, 0, 0, 0.5)
+shadow_size = 3
+shadow_offset = Vector2(0, 2)
+
+[sub_resource type="StyleBoxFlat" id="keycap_waiting"]
+content_margin_left = 12.0
+content_margin_top = 2.0
+content_margin_right = 12.0
+content_margin_bottom = 3.0
+bg_color = Color(0.62, 0.48, 0.14, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.92, 0.6, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+shadow_color = Color(0.98, 0.78, 0.22, 0.3)
+shadow_size = 5
+
+[sub_resource type="StyleBoxFlat" id="tab_normal"]
+content_margin_left = 16.0
+content_margin_right = 16.0
+bg_color = Color(1, 1, 1, 0.04)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 1, 1, 0.1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="tab_hover"]
+content_margin_left = 16.0
+content_margin_right = 16.0
+bg_color = Color(0.98, 0.78, 0.22, 0.18)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.98, 0.78, 0.22, 0.7)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="tab_active"]
+content_margin_left = 16.0
+content_margin_right = 16.0
+bg_color = Color(0.5, 0.39, 0.12, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.9, 0.5, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
 
 [resource]
 default_font_size = 24
@@ -377,3 +504,59 @@ DangerButton/styles/focus = SubResource("danger_focus")
 DangerButton/styles/hover = SubResource("danger_normal")
 DangerButton/styles/normal = SubResource("danger_normal")
 DangerButton/styles/pressed = SubResource("danger_pressed")
+RowActionButton/base_type = &"Button"
+RowActionButton/colors/font_color = Color(0.86, 0.86, 0.86, 1)
+RowActionButton/colors/font_disabled_color = Color(0.4, 0.4, 0.4, 1)
+RowActionButton/colors/font_focus_color = Color(1, 1, 1, 1)
+RowActionButton/colors/font_hover_color = Color(0.86, 0.86, 0.86, 1)
+RowActionButton/colors/font_hover_pressed_color = Color(1, 1, 1, 1)
+RowActionButton/colors/font_pressed_color = Color(1, 1, 1, 1)
+RowActionButton/font_sizes/font_size = 18
+RowActionButton/styles/disabled = SubResource("action_normal")
+RowActionButton/styles/focus = SubResource("action_focus")
+RowActionButton/styles/hover = SubResource("action_normal")
+RowActionButton/styles/normal = SubResource("action_normal")
+RowActionButton/styles/pressed = SubResource("action_pressed")
+KeycapButton/base_type = &"Button"
+KeycapButton/colors/font_color = Color(1, 0.95, 0.75, 1)
+KeycapButton/colors/font_disabled_color = Color(0.5, 0.5, 0.52, 1)
+KeycapButton/colors/font_focus_color = Color(1, 0.95, 0.75, 1)
+KeycapButton/colors/font_hover_color = Color(1, 1, 1, 1)
+KeycapButton/colors/font_hover_pressed_color = Color(1, 1, 1, 1)
+KeycapButton/colors/font_pressed_color = Color(1, 1, 1, 1)
+KeycapButton/font_sizes/font_size = 24
+KeycapButton/styles/disabled = SubResource("keycap")
+KeycapButton/styles/focus = SubResource("empty")
+KeycapButton/styles/hover = SubResource("keycap_hover")
+KeycapButton/styles/hover_pressed = SubResource("keycap_waiting")
+KeycapButton/styles/normal = SubResource("keycap")
+KeycapButton/styles/pressed = SubResource("keycap_waiting")
+KeycapButtonPicked/base_type = &"Button"
+KeycapButtonPicked/colors/font_color = Color(1, 1, 1, 1)
+KeycapButtonPicked/colors/font_disabled_color = Color(0.5, 0.5, 0.52, 1)
+KeycapButtonPicked/colors/font_focus_color = Color(1, 1, 1, 1)
+KeycapButtonPicked/colors/font_hover_color = Color(1, 1, 1, 1)
+KeycapButtonPicked/colors/font_hover_pressed_color = Color(1, 1, 1, 1)
+KeycapButtonPicked/colors/font_pressed_color = Color(1, 1, 1, 1)
+KeycapButtonPicked/font_sizes/font_size = 24
+KeycapButtonPicked/styles/disabled = SubResource("keycap_hover")
+KeycapButtonPicked/styles/focus = SubResource("empty")
+KeycapButtonPicked/styles/hover = SubResource("keycap_hover")
+KeycapButtonPicked/styles/hover_pressed = SubResource("keycap_waiting")
+KeycapButtonPicked/styles/normal = SubResource("keycap_hover")
+KeycapButtonPicked/styles/pressed = SubResource("keycap_waiting")
+TabButton/base_type = &"Button"
+TabButton/colors/font_color = Color(0.6, 0.6, 0.64, 1)
+TabButton/colors/font_disabled_color = Color(0.35, 0.35, 0.38, 1)
+TabButton/colors/font_focus_color = Color(0.6, 0.6, 0.64, 1)
+TabButton/colors/font_hover_color = Color(1, 1, 1, 1)
+TabButton/colors/font_hover_pressed_color = Color(1, 1, 1, 1)
+TabButton/colors/font_pressed_color = Color(1, 0.95, 0.75, 1)
+TabButton/font_sizes/font_size = 36
+TabButton/fonts/font = ExtResource("1_font")
+TabButton/styles/disabled = SubResource("tab_normal")
+TabButton/styles/focus = SubResource("empty")
+TabButton/styles/hover = SubResource("tab_hover")
+TabButton/styles/hover_pressed = SubResource("tab_active")
+TabButton/styles/normal = SubResource("tab_normal")
+TabButton/styles/pressed = SubResource("tab_active")

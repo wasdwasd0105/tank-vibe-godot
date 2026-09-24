@@ -8,6 +8,7 @@ var _spawn_queue: Array = []  # Array of int (tank type IDs 1-24)
 var _current_spawn_point: int = 0
 var _active_enemies: int = 0
 var _total_spawned: int = 0
+var _first_wave_pending: bool = false
 
 @onready var spawn_timer: Timer = $SpawnTimer
 
@@ -20,10 +21,18 @@ func _ready() -> void:
 	if spawn_timer:
 		spawn_timer.timeout.connect(_on_spawn_timer_timeout)
 
+## Readies [param stage_num]'s enemies and starts sending them in at once.
 func start_stage(stage_num: int) -> void:
+	prepare_stage(stage_num)
+	begin()
+
+## Lines up [param stage_num]'s enemies (the HUD counts them from here) without
+## sending any yet.
+func prepare_stage(stage_num: int) -> void:
 	_spawn_queue.clear()
 	_total_spawned = 0
 	_active_enemies = 0
+	_first_wave_pending = false
 
 	# Get the sequential spawn queue of tank type IDs (1-24)
 	_spawn_queue = LevelData.get_enemy_spawn_queue(stage_num)
@@ -34,13 +43,31 @@ func start_stage(stage_num: int) -> void:
 	if GameManager.get_active_player_count() >= 2:
 		max_concurrent_enemies = maxi(max_concurrent_enemies, 6)
 
-	spawn_timer.wait_time = spawn_interval
-	spawn_timer.start()
-
-	# Spawn first enemy immediately
+## Starts sending the enemies in: the first after [param first_delay] seconds
+## (at once for 0), then one every spawn_interval while there's room.
+func begin(first_delay: float = 0.0) -> void:
+	if first_delay > 0.0:
+		_first_wave_pending = true
+		spawn_timer.start(first_delay)
+		return
+	spawn_timer.start(spawn_interval)
 	_spawn_enemy()
 
+## Holds the reinforcements back ([param held]) or lets them come again.
+func hold(held: bool) -> void:
+	spawn_timer.paused = held
+
+## No more enemies this stage.
+func halt() -> void:
+	_first_wave_pending = false
+	spawn_timer.stop()
+
 func _on_spawn_timer_timeout() -> void:
+	if _first_wave_pending:
+		_first_wave_pending = false
+		spawn_timer.start(spawn_interval)
+		_spawn_enemy()
+		return
 	if _spawn_queue.is_empty():
 		spawn_timer.stop()
 		return
@@ -103,10 +130,13 @@ func _on_enemy_removed() -> void:
 	if _spawn_queue.is_empty() and _active_enemies <= 0:
 		Events.all_enemies_defeated.emit()
 
-func destroy_all_enemies() -> void:
+## Every enemy on the field goes up at once (the bomb): the kills are
+## [param by_player]'s (-1: nobody's).
+func destroy_all_enemies(by_player: int = -1) -> void:
 	var enemies := get_tree().get_nodes_in_group("enemies")
 	for enemy in enemies:
 		if is_instance_valid(enemy):
+			enemy.set("killed_by", by_player)
 			enemy.destroy()
 
 func get_remaining_count() -> int:

@@ -60,6 +60,7 @@ func _run() -> void:
 	GameManager.player_active[1] = false
 
 	var game: Node = load("res://scenes/game.tscn").instantiate()
+	game.show_intro = false  # straight into play
 	tree.root.add_child(game)
 	for i in range(5):
 		await tree.process_frame
@@ -68,7 +69,7 @@ func _run() -> void:
 	var lm: LevelManager = game.get_level_manager()
 	check(lm != null, "level_manager available")
 
-	print("\n[S] Fire spreads on water & burned grass like ground, but not ice")
+	print("\n[S] Fire spreads on water, ice & burned grass like ground")
 	var wtile := Vector2i(-1, -1)
 	var itile := Vector2i(-1, -1)
 	for pos in lm._bg_tile_data.keys():
@@ -85,7 +86,7 @@ func _run() -> void:
 	if wtile.x >= 0:
 		check(lm._fire_tile_ignitable(wtile), "fire CAN burn water (%s)" % str(wtile))
 	if itile.x >= 0:
-		check(not lm._fire_tile_ignitable(itile), "fire CANNOT burn ice (%s)" % str(itile))
+		check(lm._fire_tile_ignitable(itile), "fire CAN burn ice (%s)" % str(itile))
 	if gtile.x >= 0:
 		lm._convert_grass_to_burned(gtile)  # green -> burned (no fire side effect)
 		check(lm._fire_tile_ignitable(gtile), "fire CAN burn burned grass (%s)" % str(gtile))
@@ -210,5 +211,68 @@ func _run() -> void:
 	fire_b2._on_area_entered(enemy_b2)
 	check(enemy_b2._destroyed, "weak enemy bullet is destroyed (damage 1 - 1 = 0)")
 
+	await _check_ice_melt(lm)
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)
+
+
+## A 6x6 sheet of ice around [param center] on cleared ground.
+func _lay_ice(lm: LevelManager, center: Vector2i) -> Array:
+	var tiles: Array = []
+	for y in range(center.y - 3, center.y + 3):
+		for x in range(center.x - 3, center.x + 3):
+			var t := Vector2i(x, y)
+			if lm._fg_tile_data.has(t):
+				lm._remove_fg_tile(t)
+			if lm._bg_tile_data.has(t):
+				lm._remove_bg_tile(t)
+			lm._place_bg_tile(t, 0x01)
+			tiles.append(t)
+	return tiles
+
+
+func _ice_left(lm: LevelManager, tiles: Array) -> int:
+	var n := 0
+	for t in tiles:
+		n += int(lm._is_ice(t))
+	return n
+
+
+## Tank.exe's fire terrain step: a player's fire melts the ice under it into
+## bare ground, 0.375-0.75 s after landing; enemy fire never does.
+func _check_ice_melt(lm: LevelManager) -> void:
+	var tree := get_tree()
+	print("\n[I] A player's fire melts the ice under it; enemy fire does not")
+	lm._clear_fire()
+	var center := Vector2i(12, 10)
+	var sheet := _lay_ice(lm, center)
+	var patch: Array = []
+	for off in FireField.offsets_for(FireField.MIN_SIZE):
+		patch.append(center + off)
+	lm.ignite_fire_patch(center, true)
+	var burning := 0
+	for t in patch:
+		burning += int(lm._fire_index.has(t))
+	check(burning == patch.size(), "a player's fire lands on ice: all %d tiles burn (%d)" % [patch.size(), burning])
+	await tree.create_timer(0.25).timeout
+	check(_ice_left(lm, patch) == patch.size(), "0.25 s in, the ice under it still holds")
+	await tree.create_timer(0.7).timeout
+	check(_ice_left(lm, patch) == 0, "by 0.95 s every ice tile under the fire has melted (%d left)" % _ice_left(lm, patch))
+	check(_ice_left(lm, sheet) == sheet.size() - patch.size(), "the ice around the patch stays")
+	var world := lm.global_position + Vector2((center.x + 0.5) * LevelManager.TILE_SIZE, (center.y + 0.5) * LevelManager.TILE_SIZE)
+	check(lm.ice_tiles_under(world) == 0, "a tank there is no longer on ice")
+
+	lm._clear_fire()
+	var enemy_center := Vector2i(28, 18)
+	var enemy_sheet := _lay_ice(lm, enemy_center)
+	lm.ignite_fire_patch(enemy_center, false)
+	check(lm._fire_index.has(enemy_center), "an enemy fire lands on ice too")
+	await tree.create_timer(1.0).timeout
+	check(_ice_left(lm, enemy_sheet) == enemy_sheet.size(), "but melts none of it")
+
+	lm._clear_fire()
+	var reload_sheet := _lay_ice(lm, center)
+	lm.ignite_fire_patch(center, true)
+	lm._clear_fire()   # as a stage reload does
+	await tree.create_timer(1.0).timeout
+	check(_ice_left(lm, reload_sheet) == reload_sheet.size(), "a fire cleared away before melting leaves the ice")

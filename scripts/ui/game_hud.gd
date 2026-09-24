@@ -65,7 +65,8 @@ func _get_player_hp(pid: int) -> int:
 	for tank in tree.get_nodes_in_group("players"):
 		if tank is PlayerTank and tank.player_id == pid:
 			return tank.health
-	return 0  # Dead / not spawned
+	# No tank (the intro, a respawn, the results): the HP the next one brings.
+	return GameManager.player_hp[pid] if GameManager.player_lives[pid] >= 0 else 0
 
 func _get_player_addons(pid: int) -> Array:
 	var tree := get_tree()
@@ -80,6 +81,13 @@ func _get_player_addons(pid: int) -> Array:
 				addons.append(tank._current_utility_addon)
 			return addons
 	return GameManager.player_addons[pid]  # Fallback when tank not spawned
+
+## A player out of lives reads "Game Over" where their lives were, as in the
+## original's corner (0x499a05).
+func _lives_text(pid: int) -> String:
+	if GameManager.player_lives[pid] < 0:
+		return "GAME OVER"
+	return "Lives: " + str(GameManager.player_lives[pid])
 
 func _is_player_hud_hidden(pid: int) -> bool:
 	if not GameManager.player_active[pid]:
@@ -172,7 +180,7 @@ func update_display() -> void:
 	if p1_header:
 		p1_header.visible = not p1_hidden
 	if p1_lives_label:
-		p1_lives_label.text = "Lives: " + str(maxi(GameManager.player_lives[0], 0))
+		p1_lives_label.text = _lives_text(0)
 		p1_lives_label.visible = not p1_hidden
 	_cached_p1_weapon = _update_player_stats(0, p1_hidden,
 		p1_hp_icon, p1_hp_val, p1_spd_icon, p1_spd_val,
@@ -187,7 +195,7 @@ func update_display() -> void:
 	if p2_header:
 		p2_header.visible = not p2_hidden
 	if p2_lives_label:
-		p2_lives_label.text = "Lives: " + str(maxi(GameManager.player_lives[1], 0))
+		p2_lives_label.text = _lives_text(1)
 		p2_lives_label.visible = not p2_hidden
 	_cached_p2_weapon = _update_player_stats(1, p2_hidden,
 		p2_hp_icon, p2_hp_val, p2_spd_icon, p2_spd_val,

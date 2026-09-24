@@ -46,6 +46,12 @@ var active_explosion_bullets: int = 0
 var active_ap_bullets: int = 0
 var fire_immunity_timer: float = 0.0
 
+## The player whose weapon deals the hit about to land: a weapon sets it just
+## before calling take_damage(), which reads and clears it. -1 for an enemy's
+## weapon, grass fire and anything else no player owns. It decides who is
+## credited with the hit and with a kill.
+var hit_by: int = -1
+
 # Red "hit" flash, shared by every damage source (bullets and all special weapons).
 # Longer than an explosion/mine blast (~0.22s) so the flash stays visible after
 # the fireball fades.
@@ -55,6 +61,8 @@ var _damage_flash_timer: float = 0.0
 # Mine weapon effects on this tank.
 var is_mine_slowed: bool = false        # quarter speed until an add-on or MAX pickup, or death
 var is_flying: bool = false             # thrown into the air by a level 2/3 mine — helpless
+var _fly_landing_hit: int = 0           # HP the throwing mine costs when the tank comes down
+var _fly_hit_by: int = -1               # whose mine threw it (-1: an enemy's)
 var _fly_velocity: Vector2 = Vector2.ZERO   # px/s, away from the mine
 var _fly_altitude: float = 0.0          # the sprite draws at (altitude + 1) times its size
 var _fly_climb: float = 0.0             # altitude gained per time unit
@@ -284,7 +292,7 @@ func _tick_state_overlay(delta: float) -> void:
 ## Called by GroundFire when this tank overlaps a burning tile.
 ## The tank's own side is immune to its own fire; damage is throttled by
 ## [member fire_immunity_timer].
-func on_fire_contact(from_player_fire: bool, reburn: float, hurts_both: bool = false) -> void:
+func on_fire_contact(from_player_fire: bool, reburn: float, hurts_both: bool = false, owner_id: int = -1) -> void:
 	if fire_immunity_timer > 0.0:
 		return
 	# Grass fire is neutral and burns everyone; weapon fire never burns its own side.
@@ -293,6 +301,7 @@ func on_fire_contact(from_player_fire: bool, reburn: float, hurts_both: bool = f
 		if from_player_fire == is_player:
 			return  # player fire never burns players; enemy fire never burns enemies
 	fire_immunity_timer = reburn
+	hit_by = owner_id
 	take_damage()
 
 func try_move(new_direction: Vector2) -> void:
@@ -385,6 +394,7 @@ func _spawn_bullet(
 	bullet.speed = bullet_speed_override if bullet_speed_override > 0.0 else bullet_speed
 	bullet.owner_tank = self
 	bullet.is_player_bullet = is_in_group("players")
+	bullet.owner_player = get_player_index()
 	bullet.visual_lane_offsets = visual_lane_offsets.duplicate()
 	bullet.collision_lane_offsets = collision_lane_offsets.duplicate()
 	# A tank-wide shot tests the tile grid across the shooter's whole body, so it
@@ -521,6 +531,10 @@ func _place_mine(level: int) -> bool:
 		return false
 	return lm.try_place_mine(self, level)
 
+## The player driving this tank (0 or 1), or -1 for an enemy.
+func get_player_index() -> int:
+	return -1
+
 ## Gun upgrade level 0-3. Sets the level of the mines this tank lays and the
 ## strength of the blast when it lands from a mine flight.
 func get_gun_level() -> int:
@@ -551,10 +565,15 @@ func clear_mine_slow() -> void:
 ## offset from it per time unit, so a tank that drove onto the mine flies back
 ## the way it came: about 11 tiles from a level-2 mine, 14 from a level-3. The
 ## flight lasts 1.2 s or 1.5 s, until the altitude comes back down to zero.
-func launch_mine_fly(mine_level: int, mine_center: Vector2) -> void:
+## Thrown by a level-[param mine_level] mine centred at [param mine_center]. The
+## mine's hit waits for the landing: [param landing_hit] HP, credited to
+## [param owner_id] (see _take_mine_landing_hit).
+func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
 	if is_flying:
 		return
 	is_flying = true
+	_fly_landing_hit = landing_hit
+	_fly_hit_by = owner_id
 	_fly_velocity = (global_position - mine_center) * FLY_THROW / FLY_TIME_UNIT
 	_fly_altitude = 0.0
 	_fly_climb = mine_level + 2.0
@@ -594,6 +613,9 @@ func _update_flying(delta: float) -> void:
 		sprite.rotation = _fly_base_rotation + _fly_angle * TAU / 256.0
 
 func _land_from_flight() -> void:
+	# While it still counts as airborne, so a player loses no level for it and
+	# starts no hit grace.
+	_take_mine_landing_hit()
 	is_flying = false
 	if sprite:
 		sprite.position = Vector2.ZERO
@@ -611,6 +633,25 @@ func _land_from_flight() -> void:
 	var lm := _get_level_manager()
 	if lm:
 		lm.spawn_explosion_blast(global_position, get_gun_level(), is_in_group("players"), true)
+
+## The throwing mine's hit, on landing (Sean's rule, 2026-09-24; the original hit
+## the tank as it was thrown). Unless the tank is invincible by now, it loses its
+## moon shield, or else another add-on, and the HP.
+func _take_mine_landing_hit() -> void:
+	var points := _fly_landing_hit
+	_fly_landing_hit = 0
+	if points <= 0 or is_invulnerable():
+		return
+	var addons := get_addon_names()
+	if "moon-shield" in addons:
+		lose_addon("moon-shield")
+	elif not addons.is_empty():
+		lose_addon(addons[0])
+	for i in points:
+		if health <= 0:
+			return
+		hit_by = _fly_hit_by
+		take_damage()
 
 func _get_level_manager() -> LevelManager:
 	var game := get_tree().get_first_node_in_group("game")
@@ -631,6 +672,7 @@ func on_ap_bullet_destroyed() -> void:
 	active_ap_bullets = maxi(active_ap_bullets - 1, 0)
 
 func take_damage() -> void:
+	hit_by = -1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
 	health -= 1
 	if health <= 0:

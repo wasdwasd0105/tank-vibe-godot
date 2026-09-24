@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://d3sic0tb25b4k"]
+
+[ext_resource type="Script" path="res://scripts/tests/hit_grace_test.gd" id="1_hitgrace"]
+
+[node name="HitGraceTest" type="Node"]
+script = ExtResource("1_hitgrace")

@@ -4,7 +4,8 @@ extends Area2D
 ## A laid mine, rebuilt from Tank.exe's TMineSprite (VMT 0x004903d8). Every rule
 ## below is the original's; docs/mine_weapon_original_spec.md has the addresses.
 ##
-## Level is the layer's gun level, 0-3, and picks the sprite row. A new mine is
+## Level is the layer's gun level, 0-3 (levels 1-4 in play), and picks the
+## sprite row. A new mine is
 ## hidden and inert while its row plays; it surfaces and arms near the row's end
 ## and holds the last frame. A level-3 mine then loops the ringed row instead.
 ## A player's mine is always drawn; an enemy mine only fades in while a player
@@ -15,9 +16,12 @@ extends Area2D
 ## level, and the tank that touched it suffers by level:
 ##   L0  the blast alone
 ##   L1  + slowed to a quarter speed until an add-on or MAX pickup, or death
-##   L2  + a direct hit, and the tank is thrown into the air
-##   L3  the same, a harder hit and a longer flight
-## An add-on soaks part of that direct hit and is lost; memory-save never flies.
+##   L2  + thrown into the air, whatever it carries and invincible or not
+##   L3  the same, a longer flight
+## A thrown tank pays on landing, unless it is invincible by then: it loses its
+## moon shield, or else another add-on, and 1 HP (L2) or 2 (L3). That is Sean's
+## rule; the original hit it as it was thrown, let an add-on soak the hit and
+## never threw a memory-save tank.
 ## Opposing explosions set mines off too, so fields chain. Bullets never do.
 
 const TILE_SIZE: int = 32
@@ -42,6 +46,7 @@ const REVEAL_MIN_ALPHA: int = 64
 
 var level: int = 0                     # 0-3, the layer's gun level
 var from_player: bool = true           # side: true = laid by a player (hurts enemies)
+var owner_id: int = -1                 # the player who laid it (-1: an enemy)
 var cell: Vector2i = Vector2i.ZERO     # top-left tile of the 2x2 block it sits on
 
 var _level_manager: LevelManager = null
@@ -127,7 +132,7 @@ func set_off() -> void:
 	if level >= 2:
 		SoundManager.play(&"mine_explode")
 	if _level_manager:
-		_level_manager.spawn_explosion_blast(global_position, level, from_player)
+		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, null, owner_id)
 		_level_manager.unregister_mine(self)
 	queue_free()
 
@@ -157,27 +162,12 @@ func _on_tank_contact(tank: BaseTank) -> bool:
 	# L1+ slows to a quarter speed. Anti-ice is immune; memory-save only below L3.
 	if not invulnerable and level >= 1 and not anti_ice and not (memory and level < 3):
 		tank.apply_mine_slow()
-	# L2+ hits the tank and throws it. Memory-save never flies.
-	if level < 2 or memory:
+	# L2+ throws the tank, whatever it carries and invincible or not; its hit
+	# comes when it lands (BaseTank._take_mine_landing_hit): 1 HP from L2, 2 from L3.
+	if level < 2:
 		return true
-	if not invulnerable:
-		if anti_ice:
-			tank.lose_addon("anti-ice")       # the add-on takes the whole hit
-		elif not addons.is_empty():
-			tank.lose_addon(addons[0])        # the add-on soaks one point of it
-			_hit(tank, level - 2)
-		else:
-			_hit(tank, level - 1)
-	if is_instance_valid(tank) and tank.health > 0:
-		tank.launch_mine_fly(level, global_position)
+	tank.launch_mine_fly(level, global_position, level - 1, owner_id)
 	return true
-
-
-func _hit(tank: BaseTank, points: int) -> void:
-	for i in range(points):
-		if not is_instance_valid(tank) or tank.health <= 0:
-			return
-		tank.take_damage()
 
 
 ## The level's row, played once and held on its last frame; level 3 then loops

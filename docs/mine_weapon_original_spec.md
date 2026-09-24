@@ -213,6 +213,29 @@ section 6).
 
 ## 6. What the remake does differently
 
+- **The flight's hit comes on landing** (Sean's rule, 2026-09-24). Levels here
+  are 0-3; players know them as 1-4.
+  - An L2 or L3 mine throws every tank, whatever it carries and whether or not
+    it is invincible. Memory-save no longer keeps a tank on the ground (Sean hit
+    this: a memory-save tank with its moon shield toward the mine neither flew
+    nor lost HP). Memory-save still escapes the L2 slow.
+  - The tank loses nothing in the air.
+  - When it comes down (`BaseTank._take_mine_landing_hit`), unless it is
+    invincible by then, it loses its moon shield (or, without one, its other
+    add-on) **and** 1 HP from L2 or 2 HP from L3. So an add-on no longer soaks a
+    point, and anti-ice no longer takes the whole hit.
+  - The hit lands while the tank still counts as airborne, so a player loses no
+    speed or weapon level for it and gets no hit grace.
+  - The landing blast follows as before.
+  - The kill is credited to whoever laid the mine.
+
+  | Mine | Plain tank | Moon shield | Anti-water | Anti-ice | Memory-save |
+  |---|---|---|---|---|---|
+  | L2 | slow + flight, lands −1 HP | slow + flight, lands without the shield −1 HP | slow + flight, lands without it −1 HP | ignored | flight, lands without it −1 HP |
+  | L3 | slow + flight, lands −2 HP | slow + flight, lands without the shield −2 HP | slow + flight, lands without it −2 HP | flight, lands without it −2 HP | slow + flight, lands without it −2 HP |
+
+  A tank with both the moon shield and another add-on loses only the moon shield.
+
 - **Enemy mines stop at level 2** (`EnemyTank.ENEMY_MINE_MAX_LEVEL`), by design.
   The original's type-24 tank lays ringed L3 mines on EXPERT and INSANE; in the
   remake it lays L2 there. Only the mine is capped: the tank's gun level stays

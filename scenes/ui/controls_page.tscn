@@ -1,0 +1,51 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/controls_page.gd" id="1_controls"]
+
+[node name="ControlsPage" type="PanelContainer"]
+custom_minimum_size = Vector2(700, 0)
+theme_type_variation = &"MenuPanel"
+script = ExtResource("1_controls")
+
+[node name="Layout" type="VBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
+text = "P1 CONTROLS"
+horizontal_alignment = 1
+
+[node name="Rows" type="VBoxContainer" parent="Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Actions" type="HBoxContainer" parent="Layout"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="ResetButton" type="Button" parent="Layout/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"MenuItemButton"
+text = "RESET KEYS"
+
+[node name="BackButton" type="Button" parent="Layout/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"MenuItemButton"
+text = "BACK"
+
+[node name="Prompt" type="Label" parent="Layout"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 66)
+layout_mode = 2
+theme_type_variation = &"PromptLabel"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 3

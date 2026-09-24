@@ -14,6 +14,7 @@ const ANIM_FRAMES: int = 8
 
 var from_player: bool = true   # true = lit by a player bullet (hurts enemies only)
 var is_grass_fire: bool = false  # neutral grass fire: hurts BOTH sides, uses row 1
+var owner_id: int = -1  # the player whose shell lit it (-1: an enemy's; grass fire is nobody's)
 var tile_pos: Vector2i = Vector2i.ZERO
 
 var _armed: bool = false
@@ -119,7 +120,7 @@ func _apply_damage() -> void:
 	# A grass fire is neutral (hurts_both); weapon fire stays own-side-immune.
 	for body in get_overlapping_bodies():
 		if body is BaseTank:
-			(body as BaseTank).on_fire_contact(from_player, REBURN_INTERVAL, is_grass_fire)
+			(body as BaseTank).on_fire_contact(from_player, REBURN_INTERVAL, is_grass_fire, owner_id)
 
 
 func _advance_animation(delta: float) -> void:

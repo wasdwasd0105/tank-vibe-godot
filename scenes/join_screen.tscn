@@ -1,6 +1,8 @@
-[gd_scene format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/ui/join_screen.gd" id="1_join"]
+[ext_resource type="Theme" path="res://assets/ui/menu_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/menu_backdrop.tscn" id="3_backdrop"]
 
 [node name="JoinScreen" type="Control"]
 layout_mode = 3
@@ -9,71 +11,110 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = ExtResource("2_theme")
 script = ExtResource("1_join")
 
-[node name="Background" type="ColorRect" parent="."]
+[node name="Backdrop" parent="." instance=ExtResource("3_backdrop")]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0, 0, 0, 1)
 
-[node name="Title" type="Label" parent="."]
+[node name="Header" type="Label" parent="."]
 layout_mode = 1
-offset_left = 300.0
-offset_top = 200.0
-offset_right = 1300.0
-offset_bottom = 300.0
-theme_override_font_sizes/font_size = 48
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 60.0
+offset_bottom = 140.0
+grow_horizontal = 2
+theme_type_variation = &"HeaderLabel"
+text = "NEW GAME"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Subtitle" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 146.0
+offset_bottom = 182.0
+grow_horizontal = 2
+theme_type_variation = &"SubtitleLabel"
 text = "PRESS FIRE TO JOIN"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="P1Status" type="Label" parent="."]
+[node name="Cards" type="HBoxContainer" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
-offset_left = 400.0
-offset_top = 400.0
-offset_right = 1200.0
-offset_bottom = 460.0
-theme_override_font_sizes/font_size = 36
-text = "P1: press T"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="P2Status" type="Label" parent="."]
-layout_mode = 1
-offset_left = 400.0
-offset_top = 500.0
-offset_right = 1200.0
-offset_bottom = 560.0
-theme_override_font_sizes/font_size = 36
-text = "P2: press ["
-horizontal_alignment = 1
-vertical_alignment = 1
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -580.0
+offset_top = 222.0
+offset_right = 580.0
+offset_bottom = 682.0
+grow_horizontal = 2
+theme_override_constants/separation = 60
+alignment = 1
 
 [node name="CreditsLabel" type="Label" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
-offset_left = 400.0
-offset_top = 650.0
-offset_right = 1200.0
-offset_bottom = 700.0
-theme_override_font_sizes/font_size = 32
-theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
-text = "Credits: 3"
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 704.0
+offset_bottom = 744.0
+grow_horizontal = 2
+theme_type_variation = &"ValueLabel"
+text = "CREDITS   3"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="Instruction" type="Label" parent="."]
+[node name="Hint" type="Label" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
-offset_left = 400.0
-offset_top = 750.0
-offset_right = 1200.0
-offset_bottom = 800.0
-theme_override_font_sizes/font_size = 28
-theme_override_colors/font_color = Color(1.0, 1.0, 0.3, 1)
-text = "Fire again to start"
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -236.0
+offset_bottom = -206.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_type_variation = &"HintLabel"
+text = "Each player presses their fire button to join   ·   fire again to start   ·   Esc goes back"
 horizontal_alignment = 1
 vertical_alignment = 1
-visible = false
+
+[node name="Footer" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -320.0
+offset_top = -196.0
+offset_right = 320.0
+offset_bottom = -132.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = 40
+
+[node name="StartButton" type="Button" parent="Footer"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(300, 64)
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+disabled = true
+text = "START"
+
+[node name="BackButton" type="Button" parent="Footer"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(300, 64)
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "BACK"

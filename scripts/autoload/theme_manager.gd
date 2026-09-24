@@ -232,6 +232,30 @@ func get_theme_setting(section: String, key: String, fallback: Variant) -> Varia
 func get_theme_dir() -> String:
 	return THEMES_DIR + current_theme + "/"
 
+## The stage intro picture a stage names ([param file_name], e.g. "SI01.JPG"),
+## found in the theme's [screens] dir whatever its case; null when the theme
+## has no screens or no such picture.
+func get_stage_picture(file_name: String) -> Texture2D:
+	var rel_dir: String = get_theme_setting("screens", "dir", "")
+	if rel_dir.is_empty() or file_name.is_empty():
+		return null
+	var dir := get_theme_dir() + rel_dir
+	var wanted := file_name.get_file().to_lower()
+	for listed in DirAccess.get_files_at(dir):
+		# An exported game lists the import stubs ("SI01.jpg.import") instead.
+		var name := listed.trim_suffix(".import") if listed.ends_with(".import") else listed
+		if name.to_lower() == wanted:
+			return load(dir + name) as Texture2D
+	return null
+
+## A picture from the theme's [screens] section ("stage_win", "stage_lose",
+## "results_panel"), or null when the theme has none.
+func get_screen_texture(key: String) -> Texture2D:
+	var rel_path: String = get_theme_setting("screens", key, "")
+	if rel_path.is_empty() or not ResourceLoader.exists(get_theme_dir() + rel_path):
+		return null
+	return load(get_theme_dir() + rel_path) as Texture2D
+
 ## Get the display name from theme.cfg
 func get_theme_display_name() -> String:
 	if _config:

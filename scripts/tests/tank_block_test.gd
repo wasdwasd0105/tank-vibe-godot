@@ -59,6 +59,7 @@ func _run() -> void:
 	GameManager.player_active[0] = true
 	GameManager.player_active[1] = false
 	_game = load("res://scenes/game.tscn").instantiate()
+	_game.show_intro = false  # straight into play
 	tree.root.add_child(_game)
 	for i in range(5):
 		await tree.process_frame
