@@ -84,7 +84,6 @@ func _on_player_fire(player: int) -> void:
 func _start_game() -> void:
 	if not _joined.has(true):
 		return
-	InputSettings.increment_games_played()
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 
@@ -112,7 +111,7 @@ func _make_card(player: int) -> Button:
 	column.add_theme_constant_override("separation", 22)
 	card.add_child(column)
 
-	var title := _make_label("PLAYER %d" % (player + 1), &"RowNameLabel")
+	var title := _make_label(tr("PLAYER %d") % (player + 1), &"RowNameLabel")
 	title.name = "Title"
 	column.add_child(title)
 	var tank := TextureRect.new()
@@ -166,7 +165,7 @@ func _card_style(player: int, joined: bool, hover: bool) -> StyleBoxFlat:
 
 ## Shows who has joined, what each player can press and the credits left.
 func _refresh() -> void:
-	_credits_label.text = "CREDITS   %d" % GameManager.credits
+	_credits_label.text = tr("CREDITS   %d") % GameManager.credits
 	for player in 2:
 		var joined := _joined[player]
 		var can_join := joined or GameManager.credits > 0

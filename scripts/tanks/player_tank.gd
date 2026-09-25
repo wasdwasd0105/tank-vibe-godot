@@ -48,6 +48,12 @@ const SPAWN_INVINCIBILITY: float = 3.0
 const WREATH_MIN_LEFT: float = 2.25
 var _helmet_invincible: bool = false
 var _wreath_shown: bool = false
+## A player held by an enemy's "Hold Enemy" is wrapped in frost: the ringed web
+## while more than 5000 ticks of the hold are left, the bare web down to 1000,
+## then none (Tank.exe 0x0049495a). The frost covers the helmet's wreath.
+const HOLD_RING_LEFT: float = 3.75
+const HOLD_WEB_LEFT: float = 0.75
+var _hold_shown: int = 0  # 2 ringed web, 1 bare web, 0 none
 ## A player who survives a hit is untouchable for 750 ticks (0.5625 s), blinking
 ## like any short invincibility (Tank.exe's Damage, 0x00492640). Bots get none,
 ## and neither does a tank hit while airborne.
@@ -152,6 +158,9 @@ func _physics_process(delta: float) -> void:
 			is_invincible = false
 			_helmet_invincible = false
 			_sync_wreath()
+	if GameManager.players_frozen:
+		glide_while_held("enemies")  # an enemy took "Hold Enemy"
+		return
 
 	var input_dir := _read_move_direction()
 
@@ -555,9 +564,25 @@ func _process(delta: float) -> void:
 
 func _sync_wreath() -> void:
 	var wreath := is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT
-	if wreath != _wreath_shown:
+	var hold := _hold_stage()
+	if wreath != _wreath_shown or hold != _hold_shown:
 		_wreath_shown = wreath
-		_update_shield_visual(wreath)
+		_hold_shown = hold
+		match hold:
+			2:
+				show_state_overlay(BaseTank.get_freeze_frames())
+			1:
+				show_state_overlay(BaseTank.get_thaw_frames())
+			_:
+				_update_shield_visual(wreath)
+
+func _hold_stage() -> int:
+	if not GameManager.players_frozen:
+		return 0
+	var left := GameManager.players_freeze_timer
+	if left > HOLD_RING_LEFT:
+		return 2
+	return 1 if left > HOLD_WEB_LEFT else 0
 
 ## Any other invincibility blinks the tank: drawn one frame, gone the next.
 func _blink_while_invincible() -> void:
@@ -692,6 +717,8 @@ func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0
 	super.launch_mine_fly(mine_level, mine_center, landing_hit, owner_id)
 
 func destroy() -> void:
+	if is_queued_for_deletion():
+		return  # already destroyed this frame (a bomb and a shell): one life
 	_rumble(DEATH_RUMBLE)
 	if has_memory_save:
 		# Spray the memory-save addon cookie

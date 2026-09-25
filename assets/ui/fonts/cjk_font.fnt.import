@@ -1,0 +1,17 @@
+[remap]
+
+importer="font_data_bmfont"
+type="FontFile"
+uid="uid://pta2a8hfi10t"
+path="res://.godot/imported/cjk_font.fnt-f43edd5f215be6026bb27eb71798d24a.fontdata"
+
+[deps]
+
+source_file="res://assets/ui/fonts/cjk_font.fnt"
+dest_files=["res://.godot/imported/cjk_font.fnt-f43edd5f215be6026bb27eb71798d24a.fontdata"]
+
+[params]
+
+fallbacks=[]
+compress=true
+scaling_mode=1

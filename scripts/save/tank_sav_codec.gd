@@ -62,10 +62,10 @@ const MAX_UPGRADE_LEVEL := 3
 ## codec). Returns {"error": message} when the bytes are not a valid save.
 static func decode(encrypted: PackedByteArray) -> Dictionary:
 	if encrypted.size() != SAVE_SIZE:
-		return {"error": "wrong size (%d bytes, expected %d)" % [encrypted.size(), SAVE_SIZE]}
+		return {"error": TranslationServer.translate("wrong size (%d bytes, expected %d)") % [encrypted.size(), SAVE_SIZE]}
 	var clear := crypt(encrypted)
 	if clear.decode_u32(0) != checksum(clear):
-		return {"error": "checksum mismatch (damaged file or not a Tank.exe save)"}
+		return {"error": TranslationServer.translate("checksum mismatch (damaged file or not a Tank.exe save)")}
 	return {
 		"header": {
 			"game_mode": clear.decode_u32(HEADER_GAME_MODE),

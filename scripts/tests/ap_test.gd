@@ -195,5 +195,30 @@ func _run() -> void:
 	e_ap2._ap_on_body(player)
 	check(not player.has_moon_shield, "non-invincible player's shield IS stripped (control)")
 
+	print("\n[I] AP ammo: packs of 10, held up to 100 (the original stopped at 50), kept in a save")
+	player.set_secondary_weapon("rapid")
+	player.set_secondary_weapon("ap")
+	check(player.secondary_weapon_type == "ap" and player.secondary_weapon_count == 10, "an AP pickup: 10 shells")
+	for i in 4:
+		player.set_secondary_weapon("ap")
+	check(player.secondary_weapon_count == 50, "four more packs: 50, the original's cap")
+	player.set_secondary_weapon("ap")
+	check(player.secondary_weapon_count == 60, "and a fifth goes past it: 60")
+	for i in 5:
+		player.set_secondary_weapon("ap")
+	check(player.secondary_weapon_count == 100 and GameManager.get_secondary_weapon_count(0) == 100,
+		"up to 100, in the tank and in GameManager")
+	player.set_secondary_weapon("ap")
+	check(player.secondary_weapon_count == 100, "no further: 100 is the cap")
+	player.secondary_weapon_count = 20
+	player.apply_cookie_bullets_max()
+	check(player.secondary_weapon_count == 100, "MAX Caisson fills AP to 100")
+	GameManager.set_secondary_weapon(0, "ap", 87)
+	var saved: Dictionary = SaveManager._build_save_data()
+	GameManager.set_secondary_weapon(0, "rapid", 50)
+	SaveManager._restore_from_data(saved)
+	check(GameManager.player_secondary_weapon_types[0] == "ap" and GameManager.get_secondary_weapon_count(0) == 87,
+		"87 AP shells saved and loaded back as 87")
+
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

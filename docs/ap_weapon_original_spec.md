@@ -18,7 +18,7 @@
 
 8. **Eagle.** No special rule: eagle has 1 HP, AP kills it losing 1 point and flies on (a normal bullet would die on it).
 
-9. **Ammo / rate / in-flight.** 10 per pickup, cap 50 (already in WEAPON_DATA). Cooldown ≈ 0.6 s — in the original this scaled with the *speed* upgrade (0.60/0.51/0.40/0.30 s), NOT the gun level. Max AP shells in flight: **2/2/3/3** at level 0-3 (heat 16 vs cap 24+8·level; heat refunds when the bullet dies).
+9. **Ammo / rate / in-flight.** 10 per pickup, cap 50 (the remake holds 100 since 2026-09-25, Sean's call; WEAPON_DATA). Cooldown ≈ 0.6 s — in the original this scaled with the *speed* upgrade (0.60/0.51/0.40/0.30 s), NOT the gun level. Max AP shells in flight: **2/2/3/3** at level 0-3 (heat 16 vs cap 24+8·level; heat refunds when the bullet dies).
 
 10. **Death effect.** Plain 64px impact flash, no blast, no terrain mark. Fire sound = S_Armor; shield absorb = clang.
 
@@ -38,7 +38,7 @@
 | Acceleration | +444 px/s² | **+889 px/s²** |
 | Max speed (reached 0.5 s) | 333 px/s | **667 px/s** |
 | Lifetime / range | 2.0625 s ≈ 39.5 tiles (whole map) | 2.0625 s ≈ 1264 px |
-| Ammo pack / cap | 10 / 50 | same (already coded) |
+| Ammo pack / cap | 10 / 50 | 10 / **100** (Sean, 2026-09-25) |
 | Heat cost / cap → in flight | 16 / 24+8L → 2/2/3/3 | same counts |
 | Cooldown (by SPEED level 0-3) | 0.60 / 0.51 / 0.40 / 0.30 s | see todo (c) |
 | Collision box | 14×14 px | 28×28 px |

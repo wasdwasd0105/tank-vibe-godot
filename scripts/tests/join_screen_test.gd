@@ -2,7 +2,7 @@ extends Node
 ## Headless test for the new-game (join) screen: each player joins with their
 ## fire button or a click on their card, a credit each; fire again, START or a
 ## controller's Start begins the game; Esc, B or BACK return to the title
-## screen, and only a game that really starts counts as played.
+## screen.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/join_screen_test.tscn
 
@@ -102,7 +102,6 @@ func _run() -> void:
 	check(_screen._credits_label.text == "CREDITS   3" and _screen._start_button.disabled, "CREDITS 3, START disabled")
 
 	print("\n[B] Fire joins; a click on a card joins too")
-	var played := InputSettings.get_games_played()
 	await _key(KEY_T)
 	check(_screen._joined == [true, false] and GameManager.credits == 2 and GameManager.player_active[0],
 		"P1's fire: P1 joins for a credit")
@@ -112,7 +111,7 @@ func _run() -> void:
 	_screen._card_buttons[1].pressed.emit()
 	check(_screen._joined == [true, true] and GameManager.credits == 1, "a click on P2's card: P2 joins")
 
-	print("\n[C] Esc goes back to the title (and the game is not counted)")
+	print("\n[C] Esc goes back to the title")
 	_screen._back_button.pressed.emit()
 	await _left_to()
 	# Arrive the way the title's NEW GAME does, through GameManager.start_game().
@@ -123,19 +122,16 @@ func _run() -> void:
 	for i in 4:
 		await tree.process_frame
 	_screen = tree.current_scene
-	check(_screen.scene_file_path == JOIN_SCENE and InputSettings.get_games_played() == played,
-		"NEW GAME opens this screen without counting a game yet")
+	check(_screen.scene_file_path == JOIN_SCENE, "NEW GAME opens this screen")
 	await _key(KEY_T)
 	await _key(KEY_ESCAPE)
 	check(await _left_to() == "res://scenes/main.tscn", "Esc: the title screen")
-	check(InputSettings.get_games_played() == played, "no game counted as played")
 
 	print("\n[D] Fire again starts the game")
 	await _open(3)
 	await _key(KEY_T)
 	await _key(KEY_T)
 	check(await _left_to() == "res://scenes/game.tscn", "P1's fire twice: the game")
-	check(InputSettings.get_games_played() == played + 1, "counted as played once it starts")
 
 	print("\n[E] A controller: B goes back, Start starts once someone joined")
 	await _open(3)

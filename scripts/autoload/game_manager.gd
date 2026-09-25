@@ -2,8 +2,14 @@ extends Node
 
 var current_stage: int = 1
 var player_active: Array[bool] = [false, false]
+## An active player sitting out (the pause menu's PLAYER 2 option): no tank on the
+## field, but everything they had is kept, in the save too, for when they return.
+var player_disabled: Array[bool] = [false, false]
 var is_game_over: bool = false
 var enemies_frozen: bool = false
+## The players are held (an enemy took "Hold Enemy"): no driving, no firing.
+var players_frozen: bool = false
+var players_freeze_timer: float = 0.0
 var current_map_pool_id: String = ""
 
 # --- Credits (shared between both players) ---
@@ -11,6 +17,8 @@ var credits: int = 3
 var max_credits: int = 3
 
 # --- Difficulty ---
+## The original's hardest level, which only looping the map reaches.
+const MAX_DIFFICULTY := 5
 var difficulty: int = 1  # 1-5
 var start_difficulty: int = 1  # Difficulty when game started (saved)
 
@@ -58,14 +66,20 @@ func _process(delta: float) -> void:
 		freeze_timer -= delta
 		if freeze_timer <= 0:
 			enemies_frozen = false
+	if players_frozen:
+		players_freeze_timer -= delta
+		if players_freeze_timer <= 0:
+			players_frozen = false
 	_tick_chains(delta)
 
 func reset() -> void:
 	current_stage = 1
 	is_game_over = false
 	enemies_frozen = false
+	players_frozen = false
 	credits = max_credits
 	player_active = [false, false]
+	player_disabled = [false, false]
 	player_lives = [3, 3]
 	player_scores = [0, 0]
 	player_speed_levels = [1, 1]
@@ -82,8 +96,7 @@ func reset() -> void:
 	save_created_iso = ""
 	start_difficulty = difficulty
 
-## A new game: fresh state, then the join screen (which counts the game as
-## played once it really starts).
+## A new game: fresh state, then the join screen.
 func start_game() -> void:
 	reset()
 	start_difficulty = difficulty
@@ -91,16 +104,22 @@ func start_game() -> void:
 	get_tree().change_scene_to_file("res://scenes/join_screen.tscn")
 
 func next_stage() -> void:
-	current_stage += 1
-	enemies_remaining = 20
-	enemies_frozen = false
-	player_kills = [{}, {}]
-	if current_stage > get_max_stages():
-		current_stage = 1  # Loop back to stage 1
-		difficulty += 1    # Increase difficulty on map loop
+	advance_stage()
 	# Auto-save after stage number is updated so loaded game starts on the correct stage
 	SaveManager.save_game()
 	get_tree().change_scene_to_file("res://scenes/game.tscn")
+
+## Moves the game on a stage. Past the last it loops back to the first one level
+## harder, up to MAX_DIFFICULTY, where the original stopped too (0x499132).
+func advance_stage() -> void:
+	current_stage += 1
+	enemies_remaining = 20
+	enemies_frozen = false
+	players_frozen = false
+	player_kills = [{}, {}]
+	if current_stage > get_max_stages():
+		current_stage = 1  # Loop back to stage 1
+		difficulty = mini(difficulty + 1, MAX_DIFFICULTY)  # Increase difficulty on map loop
 
 func get_max_stages() -> int:
 	return LevelData.get_stage_count()
@@ -163,15 +182,23 @@ func rejoin_player(player_id: int) -> bool:
 func is_any_player_active() -> bool:
 	return player_active[0] or player_active[1]
 
+## In the game and not sitting out: the player has a tank on the field, or will.
+func is_player_in_play(player_id: int) -> bool:
+	return player_active[player_id] and not player_disabled[player_id]
+
+## Players in play (not those sitting out).
 func get_active_player_count() -> int:
 	var count := 0
-	if player_active[0]: count += 1
-	if player_active[1]: count += 1
+	for pid in range(2):
+		if is_player_in_play(pid):
+			count += 1
 	return count
 
+## No player in play has a life left. One sitting out doesn't count: the stage
+## is lost unless someone rejoins, or is brought back in from the pause menu.
 func all_active_players_dead() -> bool:
 	for pid in range(2):
-		if player_active[pid] and player_lives[pid] >= 0:
+		if is_player_in_play(pid) and player_lives[pid] >= 0:
 			return false
 	return true
 
@@ -218,15 +245,14 @@ func set_secondary_weapon_to_max(player_id: int) -> void:
 func save_player_states() -> void:
 	for tank in get_tree().get_nodes_in_group("players"):
 		if tank is PlayerTank:
-			var pid: int = tank.player_id
-			player_hp[pid] = tank.health
-			# Collect active addons from the tank
-			var addons: Array = []
-			if tank.has_moon_shield:
-				addons.append("moon-shield")
-			if tank._current_utility_addon != "":
-				addons.append(tank._current_utility_addon)
-			player_addons[pid] = addons
+			save_player_state(tank)
+
+## [param tank]'s HP and add-ons, the state that lives on the tank; its levels
+## and weapon are kept here as they change.
+func save_player_state(tank: PlayerTank) -> void:
+	var pid: int = tank.player_id
+	player_hp[pid] = tank.health
+	player_addons[pid] = tank.get_addon_names()
 
 ## Set the active map pool by id. Loads the pool's stages into LevelData.
 func set_map_pool(pool_id: String) -> void:
@@ -241,6 +267,10 @@ func set_map_pool(pool_id: String) -> void:
 func freeze_all_enemies(duration: float) -> void:
 	enemies_frozen = true
 	freeze_timer = duration
+
+func freeze_all_players(duration: float) -> void:
+	players_frozen = true
+	players_freeze_timer = duration
 
 ## Save a snapshot of all player state at the start of a stage.
 ## Used by "Restart Stage" in the pause menu to restore state.
@@ -278,6 +308,7 @@ func restart_current_stage() -> void:
 	restore_stage_start_snapshot()
 	enemies_remaining = 20
 	enemies_frozen = false
+	players_frozen = false
 	player_kills = [{}, {}]
 	is_game_over = false
 	get_tree().change_scene_to_file("res://scenes/game.tscn")
@@ -307,6 +338,15 @@ func note_hit(player_id: int) -> void:
 func note_kill(player_id: int) -> void:
 	_combos[player_id] += 1
 	_combo_timers[player_id] = COMBO_WINDOW
+
+## [param player_id]'s hit chain going on now (0 once it has lapsed).
+func get_hit_chain(player_id: int) -> int:
+	return _hit_chains[player_id]
+
+## [param player_id]'s kill combo going on now, its latest kill included (0 once
+## it has lapsed).
+func get_combo(player_id: int) -> int:
+	return _combos[player_id]
 
 ## Ends every chain now, counting it: the stage is over. (The original stopped
 ## folding them at its mission screen, so a stage's last chain slipped into the

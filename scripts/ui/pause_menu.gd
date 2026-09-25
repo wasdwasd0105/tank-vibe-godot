@@ -1,14 +1,19 @@
 extends Control
 ## The pause screen, in the menus' style: RESUME, RESTART STAGE, MAIN MENU,
-## SETTINGS and QUIT GAME over the dimmed stage. SETTINGS changes the sound,
-## vibration, fullscreen and each player's controls (the same controls page as
-## the title screen) without leaving the stage; changes apply at once.
+## SETTINGS and QUIT GAME over the dimmed stage. In a two-player game, PLAYER 2
+## ON / OFF under RESTART STAGE lets one person play on while player 2 sits out,
+## their tank off the field and everything they had kept. SETTINGS changes the sound,
+## fullscreen, the menus' language and each player's controls and vibration (the
+## same controls page as the title screen) without leaving the stage; changes
+## apply at once.
 ##
 ## Esc or Start opens it. Esc, B or Start go back a page, and from the first page
 ## resume. Mouse, keys and controller work as in the other menus. It runs while
 ## the tree is paused (process mode ALWAYS).
 
 signal resume_requested
+## PLAYER 2 ON / OFF: [param player_id] in play ([param enabled]) or sitting out.
+signal player_enabled_requested(player_id: int, enabled: bool)
 signal restart_requested
 signal main_menu_requested
 signal exit_requested
@@ -19,6 +24,7 @@ const PAGE_FADE_TIME := 0.12
 
 @onready var _main_panel: Control = %MainPanel
 @onready var _resume_button: Button = %ResumeButton
+@onready var _p2_button: Button = %PlayerTwoButton
 @onready var _settings_button: Button = %SettingsButton
 @onready var _restart_button: Button = %RestartButton
 @onready var _main_menu_button: Button = %MainMenuButton
@@ -42,10 +48,11 @@ func _ready() -> void:
 	_nav = MenuFocus.new(get_viewport())
 	_common = CommonSettings.new(_settings_rows, true)
 	_common.controls_requested.connect(_open_controls)
-	for button: Button in [_resume_button, _settings_button, _restart_button, _main_menu_button,
-			_quit_button, _settings_back_button]:
+	for button: Button in [_resume_button, _p2_button, _settings_button, _restart_button,
+			_main_menu_button, _quit_button, _settings_back_button]:
 		button.mouse_entered.connect(button.grab_focus)   # hover focuses, as in every menu
 	_resume_button.pressed.connect(_resume)
+	_p2_button.pressed.connect(_toggle_p2)
 	_settings_button.pressed.connect(_open_settings)
 	_restart_button.pressed.connect(_leave.bind(restart_requested))
 	_main_menu_button.pressed.connect(_leave.bind(main_menu_requested))
@@ -57,6 +64,14 @@ func _ready() -> void:
 
 func set_can_open(value: bool) -> void:
 	_can_open = value
+
+
+## The menus' language changed (its settings page): PLAYER 2's line is built from
+## parts, so it is rebuilt; the rest translate themselves.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
+		_refresh_p2()
+		_common.refresh()
 
 
 func _input(event: InputEvent) -> void:
@@ -94,7 +109,26 @@ func _open() -> void:
 	visible = true
 	get_tree().paused = true
 	_common.refresh()
+	_refresh_p2()
 	_show_page(Page.MAIN, _resume_button)
+
+
+## PLAYER 2 shows only when the game has both players, and says whether player 2
+## is in play. It can't be switched off while player 1 is out of lives: nobody
+## would be left on the field.
+func _refresh_p2() -> void:
+	_p2_button.visible = GameManager.player_active[0] and GameManager.player_active[1]
+	var off: bool = GameManager.player_disabled[1]
+	_p2_button.text = tr("PLAYER 2: %s") % tr("OFF" if off else "ON")
+	_p2_button.disabled = not off and GameManager.player_lives[0] < 0
+
+
+## Takes player 2 out of the stage, or brings them back, and stays on the page.
+func _toggle_p2() -> void:
+	if _p2_button.disabled:
+		return
+	player_enabled_requested.emit(1, GameManager.player_disabled[1])
+	_refresh_p2()
 
 
 func _resume() -> void:
@@ -140,6 +174,8 @@ func _page_items(page: Page) -> Array[Control]:
 	match page:
 		Page.MAIN:
 			items.assign([_resume_button, _restart_button, _main_menu_button, _settings_button, _quit_button])
+			if _p2_button.visible:
+				items.insert(2, _p2_button)  # under RESTART STAGE
 		Page.SETTINGS:
 			items.assign(_common.rows())
 			items.append(_settings_back_button)
@@ -150,6 +186,8 @@ func _page_items(page: Page) -> Array[Control]:
 func _adjust(direction: int) -> void:
 	if _page == Page.SETTINGS:
 		_common.adjust(_nav.focus_owner(), direction)
+	elif _page == Page.MAIN and _nav.focus_owner() == _p2_button:
+		_toggle_p2()   # left / right flip it, as on the settings rows
 
 
 func _open_settings() -> void:

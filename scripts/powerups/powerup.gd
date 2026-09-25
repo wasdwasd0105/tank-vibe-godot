@@ -22,6 +22,9 @@ const SPRAY_MAX_DURATION: float = 0.4
 
 const S: int = 64  # sprite size (2x2 tiles)
 
+## "Hold Enemy" taken by an enemy holds the players for 10000 ticks.
+const ENEMY_HOLD_TIME: float = 7.5
+
 func setup(type: int, delay: float = 0.0, origin: Vector2 = Vector2.ZERO) -> void:
 	cookie_type = type
 	_pickup_delay = delay
@@ -37,6 +40,7 @@ func _ready() -> void:
 	# Set collision
 	set_collision_layer_value(7, true)  # powerups layer
 	set_collision_mask_value(3, true)   # player tanks
+	set_collision_mask_value(4, true)   # enemy tanks: they take some items too
 	# Update collision shape to 2x2 tile size
 	var col := get_node_or_null("CollisionShape2D")
 	if col:
@@ -94,13 +98,22 @@ func _process(delta: float) -> void:
 		if _pickup_delay <= 0.0:
 			_delay_just_expired = true
 
-	# After delay expires, check if player is already overlapping
+	# After delay expires, check if a tank is already overlapping
 	if _delay_just_expired:
 		_delay_just_expired = false
 		for body in get_overlapping_bodies():
-			if body is PlayerTank:
-				_on_body_entered(body)
+			_on_body_entered(body)
+			if is_queued_for_deletion():
 				return
+
+	# An enemy sitting on an item it could not take may be allowed it later (a
+	# MAX turns it into the stronger type): the original checked every frame.
+	if monitoring and _pickup_delay <= 0.0:
+		for body in get_overlapping_bodies():
+			if body is EnemyTank:
+				_on_body_entered(body)
+				if is_queued_for_deletion():
+					return
 
 	_lifetime += delta
 
@@ -124,24 +137,83 @@ func _process(delta: float) -> void:
 		queue_free()
 
 func _on_body_entered(body: Node2D) -> void:
+	if _pickup_delay > 0.0 or is_queued_for_deletion():
+		return  # cannot be picked up yet, or already taken this frame
 	if body is PlayerTank:
-		if _pickup_delay > 0.0:
-			return  # Cannot pick up yet
 		Events.cookie_collected.emit(cookie_type, body.player_id)
 		_apply_effect(body)
-		_show_words()
-		queue_free()
+	elif body is EnemyTank and _enemy_may_take(body):
+		Events.cookie_collected.emit(cookie_type, -1)
+		_apply_enemy_effect(body)
+	else:
+		return  # an enemy it isn't for just drives over it
+	_show_words()
+	queue_free()
 
 ## The item's name floats up where it was taken, as in the original (PickupText).
 func _show_words() -> void:
-	var tree := get_tree()
-	var effects := tree.get_first_node_in_group("effects_container")
-	var game := tree.get_first_node_in_group("game")
-	if effects == null or game == null:
-		return
-	var field: Node2D = game.get_level_manager()
-	PickupText.spawn(effects, cookie_type, global_position, field.global_position.x,
-			LevelData.GRID_WIDTH * LevelManager.TILE_SIZE)
+	var effects := get_tree().get_first_node_in_group("effects_container")
+	if effects:
+		PickupText.spawn(effects, cookie_type, global_position)
+
+## An enemy may take its own gun's item, and more once it is the stronger tank
+## of its pair or wears memory-save (EnemyTank.can_take_cookie).
+func _enemy_may_take(enemy: EnemyTank) -> bool:
+	return enemy.can_take_cookie(cookie_type)
+
+## Every enemy on the field, not counting any still appearing.
+func _enemies_on_field() -> Array[EnemyTank]:
+	var found: Array[EnemyTank] = []
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyTank
+		if enemy and not enemy.is_materializing and not enemy.is_queued_for_deletion():
+			found.append(enemy)
+	return found
+
+## What an item does taken by an enemy (Tank.exe's pickup with no player): the
+## upgrades and add-ons build the taker up, the two MAX items every enemy, and
+## the specials turn against the players.
+func _apply_enemy_effect(enemy: EnemyTank) -> void:
+	enemy.activate_pickup_invulnerability()
+	# The upgrades and add-ons free the taker from a mine's slow; the MAX items
+	# free every enemy they reach.
+	if cookie_type in EnemyTank.UPGRADE_ITEMS:
+		enemy.clear_mine_slow()
+	match cookie_type:
+		CookieData.CookieType.SPEED_UP:
+			enemy.item_speed_up()
+		CookieData.CookieType.HP_UP:
+			enemy.item_hp_up()
+		CookieData.CookieType.WEAPONS_UP:
+			enemy.item_gun_up()
+		CookieData.CookieType.STAR_UP:
+			enemy.item_speed_up()
+			enemy.item_hp_up()
+			enemy.item_gun_up()
+		CookieData.CookieType.MAX_UP:
+			for other in _enemies_on_field():
+				other.item_max_up()
+		CookieData.CookieType.ANTI_WATER_COOKIE, CookieData.CookieType.ANTI_ICE_COOKIE, \
+				CookieData.CookieType.MOON_SHIELD_COOKIE, CookieData.CookieType.MEMORY_SAVE_COOKIE:
+			enemy.set_addon(CookieData.ADDON_TO_COOKIE.find_key(cookie_type))
+		CookieData.CookieType.BULLETS_MAX:
+			for other in _enemies_on_field():
+				other.item_caisson_max()
+		CookieData.CookieType.INVINCIBLE_HELMET:
+			# "Who PA Who": a moon shield for every enemy, even one still appearing.
+			for other in get_tree().get_nodes_in_group("enemies"):
+				if other is EnemyTank and not other.is_queued_for_deletion():
+					other.set_addon(EnemyTank.ADDON_MOON_SHIELD)
+		CookieData.CookieType.FLAG_PROTECTION:
+			Events.base_guard_broken.emit()
+		CookieData.CookieType.TANK_WEB:
+			Events.freeze_players.emit(ENEMY_HOLD_TIME)
+		CookieData.CookieType.TANK_BOMB:
+			Events.bomb_all_players.emit()
+		CookieData.CookieType.TANK_LIFE:
+			Events.enemy_reinforcements.emit(enemy.tank_type_id)
+		# "Caisson" and a gun's own item gave an enemy a pack of ammo. The remake's
+		# enemies never run out, so there is nothing to add.
 
 ## A mine's slow wears off only through these, as in the original: any add-on
 ## cookie frees the tank that takes it, and MAX frees every player.

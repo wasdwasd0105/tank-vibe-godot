@@ -6,11 +6,16 @@ extends Node
 signal theme_changed(theme_name: String)
 
 const THEMES_DIR: String = "res://themes/"
+## The game's own stage pictures, shown where a theme brings none.
+const GAME_SCREENS_DIR := "res://assets/screens/"
 const DEFAULT_TANK_SPRITE: String = "res://assets/sprites/tanks/tank.png"
 const TANK_SPRITES_DIR: String = "res://assets/tank_sprites/"
 const TILE_SIZE: int = 32
 
-var current_theme: String = "default"
+## The game's one theme (Sean, 2026-09-25): no setting picks another.
+const GAME_THEME := "juezhuantanke"
+
+var current_theme: String = GAME_THEME
 var _theme_type: String = "procedural"   # "procedural" or "image"
 var _tile_scale: int = 1
 var _tank_mode: String = "modulate"      # "modulate" or "sprite"
@@ -99,30 +104,6 @@ func _ready() -> void:
 # =====================================================================
 # Public API
 # =====================================================================
-
-## List all valid theme folder names
-func get_available_themes() -> Array[String]:
-	var themes: Array[String] = []
-	var dir := DirAccess.open(THEMES_DIR)
-	if not dir:
-		themes.append("default")
-		return themes
-	dir.list_dir_begin()
-	var folder := dir.get_next()
-	while not folder.is_empty():
-		if dir.current_is_dir() and not folder.begins_with("."):
-			if FileAccess.file_exists(THEMES_DIR + folder + "/theme.cfg"):
-				themes.append(folder)
-		folder = dir.get_next()
-	dir.list_dir_end()
-	themes.sort()
-	# Ensure "default" is first
-	if themes.has("default"):
-		themes.erase("default")
-		themes.push_front("default")
-	elif themes.is_empty():
-		themes.append("default")
-	return themes
 
 ## Load and activate a theme by folder name
 func load_theme(theme_name: String) -> void:
@@ -236,31 +217,36 @@ func get_theme_dir() -> String:
 ## found in the theme's [screens] dir whatever its case; null when the theme
 ## has no screens or no such picture.
 func get_stage_picture(file_name: String) -> Texture2D:
-	var rel_dir: String = get_theme_setting("screens", "dir", "")
-	if rel_dir.is_empty() or file_name.is_empty():
+	if file_name.is_empty():
 		return null
-	var dir := get_theme_dir() + rel_dir
 	var wanted := file_name.get_file().to_lower()
-	for listed in DirAccess.get_files_at(dir):
-		# An exported game lists the import stubs ("SI01.jpg.import") instead.
-		var name := listed.trim_suffix(".import") if listed.ends_with(".import") else listed
-		if name.to_lower() == wanted:
-			return load(dir + name) as Texture2D
+	var rel_dir: String = get_theme_setting("screens", "dir", "")
+	if not rel_dir.is_empty():
+		var dir := get_theme_dir() + rel_dir
+		for listed in DirAccess.get_files_at(dir):
+			# An exported game lists the import stubs ("SI01.jpg.import") instead.
+			var name := listed.trim_suffix(".import") if listed.ends_with(".import") else listed
+			if name.to_lower() == wanted:
+				return load(dir + name) as Texture2D
+	# The game's own: one for each of the original's names, SI00 to SI09.
+	var digit := wanted.trim_prefix("si0").get_basename()
+	if wanted.begins_with("si0") and digit.length() == 1 and digit.is_valid_int():
+		return _game_picture("stage_intro_" + digit)
 	return null
 
 ## A picture from the theme's [screens] section ("stage_win", "stage_lose",
-## "results_panel"), or null when the theme has none.
+## "results_panel"), else the game's own if it has one (tools/make_screens.py
+## draws them), else null.
 func get_screen_texture(key: String) -> Texture2D:
 	var rel_path: String = get_theme_setting("screens", key, "")
-	if rel_path.is_empty() or not ResourceLoader.exists(get_theme_dir() + rel_path):
-		return null
-	return load(get_theme_dir() + rel_path) as Texture2D
+	if not rel_path.is_empty() and ResourceLoader.exists(get_theme_dir() + rel_path):
+		return load(get_theme_dir() + rel_path) as Texture2D
+	return _game_picture(key)
 
-## Get the display name from theme.cfg
-func get_theme_display_name() -> String:
-	if _config:
-		return _config.get_value("theme", "name", current_theme)
-	return current_theme
+## The game's own stage picture [param name] (assets/screens), or null.
+func _game_picture(name: String) -> Texture2D:
+	var path := GAME_SCREENS_DIR + name + ".png"
+	return load(path) as Texture2D if ResourceLoader.exists(path) else null
 
 # =====================================================================
 # Image-based theme loading

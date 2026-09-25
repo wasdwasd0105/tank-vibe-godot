@@ -236,6 +236,7 @@ var _state_fx_time: float = 0.0
 
 static var _shield_frames: Array[Texture2D] = []
 static var _freeze_frames: Array[Texture2D] = []
+static var _thaw_frames: Array[Texture2D] = []
 
 ## Cached loader for a numbered effect strip under assets/sprites/effects/.
 static func _load_fx_frames(stem: String, count: int) -> Array[Texture2D]:
@@ -256,6 +257,12 @@ static func get_freeze_frames() -> Array[Texture2D]:
 	if _freeze_frames.is_empty():
 		_freeze_frames = _load_fx_frames("freeze/freeze", 8)
 	return _freeze_frames
+
+## The frost without its ring (Tank_T row 3): a hold running out.
+static func get_thaw_frames() -> Array[Texture2D]:
+	if _thaw_frames.is_empty():
+		_thaw_frames = _load_fx_frames("thaw/thaw", 8)
+	return _thaw_frames
 
 ## Show (creating on first use) the state overlay with [param frames]. Drawn on
 ## top of the tank body by default so the wreath reads over it.
@@ -319,6 +326,25 @@ func try_move(new_direction: Vector2) -> void:
 func stop_moving() -> void:
 	velocity = Vector2.ZERO
 	is_moving = false
+
+## One step of a tank held by "Hold Enemy". The hold stops a tank's commands,
+## never its motion: one that was moving glides on at the speed it had, straight
+## ahead, until a wall, water or a tank of [param opponents] blocks it, then
+## stays put for the rest of the hold. No driving, turning or firing meanwhile
+## (Tank.exe runs its movement step on, 0x00492244, while the hold skips the
+## commands that would brake it, 0x00494d08 / 0x004949fd).
+func glide_while_held(opponents: String) -> void:
+	if velocity == Vector2.ZERO:
+		return
+	var motion := velocity * get_physics_process_delta_time()
+	if _opponent_ahead(opponents, velocity.normalized(), maxf(motion.length(), 2.0)):
+		stop_moving()
+		return
+	# Straight on, never sliding along what it meets: the original never moved a
+	# tank sideways. Blocked, it stays there for the rest of the hold.
+	if move_and_collide(motion):
+		stop_moving()
+	clamp_to_playfield()
 
 ## True if a tank from [param group] ("players" or "enemies") is in the way of a
 ## [param distance] px step along [param direction]. Players and bots never

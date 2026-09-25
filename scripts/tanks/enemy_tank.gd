@@ -72,12 +72,47 @@ const TYPE_ADDONS: Dictionary = {
 	24: [ADDON_MEMORY_SAVE],
 }
 
+# --- Bonus items. An enemy that drives over an item it may take gets it, as a
+# player would; one it may not, it drives over and leaves lying there (Tank.exe's
+# pickup filter, 0x0049595b). Nothing makes an enemy seek items out. ---
+
+## The upgrades and add-ons: the original's items 0-8.
+const UPGRADE_ITEMS: Array = [
+	CookieData.CookieType.SPEED_UP, CookieData.CookieType.HP_UP,
+	CookieData.CookieType.WEAPONS_UP, CookieData.CookieType.STAR_UP,
+	CookieData.CookieType.MAX_UP, CookieData.CookieType.ANTI_WATER_COOKIE,
+	CookieData.CookieType.ANTI_ICE_COOKIE, CookieData.CookieType.MOON_SHIELD_COOKIE,
+	CookieData.CookieType.MEMORY_SAVE_COOKIE,
+]
+## The specials and the two ammo items: the original's items 13-19.
+const SPECIAL_ITEMS: Array = [
+	CookieData.CookieType.INVINCIBLE_HELMET, CookieData.CookieType.FLAG_PROTECTION,
+	CookieData.CookieType.TANK_WEB, CookieData.CookieType.TANK_BOMB,
+	CookieData.CookieType.TANK_LIFE, CookieData.CookieType.BULLETS_MAX,
+	CookieData.CookieType.BULLET_REFILL,
+]
+## Taking an item leaves the tank untouchable for 1000 ticks, blinking.
+const PICKUP_INVULNERABILITY: float = 0.75
+## The most HP items can build an enemy up to.
+const MAX_ITEM_HP: int = 8
+## The best gun level items can build an enemy up to.
+const MAX_ITEM_GUN: int = 3
+## A speed item's step, and the most speed items can build an enemy up to.
+const ITEM_SPEED_STEP: float = 32.0
+const ITEM_MAX_SPEED: float = 192.0
+var _invulnerable_timer: float = 0.0
+
 var addons: Array = []
 var has_moon_shield: bool = false
 var has_anti_ice: bool = false
 var _shield_sprite: Sprite2D = null  # Reference for front-positioned shield
 var _addon_sprites: Array = []  # All addon Sprite2D nodes
 var _frost_shown: bool = false  # freeze-frost overlay currently on (tracks GameManager.enemies_frozen)
+## The water tiles under the tank when it lost anti-water. The original tested
+## only the tiles a tank drove into, so these let it be until it has left them:
+## stranded mid-lake it stays put, near the shore it can drive out, and new
+## water stops it as ever. (Godot would otherwise shove it out of the water.)
+var _afloat_on: Array = []
 
 ## Add-on size relative to TANK_SIZE. Where each one sits is BaseTank's
 ## _layout_addons, as the original placed them.
@@ -145,14 +180,8 @@ func _ready() -> void:
 	set_collision_mask_value(3, false)  # player_tanks (one-directional: player blocks on enemy, not vice versa)
 	set_collision_mask_value(5, true)   # player_bullets
 	# Apply tank sprite by type ID
+	_apply_type_look()
 	if sprite:
-		var enemy_key := "e%d" % tank_type_id
-		var theme_tex := ThemeManager.get_tank_texture(enemy_key)
-		if theme_tex:
-			sprite.texture = theme_tex
-		# Dynamically scale sprite to fit 64x64 (2x2 tile) tank size
-		var tex_size := sprite.texture.get_size()
-		sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
 		sprite.modulate = Color.WHITE
 	# Apply addons for this tank type
 	_apply_addons()
@@ -161,6 +190,27 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	super(delta)  # base: addons, damage flash, state-overlay frame tick
 	_sync_frost_overlay()
+	_tick_invulnerability(delta)
+
+## Counts down the invulnerability an item gave, blinking the tank meanwhile:
+## drawn one frame, gone the next, as the original drew a tank with under 3000
+## ticks of it left (its DoDraw, 0x0049208c).
+func _tick_invulnerability(delta: float) -> void:
+	if _invulnerable_timer > 0.0:
+		_invulnerable_timer -= delta
+	if is_materializing:
+		return  # still hidden behind its spawn burst
+	if _invulnerable_timer > 0.0:
+		visible = not visible
+	elif not visible:
+		visible = true
+
+func is_invulnerable() -> bool:
+	return _invulnerable_timer > 0.0
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PAUSED and not is_materializing:
+		visible = true  # never sit out a pause on a blank blink frame
 
 ## Show the frost wreath (Tank_T row 2) while the global freeze is active, hide
 ## it otherwise. Frame advance is handled by the base state-overlay tick.
@@ -173,6 +223,7 @@ func _sync_frost_overlay() -> void:
 		_frost_shown = false
 
 func _physics_process(delta: float) -> void:
+	_tick_afloat()
 	if is_materializing:
 		velocity = Vector2.ZERO
 		return
@@ -180,7 +231,7 @@ func _physics_process(delta: float) -> void:
 		_update_flying(delta)
 		return
 	if GameManager.enemies_frozen:
-		velocity = Vector2.ZERO
+		glide_while_held("players")
 		return
 
 	_ai_update(delta)
@@ -642,42 +693,51 @@ func _shoot_special_rapid() -> bool:
 	return true
 
 func _apply_addons() -> void:
-	if not TYPE_ADDONS.has(tank_type_id):
-		return
-	addons = TYPE_ADDONS[tank_type_id].duplicate()
-	for addon_name in addons:
-		# Add visual overlay (prefer a 4-frame animation for anti-water / memory-save).
-		var frames: Array = ThemeManager.get_addon_frames(addon_name)
-		var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
-		if tex:
-			var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0 })
-			var addon_sprite := Sprite2D.new()
-			tag_addon_sprite(addon_sprite, addon_name)
-			addon_sprite.texture = tex
-			addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
-			var tex_size := tex.get_size()
-			var addon_size: float = TANK_SIZE * cfg["scale"]
-			addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
-			add_child(addon_sprite)
-			if not frames.is_empty():
-				register_animated_addon(addon_sprite, frames)
-			# Draw order via sibling order (all at z 0), back -> front:
-			# other addons -> moon shield -> tank body (on top, fully visible).
-			var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
-			if addon_name == ADDON_MOON_SHIELD:
-				move_child(addon_sprite, sprite_idx)  # just behind the tank body
-				_shield_sprite = addon_sprite
-			else:
-				move_child(addon_sprite, 0)  # behind everything
-			_addon_sprites.append(addon_sprite)
-		# Apply gameplay effects
-		match addon_name:
-			ADDON_MOON_SHIELD:
-				has_moon_shield = true
-			ADDON_ANTI_WATER:
-				set_collision_mask_value(2, false)  # Can cross water
-			ADDON_ANTI_ICE:
-				has_anti_ice = true
+	for addon_name in TYPE_ADDONS.get(tank_type_id, []):
+		_add_addon(addon_name)
+
+func _add_addon(addon_name: String) -> void:
+	addons.append(addon_name)
+	# Add visual overlay (prefer a 4-frame animation for anti-water / memory-save).
+	var frames: Array = ThemeManager.get_addon_frames(addon_name)
+	var tex: Texture2D = frames[0] if not frames.is_empty() else ThemeManager.get_addon_texture(addon_name)
+	if tex:
+		var cfg: Dictionary = ADDON_CONFIG.get(addon_name, { "scale": 1.0 })
+		var addon_sprite := Sprite2D.new()
+		tag_addon_sprite(addon_sprite, addon_name)
+		addon_sprite.texture = tex
+		addon_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST  # crisp, no magenta-key blur
+		var tex_size := tex.get_size()
+		var addon_size: float = TANK_SIZE * cfg["scale"]
+		addon_sprite.scale = Vector2(addon_size / tex_size.x, addon_size / tex_size.y)
+		add_child(addon_sprite)
+		if not frames.is_empty():
+			register_animated_addon(addon_sprite, frames)
+		# Draw order via sibling order (all at z 0), back -> front:
+		# other addons -> moon shield -> tank body (on top, fully visible).
+		var sprite_idx := sprite.get_index() if sprite else get_child_count() - 1
+		if addon_name == ADDON_MOON_SHIELD:
+			move_child(addon_sprite, sprite_idx)  # just behind the tank body
+			_shield_sprite = addon_sprite
+		else:
+			move_child(addon_sprite, 0)  # behind everything
+		_addon_sprites.append(addon_sprite)
+		_layout_addons()
+	# Apply gameplay effects
+	match addon_name:
+		ADDON_MOON_SHIELD:
+			has_moon_shield = true
+		ADDON_ANTI_WATER:
+			set_collision_mask_value(2, false)  # Can cross water
+		ADDON_ANTI_ICE:
+			has_anti_ice = true
+
+## Puts [param addon_name] on in place of whatever add-on the tank wore: the
+## original gave a tank one add-on slot.
+func set_addon(addon_name: String) -> void:
+	for old in addons.duplicate():
+		_remove_addon(old)
+	_add_addon(addon_name)
 
 ## Check if a bullet from the given direction is blocked by moon-shield.
 ## Returns true if the bullet hits the tank's FRONT and the shield blocks it.
@@ -699,11 +759,83 @@ func lose_addon(addon_name: String) -> void:
 	if addon_name in addons:
 		_remove_addon(addon_name)
 
+## True if this tank may take a [param cookie_type] item: its own gun's
+## ("Caisson" for the plain gun); an upgrade or add-on if it is the stronger
+## tank of its pair (the even ids, the original's odd types); and those and the
+## specials while it wears memory-save. Never another gun's, nor a score item.
+func can_take_cookie(cookie_type: int) -> bool:
+	if is_materializing or is_flying or health <= 0 or is_queued_for_deletion():
+		return false
+	var own_gun: int = CookieData.WEAPON_TO_COOKIE.get(special_weapon_type, CookieData.CookieType.BULLET_REFILL)
+	if cookie_type == own_gun:
+		return true
+	var memory := ADDON_MEMORY_SAVE in addons
+	if cookie_type in UPGRADE_ITEMS:
+		return memory or tank_type_id % 2 == 0
+	return memory and cookie_type in SPECIAL_ITEMS
+
+## Each item adds its 1000 ticks to whatever is left.
+func activate_pickup_invulnerability() -> void:
+	_invulnerable_timer += PICKUP_INVULNERABILITY
+
+## "Armor Up": one more HP, up to 8 ([param points] at once for "MAX Caisson
+## Armor"). max_health stays the HP it started with: the drop rules go by that.
+func item_hp_up(points: int = 1) -> void:
+	health = mini(health + points, maxi(MAX_ITEM_HP, health))
+
+## "Power Up": the special weapon one level up, to 3.
+func item_gun_up() -> void:
+	special_weapon_level = mini(special_weapon_level + 1, maxi(MAX_ITEM_GUN, special_weapon_level))
+
+## "Speed Up": one speed step faster.
+func item_speed_up() -> void:
+	move_speed = minf(move_speed + ITEM_SPEED_STEP, maxf(ITEM_MAX_SPEED, move_speed))
+
+## MAX, taken by any enemy, for each on the field: the stronger type of its
+## pair, a speed step, a gun level, and memory-save if it wore no add-on. Its
+## HP stays as it is.
+func item_max_up() -> void:
+	promote_type()
+	clear_mine_slow()
+	item_speed_up()
+	item_gun_up()
+	if addons.is_empty():
+		_add_addon(ADDON_MEMORY_SAVE)
+
+## "MAX Caisson Armor", taken by any enemy, for each on the field: the stronger
+## type of its pair and two more HP (and, in the original, a pack of ammo).
+func item_caisson_max() -> void:
+	promote_type()
+	clear_mine_slow()
+	item_hp_up(2)
+
+## MAX and "MAX Caisson Armor" make the weaker tank of each pair (the odd ids,
+## the original's even types) the stronger one: its look, and the items it may
+## take from then on.
+func promote_type() -> void:
+	if tank_type_id % 2 == 0:
+		return
+	tank_type_id += 1
+	_apply_type_look()
+
+## The tank's picture for its type, from the theme.
+func _apply_type_look() -> void:
+	if not sprite:
+		return
+	var theme_tex := ThemeManager.get_tank_texture("e%d" % tank_type_id)
+	if theme_tex:
+		sprite.texture = theme_tex
+	# Dynamically scale sprite to fit 64x64 (2x2 tile) tank size
+	var tex_size := sprite.texture.get_size()
+	sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
+
 func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	var attacker := hit_by
 	hit_by = -1
 	if health <= 0:
 		return  # already destroyed this frame: nothing more to take
+	if is_invulnerable():
+		return  # the original's Damage ignored an invulnerable tank
 	health -= 1
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
@@ -717,6 +849,8 @@ func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
 	# Addon drop on 2nd hit: only if tank started with hp>2 and has addon(s)
 	if _hits_taken == 2 and max_health > 2 and not addons.is_empty():
 		_drop_addon_cookie()
+	elif health > 0 and not is_flying:
+		_lose_an_upgrade()
 	if attacker >= 0:
 		GameManager.note_hit(attacker)
 	if health <= 0:
@@ -737,6 +871,22 @@ func destroy() -> void:
 	_spawn_explosion()
 	queue_free()
 
+## A hit it survives, on the ground, knocks one upgrade the tank has above its
+## type's own back out, flung across the field: a gun level first ("Power Up"),
+## else a speed step ("Speed Up"). So what an enemy took can be won back
+## (Tank.exe's Damage, 0x00492763).
+func _lose_an_upgrade() -> void:
+	if special_weapon_level > CookieData.get_enemy_weapon_level(tank_type_id, GameManager.difficulty):
+		special_weapon_level -= 1
+		_spawn_cookie_at_position(CookieData.CookieType.WEAPONS_UP)
+	elif move_speed > _type_speed():
+		move_speed = maxf(move_speed - ITEM_SPEED_STEP, _type_speed())
+		_spawn_cookie_at_position(CookieData.CookieType.SPEED_UP)
+
+## Its type's own speed.
+func _type_speed() -> float:
+	return SPEED_MAP.get(TYPE_STATS.get(tank_type_id, TYPE_STATS[1])["speed"], 96.0)
+
 func _drop_addon_cookie() -> void:
 	if addons.is_empty():
 		return
@@ -752,19 +902,40 @@ func _remove_addon(addon_name: String) -> void:
 	match addon_name:
 		ADDON_MOON_SHIELD:
 			has_moon_shield = false
-			if _shield_sprite and is_instance_valid(_shield_sprite):
-				_shield_sprite.queue_free()
-				_addon_sprites.erase(_shield_sprite)
-				_shield_sprite = null
+			_shield_sprite = null
 		ADDON_ANTI_WATER:
 			set_collision_mask_value(2, true)  # Re-enable water collision
+			_stay_afloat()
 		ADDON_ANTI_ICE:
 			has_anti_ice = false
-	# Remove the addon sprite
-	if not _addon_sprites.is_empty():
-		var spr: Sprite2D = _addon_sprites.pop_back()
-		if spr and is_instance_valid(spr):
+	# Remove that add-on's own sprite (tagged by tag_addon_sprite).
+	for spr in _addon_sprites.duplicate():
+		if is_instance_valid(spr) and spr.get_meta(&"addon", "") == addon_name:
+			_addon_sprites.erase(spr)
 			spr.queue_free()
+			break
+
+func _stay_afloat() -> void:
+	var lm := _get_level_manager()
+	if lm == null:
+		return
+	for body in lm.water_bodies_under(global_position):
+		if body not in _afloat_on:
+			add_collision_exception_with(body)
+			_afloat_on.append(body)
+
+## Lets the water the tank has driven off block it again.
+func _tick_afloat() -> void:
+	if _afloat_on.is_empty():
+		return
+	var lm := _get_level_manager()
+	var under: Array = lm.water_bodies_under(global_position) if lm else []
+	for body in _afloat_on.duplicate():
+		if is_instance_valid(body) and body in under:
+			continue
+		if is_instance_valid(body):
+			remove_collision_exception_with(body)
+		_afloat_on.erase(body)
 
 func _spawn_cookie_at_position(cookie_type: int) -> void:
 	var cookie_scene := preload("res://scenes/powerups/powerup.tscn")

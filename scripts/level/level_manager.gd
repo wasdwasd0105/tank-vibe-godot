@@ -462,6 +462,14 @@ func _revert_fortification() -> void:
 		_hard_brick_hp.erase(pos)
 		_place_fg_tile(pos, _original_base_walls[pos])  # restore the map's initial tile
 
+## An enemy took "Flag On Guard": the players' fortification, if the base has
+## one, ends at once. The original ran every guard timer 30000 ticks on, all
+## that one pickup gives the wall ring, so only a ring stacked from several
+## pickups outlasted it; the remake's fortification never stacks.
+func break_base_guard() -> void:
+	if _is_fortified:
+		_revert_fortification()
+
 func _set_flag_invincible(value: bool) -> void:
 	var flag := get_node_or_null("Eagle")
 	if flag is BaseFlag:
@@ -662,6 +670,19 @@ func is_water_at_world(world_pos: Vector2) -> bool:
 		return false
 	return LevelData.get_tile_category(_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.WATER
 
+## The bodies of the water tiles a tank centred at [param world_pos] sits on.
+func water_bodies_under(world_pos: Vector2) -> Array:
+	var found: Array = []
+	var edge := Vector2(BaseTank.BODY_EDGE, BaseTank.BODY_EDGE)
+	var from := world_to_tile(world_pos - edge)
+	var to := world_to_tile(world_pos + edge)
+	for y in range(from.y, to.y + 1):
+		for x in range(from.x, to.x + 1):
+			var tile := Vector2i(x, y)
+			if _is_water_tile(tile) and is_instance_valid(_bg_tile_data[tile].get("body")):
+				found.append(_bg_tile_data[tile]["body"])
+	return found
+
 ## True if every tile in the [param size] block whose top-left is [param top_left]
 ## is in-bounds and free of solid walls.
 func is_area_clear(top_left: Vector2i, size: Vector2i) -> bool:
@@ -669,6 +690,18 @@ func is_area_clear(top_left: Vector2i, size: Vector2i) -> bool:
 		for ox in range(size.x):
 			var t := top_left + Vector2i(ox, oy)
 			if not _is_in_bounds(t) or is_tile_solid(t) or t in _eagle_tiles:
+				return false
+	return true
+
+## True if an enemy may come in on the [param size] block whose top-left is
+## [param top_left]: clear (see is_area_clear) and with no water either, as the
+## original's spawn required (0x4981f7); grass and ice are fine.
+func is_open_ground(top_left: Vector2i, size: Vector2i) -> bool:
+	if not is_area_clear(top_left, size):
+		return false
+	for oy in range(size.y):
+		for ox in range(size.x):
+			if _is_water_tile(top_left + Vector2i(ox, oy)):
 				return false
 	return true
 

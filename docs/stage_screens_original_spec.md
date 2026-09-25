@@ -165,11 +165,18 @@ The three fonts: **Text3** (gold, 18×36 cells, `tank_font`), **Text** (white, 1
 ## Remake notes
 
 - The overlay covers the 1280×960 playfield at (160,16), which is the original's screen at 2×. The remake's HUD sits in side panels outside it.
-- **Pictures** come from the theme's `[screens]` section:
-  - the stage intro pictures are in its `dir`;
-  - `stage_win`, `stage_lose` and `results_panel` are named separately.
+- **Pictures** are the game's own since 2026-09-25, drawn by `tools/make_screens.py` into `assets/screens/` as 320×240 dithered pixel art, shown at 4×. The original's photos are gone from the JueZhuanTanKe theme.
+  - **Stage intros:** one for each of the original's names, SI00–SI09, so the stages keep their pairing: 0 midnight searchlights, 1 dawn, 2 desert convoy, 3 red dusk over ruins, 4 storm, 5 snow, 6 aurora, 7 burning front, 8 twilight city, 9 golden hour. The "Stage NN" drop stays in the sky and the caption over the horizon; the tanks keep low.
+  - **Stage won** (`stage_win`): a gold-on-navy blueprint of the game's tank, a nod to the original's. The bottom strip is left clear, because each player's "Reward" lands under their panel there.
+  - **Stage lost** (`stage_lose`): the base burning at night, with smoke, flames, broken brick walls and a torn flag.
+  - A theme can still bring its own: its `[screens]` `dir` for the intros (found by the Stage.dat name, whatever its case), and `stage_win` / `stage_lose`.
+  - A name the original never had (the "Boxes" record's SI5.JPG) still finds none, so that intro plays over the bare map as in the original.
+- **The results panel** is the remake's own box, in the menus' style, laid out on the original's 264×307 panel so the counts fall where the original's did:
+  - the menus' panel, with "RESULTS" in gold and the player's "I P" / "II P" tag in the HUD's colours. With the menus in Chinese the header reads 战斗成绩 and the total 总计, the original panel's words (Sean, 2026-09-25); the rest of the stage screens stay English;
+  - a band for MaxHits / MaxCombos and one per kill row, with icons from the theme's tank sprites;
+  - gold rules under the header and over "TOTAL".
 
-  A theme without them shows the intro over the bare map. Its stage end closes a plain dark backdrop over the field and draws the panel's layout itself, with icons from the theme's tank sprites.
+  The JueZhuanTanKe theme's picture of the original's StageScore panel (with "战斗成绩") was dropped on 2026-09-25. A theme can still name a `results_panel` picture to show instead.
 - **Kill credit:** every kill goes to the player whose weapon dealt the last point, and it counts for that player's score, panel and combo.
   - Shells carry their owner.
   - Fire fields and their tiles, mines, blasts and the bomb pickup carry it too.

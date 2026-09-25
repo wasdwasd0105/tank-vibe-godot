@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/hold_glide_test.gd" id="1_hold_glide_test"]
+
+[node name="HoldGlideTest" type="Node"]
+script = ExtResource("1_hold_glide_test")

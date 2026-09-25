@@ -171,6 +171,7 @@ func load_and_apply() -> void:
 	if err != OK:
 		# No saved config — use defaults
 		_config = ConfigFile.new()
+	_split_vibration()
 
 	# Apply key and controller bindings
 	_load_pad_slots()
@@ -415,18 +416,21 @@ func is_pad_code_reserved(code: String) -> bool:
 	return ev is InputEventJoypadButton and ev.button_index in PAD_RESERVED_BUTTONS
 
 ## Display name of a slot value or code: "D-pad", "L-stick", "A", "RT"..., and a
-## dash for an empty slot.
+## dash for an empty slot. Words are in the menus' language ("十字键"); the
+## letters and the names printed on the pads stay as they are.
 func get_pad_name(value: String) -> String:
 	if PAD_MOVE_SET_NAMES.has(value):
-		return PAD_MOVE_SET_NAMES[value]
+		return tr(PAD_MOVE_SET_NAMES[value])
 	var ev := _pad_event(value)
 	if ev is InputEventJoypadButton:
-		return PAD_BUTTON_NAMES.get(ev.button_index, "Button %d" % ev.button_index)
+		if PAD_BUTTON_NAMES.has(ev.button_index):
+			return tr(PAD_BUTTON_NAMES[ev.button_index])
+		return tr("Button %d") % ev.button_index
 	if ev is InputEventJoypadMotion:
 		var positive: bool = ev.axis_value > 0.0
 		if PAD_AXIS_NAMES.has(ev.axis):
 			return PAD_AXIS_NAMES[ev.axis][1 if positive else 0]
-		return "Axis %d%s" % [ev.axis, "+" if positive else "-"]
+		return tr("Axis %d%s") % [ev.axis, "+" if positive else "-"]
 	return PAD_NONE_NAME
 
 ## [param player] and whoever shares their controller.
@@ -516,19 +520,12 @@ func _pad_event(code: String) -> InputEvent:
 	return null
 
 # =====================================================================
-# Theme / Map persistence
+# Map persistence
 # =====================================================================
-
-func save_theme(theme_name: String) -> void:
-	_config.set_value("game", "theme", theme_name)
-	_config.save(_save_path)
 
 func save_map_pool(pool_id: String) -> void:
 	_config.set_value("game", "map_pool", pool_id)
 	_config.save(_save_path)
-
-func get_saved_theme() -> String:
-	return _config.get_value("game", "theme", "")
 
 func get_saved_map_pool() -> String:
 	return _config.get_value("game", "map_pool", "")
@@ -546,6 +543,14 @@ func save_difficulty(value: int) -> void:
 
 func get_saved_difficulty() -> int:
 	return _config.get_value("game", "difficulty", 1)
+
+## The menus' language, a locale code ("en", "zh_CN"); see Localization.
+func save_language(code: String) -> void:
+	_config.set_value("game", "language", code)
+	_config.save(_save_path)
+
+func get_saved_language() -> String:
+	return _config.get_value("game", "language", "")
 
 ## Folder a file was last imported from, per purpose ("save", "map"), so the
 ## file pickers reopen there.
@@ -578,31 +583,32 @@ func get_saved_music_volume() -> float:
 # Controller vibration
 # =====================================================================
 
-func save_vibration(enabled: bool) -> void:
-	_config.set_value("controller", "vibration", enabled)
+## True when [param player]'s ("p1", "p2") controller rumbles: on unless the
+## player switched it off on their controls page.
+func get_vibration(player: String) -> bool:
+	var enabled: Variant = _config.get_value("controller", player + "_vibration", true)
+	return enabled if enabled is bool else true
+
+func set_vibration(player: String, enabled: bool) -> void:
+	_config.set_value("controller", player + "_vibration", enabled)
 	_config.save(_save_path)
 
-func get_saved_vibration() -> bool:
-	return _config.get_value("controller", "vibration", true)
+## Vibration used to be one switch for both players; each starts from it.
+func _split_vibration() -> void:
+	if not _config.has_section_key("controller", "vibration"):
+		return
+	var enabled: Variant = _config.get_value("controller", "vibration")
+	for player in PLAYERS:
+		if not _config.has_section_key("controller", player + "_vibration"):
+			_config.set_value("controller", player + "_vibration", enabled)
+	_config.erase_section_key("controller", "vibration")
 
-## Rumbles player [param player_id]'s controller (the first controller for P1,
-## the second for P2) if it is plugged in and vibration is on. [param weak] and
+## Rumbles player [param player_id]'s controller (P1's for 0, P2's for 1) if it
+## is plugged in and that player has vibration on. [param weak] and
 ## [param strong] drive the light and heavy motors, 0 to 1.
 func rumble(player_id: int, weak: float, strong: float, duration: float) -> void:
-	if not get_saved_vibration() or player_id < 0 or player_id >= PLAYERS.size():
+	if player_id < 0 or player_id >= PLAYERS.size() or not get_vibration(PLAYERS[player_id]):
 		return
 	var device := get_pad_device(PLAYERS[player_id])
 	if device in Input.get_connected_joypads():
 		Input.start_joy_vibration(device, weak, strong, duration)
-
-# =====================================================================
-# Stats persistence
-# =====================================================================
-
-func get_games_played() -> int:
-	return _config.get_value("stats", "games_played", 0)
-
-func increment_games_played() -> void:
-	var count: int = get_games_played() + 1
-	_config.set_value("stats", "games_played", count)
-	_config.save(_save_path)

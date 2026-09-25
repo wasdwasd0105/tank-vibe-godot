@@ -1,8 +1,9 @@
 class_name CommonSettings
 extends RefCounted
 ## The settings the title screen and the pause menu both offer, as rows added to
-## a settings list: SFX and music volume, controller vibration, optionally
-## fullscreen, and a row per player that opens their controls page.
+## a settings list: SFX and music volume, optionally fullscreen, the menus'
+## language, and a row per player that opens their controls page (keys,
+## controller buttons, vibration).
 ##
 ## The host keeps this object, puts [method rows] in its navigation, passes
 ## left / right on them through [method adjust], and opens the controls page on
@@ -12,8 +13,8 @@ signal controls_requested(player: String)
 
 var sfx_row: Button
 var music_row: Button
-var vibration_row: Button
 var fullscreen_row: Button   # null unless asked for
+var language_row: Button
 var p1_row: Button
 var p2_row: Button
 
@@ -21,10 +22,10 @@ var p2_row: Button
 func _init(container: VBoxContainer, with_fullscreen: bool) -> void:
 	sfx_row = _add_value_row(container, "SFX VOLUME", _cycle_sfx_volume)
 	music_row = _add_value_row(container, "MUSIC VOLUME", _cycle_music_volume)
-	vibration_row = _add_value_row(container, "VIBRATION", _toggle_vibration)
 	if with_fullscreen:
 		fullscreen_row = _add_value_row(container, "FULLSCREEN", _toggle_fullscreen)
 		WindowManager.fullscreen_changed.connect(_on_fullscreen_changed)
+	language_row = _add_value_row(container, "LANGUAGE", _cycle_language)
 	p1_row = _add_controls_row(container, "P1 CONTROLS", "p1")
 	p2_row = _add_controls_row(container, "P2 CONTROLS", "p2")
 	refresh()
@@ -32,9 +33,10 @@ func _init(container: VBoxContainer, with_fullscreen: bool) -> void:
 
 ## The rows, top to bottom, for the host's navigation.
 func rows() -> Array[Control]:
-	var list: Array[Control] = [sfx_row, music_row, vibration_row]
+	var list: Array[Control] = [sfx_row, music_row]
 	if fullscreen_row:
 		list.append(fullscreen_row)
+	list.append(language_row)
 	list.append(p1_row)
 	list.append(p2_row)
 	return list
@@ -52,10 +54,10 @@ func adjust(focused: Control, direction: int) -> bool:
 		_cycle_sfx_volume(direction)
 	elif focused == music_row:
 		_cycle_music_volume(direction)
-	elif focused == vibration_row:
-		_toggle_vibration(direction)
 	elif fullscreen_row and focused == fullscreen_row:
 		_toggle_fullscreen(direction)
+	elif focused == language_row:
+		_cycle_language(direction)
 	else:
 		return false
 	return true
@@ -70,9 +72,10 @@ func refresh() -> void:
 	MenuRows.arrow(sfx_row, "Right").disabled = sfx >= 1.0
 	MenuRows.arrow(music_row, "Left").disabled = music <= 0.0
 	MenuRows.arrow(music_row, "Right").disabled = music >= 1.0
-	MenuRows.value_label(vibration_row).text = "ON" if InputSettings.get_saved_vibration() else "OFF"
 	if fullscreen_row:
 		MenuRows.value_label(fullscreen_row).text = "ON" if WindowManager.is_fullscreen() else "OFF"
+	# Each language's name is written in itself, whichever is shown.
+	MenuRows.value_label(language_row).text = Localization.get_language_name(Localization.get_language())
 	MenuRows.value_label(p1_row).text = InputSettings.get_player_controls_text("p1")
 	MenuRows.value_label(p2_row).text = InputSettings.get_player_controls_text("p2")
 
@@ -101,14 +104,10 @@ func _cycle_music_volume(direction: int) -> void:
 	refresh()
 
 
-## Controller vibration on/off. Switching it on gives every plugged-in
-## controller a short buzz, so you feel what it does.
-func _toggle_vibration(_direction: int) -> void:
-	var enabled := not InputSettings.get_saved_vibration()
-	InputSettings.save_vibration(enabled)
-	if enabled:
-		for device in Input.get_connected_joypads():
-			Input.start_joy_vibration(device, 0.4, 0.5, 0.2)
+## The menus change language at once; the hosts rebuild what they composed on
+## NOTIFICATION_TRANSLATION_CHANGED.
+func _cycle_language(direction: int) -> void:
+	Localization.step_language(direction)
 	refresh()
 
 

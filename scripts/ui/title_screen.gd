@@ -40,21 +40,19 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 @onready var _footer: Control = $Footer
 @onready var _footer_p1: Label = %FooterP1
 @onready var _footer_p2: Label = %FooterP2
+@onready var _version_label: Label = %VersionLabel
 
 var _page: Page = Page.MAIN
 var _nav: MenuFocus
 
 # Settings rows, built in _ready(): the title's own, then the ones the pause
-# menu shares (sound, vibration, each player's controls).
+# menu shares (sound, language, each player's controls).
 var _map_row: Button
 var _import_map_row: Button
-var _theme_row: Button
 var _credits_row: Button
 var _difficulty_row: Button
 var _common: CommonSettings
 
-var _available_themes: Array[String] = []
-var _theme_index: int = 0
 var _available_pools: Array = []  # Array of LevelData.MapPool
 var _pool_index: int = 0
 var _map_picker: MenuFilePicker
@@ -75,8 +73,18 @@ func _ready() -> void:
 	_connect_buttons()
 	_refresh_settings_values()
 	_refresh_footer()
+	# The game's version, from the project settings (application/config/version).
+	_version_label.text = "Ver. %s" % ProjectSettings.get_setting("application/config/version", "")
 	_show_page(Page.MAIN, _load_game_button, false)
 	SoundManager.attach_ui_sounds(self)
+
+
+## The menus' language changed (the LANGUAGE row): the texts built from parts
+## are rebuilt; the rest translate themselves.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
+		_set_import_hint(MAP_IMPORT_HINT)
+		_refresh_settings_values()
 
 
 func _input(event: InputEvent) -> void:
@@ -111,12 +119,6 @@ func _input(event: InputEvent) -> void:
 # =====================================================================
 
 func _load_saved_settings() -> void:
-	var saved_theme := InputSettings.get_saved_theme()
-	if saved_theme != "":
-		ThemeManager.load_theme(saved_theme)
-	_available_themes = ThemeManager.get_available_themes()
-	_theme_index = maxi(_available_themes.find(ThemeManager.current_theme), 0)
-
 	var saved_pool := InputSettings.get_saved_map_pool()
 	if saved_pool != "":
 		GameManager.set_map_pool(saved_pool)
@@ -138,7 +140,6 @@ func _load_saved_settings() -> void:
 func _build_settings_rows() -> void:
 	_map_row = _add_value_row("MAP", _cycle_pool)
 	_import_map_row = _add_action_row("IMPORT MAP", MAP_IMPORT_HINT, _map_picker.open)
-	_theme_row = _add_value_row("THEME", _cycle_theme)
 	_credits_row = _add_value_row("CREDITS", _cycle_credits)
 	_difficulty_row = _add_value_row("DIFFICULTY", _cycle_difficulty)
 	_common = CommonSettings.new(_settings_rows, false)
@@ -223,7 +224,7 @@ func _page_items(page: Page) -> Array[Control]:
 		Page.MAIN:
 			items.assign([_load_game_button, _new_game_button, _settings_button, _quit_button])
 		Page.SETTINGS:
-			items.assign([_map_row, _import_map_row, _theme_row, _credits_row, _difficulty_row])
+			items.assign([_map_row, _import_map_row, _credits_row, _difficulty_row])
 			items.append_array(_common.rows())
 			items.append(_settings_back_button)
 		# Page.KEYBIND: the controls page runs its own navigation.
@@ -259,8 +260,6 @@ func _adjust_focused_value(direction: int) -> void:
 		return
 	if focused == _map_row:
 		_cycle_pool(direction)
-	elif focused == _theme_row:
-		_cycle_theme(direction)
 	elif focused == _credits_row:
 		_cycle_credits(direction)
 	elif focused == _difficulty_row:
@@ -274,15 +273,6 @@ func _cycle_pool(direction: int) -> void:
 	var pool_id: String = _available_pools[_pool_index].id
 	GameManager.set_map_pool(pool_id)
 	InputSettings.save_map_pool(pool_id)
-	_refresh_settings_values()
-
-
-func _cycle_theme(direction: int) -> void:
-	if _available_themes.is_empty():
-		return
-	_theme_index = wrapi(_theme_index + direction, 0, _available_themes.size())
-	ThemeManager.load_theme(_available_themes[_theme_index])
-	InputSettings.save_theme(_available_themes[_theme_index])
 	_refresh_settings_values()
 
 
@@ -303,12 +293,12 @@ func _refresh_settings_values() -> void:
 	if not _available_pools.is_empty():
 		var pool: LevelData.MapPool = _available_pools[_pool_index]
 		var stage_count := LevelData.get_stage_count()
-		map_text = "%s   ·   %d %s" % [pool.display_name, stage_count, "stage" if stage_count == 1 else "stages"]
+		var template := "%s   ·   %d stage" if stage_count == 1 else "%s   ·   %d stages"
+		map_text = tr(template) % [_pool_name(pool), stage_count]
 	MenuRows.value_label(_map_row).text = map_text
-	MenuRows.value_label(_theme_row).text = ThemeManager.get_theme_display_name()
 	MenuRows.value_label(_credits_row).text = str(GameManager.max_credits)
 	var difficulty := clampi(GameManager.difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY)
-	MenuRows.value_label(_difficulty_row).text = "%d   %s" % [difficulty, DIFFICULTY_NAMES[difficulty - 1]]
+	MenuRows.value_label(_difficulty_row).text = "%d   %s" % [difficulty, tr(DIFFICULTY_NAMES[difficulty - 1])]
 	MenuRows.arrow(_credits_row, "Left").disabled = GameManager.max_credits <= MIN_CREDITS
 	MenuRows.arrow(_credits_row, "Right").disabled = GameManager.max_credits >= MAX_CREDITS
 	MenuRows.arrow(_difficulty_row, "Left").disabled = difficulty <= MIN_DIFFICULTY
@@ -316,11 +306,19 @@ func _refresh_settings_values() -> void:
 	_common.refresh()
 
 
+## A map pool's name as the MAP row shows it: an imported one's "(imported)" in
+## the menus' language.
+func _pool_name(pool: LevelData.MapPool) -> String:
+	if not pool.display_name.ends_with(LevelData.IMPORTED_SUFFIX):
+		return pool.display_name
+	return "%s %s" % [pool.display_name.trim_suffix(LevelData.IMPORTED_SUFFIX), tr("(imported)")]
+
+
 ## Called with the file chosen in the IMPORT MAP picker.
 func _import_map_file(path: String) -> void:
 	var result: Dictionary = LevelData.import_map_file(path)
 	if not result.get("ok", false):
-		_set_import_hint("Import failed: %s" % result.get("error", "unknown error"), true)
+		_set_import_hint(tr("Import failed: %s") % result.get("error", tr("unknown error")), true)
 		return
 	_available_pools = LevelData.get_available_pools()
 	_pool_index = 0
@@ -333,7 +331,9 @@ func _import_map_file(path: String) -> void:
 	_refresh_settings_values()
 	_map_row.grab_focus()
 	var count: int = result["stage_count"]
-	_set_import_hint("Imported %s   ·   %d %s   ·   selected" % [path.get_file(), count, "stage" if count == 1 else "stages"])
+	var template := "Imported %s   ·   %d stage   ·   selected" if count == 1 \
+			else "Imported %s   ·   %d stages   ·   selected"
+	_set_import_hint(tr(template) % [path.get_file(), count])
 
 
 ## Right-hand text of the IMPORT MAP row: the default hint, or the last result.

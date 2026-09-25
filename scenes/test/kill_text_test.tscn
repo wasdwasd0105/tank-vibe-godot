@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/kill_text_test.gd" id="1_kill_text_test"]
+
+[node name="KillTextTest" type="Node"]
+script = ExtResource("1_kill_text_test")

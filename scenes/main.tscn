@@ -32,18 +32,57 @@ offset_bottom = 236.0
 grow_horizontal = 2
 mouse_filter = 2
 theme_override_constants/separation = 2
+alignment = 1
 
 [node name="Title" type="Label" parent="TitleBlock"]
 layout_mode = 2
 theme_type_variation = &"TitleLabel"
-text = "BATTLE CITY"
+text = "BATTLE TANK"
 horizontal_alignment = 1
 
-[node name="Subtitle" type="Label" parent="TitleBlock"]
+[node name="MainAnchor" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 291.0
+offset_bottom = 291.0
+grow_horizontal = 2
+mouse_filter = 2
+
+[node name="MainPanel" type="PanelContainer" parent="MainAnchor"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(480, 0)
 layout_mode = 2
-theme_type_variation = &"SubtitleLabel"
-text = "A REVIVAL OF THE CLASSIC TANK.EXE"
-horizontal_alignment = 1
+size_flags_horizontal = 4
+theme_type_variation = &"MenuPanel"
+
+[node name="Items" type="VBoxContainer" parent="MainAnchor/MainPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="LoadGameButton" type="Button" parent="MainAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "LOAD GAME"
+
+[node name="NewGameButton" type="Button" parent="MainAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "NEW GAME"
+
+[node name="SettingsButton" type="Button" parent="MainAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "SETTINGS"
+
+[node name="QuitButton" type="Button" parent="MainAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "QUIT"
 
 [node name="PanelAnchor" type="CenterContainer" parent="."]
 layout_mode = 1
@@ -55,40 +94,6 @@ offset_bottom = -110.0
 grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
-
-[node name="MainPanel" type="PanelContainer" parent="PanelAnchor"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(480, 0)
-layout_mode = 2
-theme_type_variation = &"MenuPanel"
-
-[node name="Items" type="VBoxContainer" parent="PanelAnchor/MainPanel"]
-layout_mode = 2
-theme_override_constants/separation = 12
-
-[node name="LoadGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "LOAD GAME"
-
-[node name="NewGameButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "NEW GAME"
-
-[node name="SettingsButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "SETTINGS"
-
-[node name="QuitButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "QUIT"
 
 [node name="SettingsPanel" type="PanelContainer" parent="PanelAnchor"]
 unique_name_in_owner = true
@@ -161,4 +166,25 @@ vertical_alignment = 1
 layout_mode = 2
 theme_type_variation = &"HintLabel"
 text = "MOUSE   CLICK TO SELECT"
+vertical_alignment = 1
+
+[node name="VersionLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = -46.0
+offset_right = -18.0
+offset_bottom = -14.0
+grow_horizontal = 0
+grow_vertical = 0
+theme_type_variation = &"HintLabel"
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.85)
+theme_override_constants/outline_size = 6
+text = "Ver. 1.0.0"
+horizontal_alignment = 2
 vertical_alignment = 1

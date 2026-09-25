@@ -1,0 +1,152 @@
+keys,zh_CN
+LOAD GAME,读取存档
+NEW GAME,新游戏
+SETTINGS,设置
+QUIT,退出
+BACK,返回
+F11   FULLSCREEN,F11   全屏
+MOUSE   CLICK TO SELECT,鼠标   点击选择
+MAP,地图
+IMPORT MAP,导入地图
+CREDITS,投币数
+DIFFICULTY,难度
+EASY,容易
+NORMAL,中等
+HARD,困难
+EXPERT,极困难
+INSANE,疯狂
+a Tank.exe Stage.dat,Tank.exe 的 Stage.dat
+Import a Tank.exe map,导入 Tank.exe 地图
+Tank.exe map files (Stage.dat),Tank.exe 地图文件（Stage.dat）
+(no maps found),（没有找到地图）
+%s   ·   %d stage,%s   ·   %d 关
+%s   ·   %d stages,%s   ·   %d 关
+Import failed: %s,导入失败：%s
+unknown error,未知错误
+Imported %s   ·   %d stage   ·   selected,已导入 %s   ·   %d 关   ·   已选用
+Imported %s   ·   %d stages   ·   selected,已导入 %s   ·   %d 关   ·   已选用
+(imported),（已导入）
+Default,默认
+JueZhuanTanKe,决战坦克
+SFX VOLUME,音效音量
+MUSIC VOLUME,音乐音量
+FULLSCREEN,全屏
+P1 CONTROLS,P1 按键
+P2 CONTROLS,P2 按键
+ON,开
+OFF,关
+LANGUAGE,语言
+%s CONTROLS,%s 按键
+KEYBOARD,键盘
+GAMEPAD,手柄
+PAUSE,暂停
+RESET KEYS,重置按键
+RESET BUTTONS,重置按钮
+CONTROLLER,手柄编号
+VIBRATION,震动
+not plugged in,未连接
+UP,上
+DOWN,下
+LEFT,左
+RIGHT,右
+FIRE 1,开火 1
+FIRE 2,开火 2
+MOVE,移动
+A / click: change   ·   %s / Delete / right-click: empty,A / 点击：更改   ·   %s / Delete / 右键：清空
+"Click a row, or press fire on it, to change that key.",点击某一行，或在该行按开火键，即可更改该按键。
+{who} shares controller {pad} with {partner}:  {name},{who} 与 {partner} 共用手柄 {pad}：{name}
+"{who} shares controller {pad} with {partner}, which is not plugged in.",{who} 与 {partner} 共用手柄 {pad}，但该手柄未连接。
+{who} plays on controller {pad}:  {name},{who} 使用手柄 {pad}：{name}
+Controller {pad} is not plugged in: pick {other_pad} to share {other}'s.,手柄 {pad} 未连接：选择 {other_pad} 即可与 {other} 共用。
+Controller %d is not plugged in.,手柄 %d 未连接。
+P1 and P2 are back on their halves of controller %d.,P1 和 P2 已恢复各用手柄 %d 的一半。
+%s controller reset to defaults.,%s 的手柄按钮已恢复默认。
+%s keys reset to defaults.,%s 的按键已恢复默认。
+"P1 and P2 now share controller %d: P1 has its left half, P2 its right.",P1 和 P2 现在共用手柄 %d：P1 用左半边，P2 用右半边。
+P1 and P2 have controllers of their own: each has the whole layout again.,P1 和 P2 各用各的手柄：都恢复完整布局。
+%s no longer uses %s.,%s 不再使用 %s。
+Press a key for %s   (Esc or B cancels),请为「%s」按下按键   （Esc 或 B 取消）
+F11 is reserved for fullscreen. Press another key.,F11 已用于全屏，请按其他键。
+%s is reserved for a debug key. Press another key.,%s 已用作调试键，请按其他键。
+%s bound. Note: it is also used by %s.,已绑定 %s。注意：%s 也在使用它。
+%s belongs to the system. Press another.,%s 由系统占用，请按其他键。
+%s takes %s.,%s 需要使用%s。
+the D-pad or a stick,十字键或摇杆
+a button or a trigger,按钮或扳机
+The two %s slots swapped.,%s 的两个位置已互换。
+"%s had %s, so it takes %s instead.",%s 原本使用 %s，现改用 %s。
+"Press the D-pad, or push a stick, for %s",请为「%s」按十字键或推动摇杆
+"Press a button, or pull a trigger, for %s",请为「%s」按下按钮或扣动扳机
+%s or Delete empties it   ·   Start or Esc cancels,%s 或 Delete 清空   ·   Start 或 Esc 取消
+D-pad,十字键
+L-stick,左摇杆
+R-stick,右摇杆
+LS click,左摇杆按下
+RS click,右摇杆按下
+D-pad ↑,十字键 ↑
+D-pad ↓,十字键 ↓
+D-pad ←,十字键 ←
+D-pad →,十字键 →
+Touchpad,触摸板
+Share,分享
+Paddle 1,背键 1
+Paddle 2,背键 2
+Paddle 3,背键 3
+Paddle 4,背键 4
+Button %d,按钮 %d
+Axis %d%s,轴 %d%s
+PRESS FIRE TO JOIN,按开火键加入
+CREDITS   %d,投币   %d
+Each player presses their fire button to join   ·   fire again to start   ·   Esc goes back,各自按开火键加入   ·   再按一次开始   ·   Esc 返回
+START,开始
+PLAYER %d,玩家 %d
+PRESS,按
+OR PAD,或手柄
+TO JOIN,加入
+TO START,开始
+READY,已就绪
+NO CREDITS,投币已用完
+No saved games yet.\nThe game saves automatically after every cleared stage.,还没有存档。\n每通过一关，游戏都会自动存档。
+"Click a save to continue it   ·   MORE duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可复制、导出或删除   ·   Esc 返回
+IMPORT,导入
+MORE,更多
+DUPLICATE,复制
+EXPORT,导出
+DELETE,删除
+CONFIRM?,确定？
+DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes,复制：复制此存档   ·   导出：写入文件   ·   删除：移除此存档   ·   Esc 关闭
+Press CONFIRM? again to delete this save. Moving away cancels.,再按一次「确定？」即删除此存档，移开则取消。
+Import a save,导入存档
+Saves (Tank.exe .sav or an exported .tsave),存档（Tank.exe 的 .sav 或导出的 .tsave）
+Tank.exe save files,Tank.exe 存档文件
+Battle Tank saves,Battle Tank 存档
+Export a save,导出存档
+Stage %d   ·   Difficulty %d   ·   %d stage cleared,第 %d 关   ·   难度 %d   ·   已通过 %d 关
+Stage %d   ·   Difficulty %d   ·   %d stages cleared,第 %d 关   ·   难度 %d   ·   已通过 %d 关
+Duplicate failed: %s,复制失败：%s
+"Duplicated ""%s"" as ""%s""",已将「%s」复制为「%s」
+"Exported ""%s"" to %s",已将「%s」导出到 %s
+Export failed: %s,导出失败：%s
+"Imported ""{name}"" from {file}   ·   click it to continue",已从 {file} 导入「{name}」   ·   点击即可继续
+PAUSED,暂停
+RESUME,继续
+PLAYER 2: %s,玩家 2：%s
+RESTART STAGE,重新开始本关
+MAIN MENU,主菜单
+QUIT GAME,退出游戏
+No system file picker while the game runs in the editor's Game tab. Run it in its own window to use the macOS picker.,游戏在编辑器的 Game 标签页中运行时无法使用系统文件选择器。请在独立窗口中运行以使用 macOS 选择器。
+could not read %s,无法读取 %s
+could not write %s,无法写入 %s
+could not write %s (%s),无法写入 %s（%s）
+%s is not a Battle Tank save,%s 不是 Battle Tank 存档
+unsupported file type .%s (expected .sav or .tsave),不支持的文件类型 .%s（应为 .sav 或 .tsave）
+unsupported file type .%s (expected a Tank.exe .dat),不支持的文件类型 .%s（应为 Tank.exe 的 .dat）
+%s is not a Tank.exe map file (size must be a multiple of %d bytes),%s 不是 Tank.exe 地图文件（大小须为 %d 字节的整数倍）
+no stages found in %s,%s 中没有关卡
+could not copy %s into %s (%s),无法将 %s 复制到 %s（%s）
+"wrong size (%d bytes, expected %d)",大小不对（%d 字节，应为 %d）
+checksum mismatch (damaged file or not a Tank.exe save),校验和不符（文件已损坏或不是 Tank.exe 存档）
+RESULTS,战斗成绩
+TOTAL,总计
+BATTLE TANK,坦克决战
+Battle Tank,坦克决战

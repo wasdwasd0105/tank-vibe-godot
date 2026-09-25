@@ -96,7 +96,7 @@ func delete_save(filepath: String) -> bool:
 func import_original_save(source_path: String) -> Dictionary:
 	var bytes := FileAccess.get_file_as_bytes(source_path)
 	if bytes.is_empty() and FileAccess.get_open_error() != OK:
-		return {"ok": false, "error": "could not read %s" % source_path.get_file()}
+		return {"ok": false, "error": tr("could not read %s") % source_path.get_file()}
 	var decoded := TankSavCodec.decode(bytes)
 	if decoded.has("error"):
 		return {"ok": false, "error": decoded["error"]}
@@ -107,7 +107,7 @@ func import_original_save(source_path: String) -> Dictionary:
 	var filepath := _dir + save_name + ".tsave"
 	var file := FileAccess.open(filepath, FileAccess.WRITE)
 	if not file:
-		return {"ok": false, "error": "could not write %s" % filepath}
+		return {"ok": false, "error": tr("could not write %s") % filepath}
 	file.store_string(JSON.stringify(data, "  "))
 	file.close()
 	return {"ok": true, "filepath": filepath, "save_name": save_name}
@@ -143,7 +143,7 @@ func get_save_list() -> Array:
 func duplicate_save(filepath: String) -> Dictionary:
 	var data := _read_save_data(filepath)
 	if data.is_empty():
-		return {"ok": false, "error": "could not read %s" % filepath.get_file()}
+		return {"ok": false, "error": tr("could not read %s") % filepath.get_file()}
 	var meta = data.get("meta")
 	var original: String = meta.get("save_name", "") if meta is Dictionary else ""
 	if original.is_empty():
@@ -158,10 +158,10 @@ func export_save(filepath: String, dest_path: String) -> Dictionary:
 		dest_path += ".tsave"
 	var bytes := FileAccess.get_file_as_bytes(filepath)
 	if bytes.is_empty():
-		return {"ok": false, "error": "could not read %s" % filepath.get_file()}
+		return {"ok": false, "error": tr("could not read %s") % filepath.get_file()}
 	var file := FileAccess.open(dest_path, FileAccess.WRITE)
 	if not file:
-		return {"ok": false, "error": "could not write %s (%s)" % [dest_path.get_file(), error_string(FileAccess.get_open_error())]}
+		return {"ok": false, "error": tr("could not write %s (%s)") % [dest_path.get_file(), error_string(FileAccess.get_open_error())]}
 	file.store_buffer(bytes)
 	file.close()
 	return {"ok": true, "path": dest_path}
@@ -176,10 +176,10 @@ func import_save_file(source_path: String) -> Dictionary:
 		"tsave":
 			var data := _read_save_data(source_path)
 			if not (data.get("header") is Dictionary and data.get("players") is Dictionary):
-				return {"ok": false, "error": "%s is not a Battle City save" % source_path.get_file()}
+				return {"ok": false, "error": tr("%s is not a Battle Tank save") % source_path.get_file()}
 			var base := _sanitize_save_name(source_path.get_file().get_basename())
 			return _write_as_new(data, _unique_save_name(base))
-	return {"ok": false, "error": "unsupported file type .%s (expected .sav or .tsave)" % source_path.get_extension()}
+	return {"ok": false, "error": tr("unsupported file type .%s (expected .sav or .tsave)") % source_path.get_extension()}
 
 ## A save file's JSON, or {} when it can't be read.
 func _read_save_data(filepath: String) -> Dictionary:
@@ -198,7 +198,7 @@ func _write_as_new(data: Dictionary, save_name: String) -> Dictionary:
 	var filepath := _dir + save_name + ".tsave"
 	var file := FileAccess.open(filepath, FileAccess.WRITE)
 	if not file:
-		return {"ok": false, "error": "could not write %s" % filepath}
+		return {"ok": false, "error": tr("could not write %s") % filepath}
 	file.store_string(JSON.stringify(data, "  "))
 	file.close()
 	return {"ok": true, "filepath": filepath, "save_name": save_name}
@@ -268,6 +268,7 @@ func _build_player_data(pid: int) -> Dictionary:
 		"special_weapon_type": gm.player_secondary_weapon_types[pid],
 		"defense_addon_type": defense_addon,
 		"defense_addon_type_2": defense_addon_2,
+		"disabled": gm.player_disabled[pid],  # sitting out (the pause menu's option)
 	}
 
 # =====================================================================
@@ -299,6 +300,7 @@ func _restore_from_data(data: Dictionary) -> void:
 	# Reset runtime state
 	gm.is_game_over = false
 	gm.enemies_frozen = false
+	gm.players_frozen = false
 	gm.enemies_remaining = 20
 	gm.player_kills = [{}, {}]
 
@@ -329,6 +331,7 @@ func _restore_player(pid: int, pdata: Dictionary) -> void:
 	gm.player_speed_levels[pid] = pdata.get("speed_level", 1)
 	gm.player_secondary_weapon_counts[pid] = pdata.get("special_weapon_count", 50)
 	gm.player_secondary_weapon_types[pid] = pdata.get("special_weapon_type", "rapid")
+	gm.player_disabled[pid] = pdata.get("disabled", false)
 
 	# Restore addons
 	var addons: Array = []
@@ -342,6 +345,7 @@ func _restore_player(pid: int, pdata: Dictionary) -> void:
 
 func _reset_player_defaults(pid: int) -> void:
 	var gm := GameManager
+	gm.player_disabled[pid] = false
 	gm.player_lives[pid] = 3
 	gm.player_scores[pid] = 0
 	gm.player_hp[pid] = 4
@@ -384,6 +388,7 @@ func _read_save_info(filepath: String) -> Dictionary:
 		"p1_score": p1_data.get("score", 0) if p1_data is Dictionary else 0,
 		"p2_active": p2_data != null and p2_data is Dictionary,
 		"p2_score": p2_data.get("score", 0) if p2_data is Dictionary else 0,
+		"p2_disabled": p2_data is Dictionary and p2_data.get("disabled", false),
 	}
 
 # =====================================================================

@@ -35,10 +35,13 @@ const QUARTER_SIZE := SCREEN_SIZE / 2.0
 ## One tick of the original's clock, in seconds.
 const TICK := 0.00075
 
-## The original's three fonts: gold (Text3), white (Text) and tiny (Text2).
-const GOLD_FONT: FontFile = preload("res://assets/ui/fonts/tank_font.fnt")
-const WHITE_FONT: FontFile = preload("res://assets/ui/fonts/tank_font_small.fnt")
-const TINY_FONT: FontFile = preload("res://assets/ui/fonts/tank_font_tiny.fnt")
+## The three fonts, in the colours of the original's gold (Text3), white (Text)
+## and tiny (Text2), drawn from open-licensed pixel fonts (tools/make_fonts.py).
+## They are proportional: text is measured, not counted in cells. A cell's
+## height is the size a font is drawn at.
+const GOLD_FONT: FontFile = preload("res://assets/ui/fonts/gold_font.fnt")
+const WHITE_FONT: FontFile = preload("res://assets/ui/fonts/white_font.fnt")
+const TINY_FONT: FontFile = preload("res://assets/ui/fonts/tiny_font.fnt")
 const GOLD_CELL := Vector2(18, 36) * SCALE
 const WHITE_CELL := Vector2(12, 24) * SCALE
 const TINY_CELL := Vector2(8, 16) * SCALE
@@ -100,6 +103,21 @@ const NUMBERS_RIGHT := 240.0               # the right-aligned columns end here
 const ROW_TEXT_AT := Vector2(60, 110)      # "LL      RR    xN =" (the points 4 px higher)
 const ROW_STEP := 32.0
 const TOTAL_TOP := 256.0
+# Our own box around it all (a theme may bring a picture instead), in the menus'
+# style: their panel, a gold header with the player's tag, a band for the chains
+# and one per kill row, gold rules. Laid out on the original's panel (original px).
+const BOX_THEME: Theme = preload("res://assets/ui/menu_theme.tres")
+const BOX_HEADER := "RESULTS"
+const BOX_TOTAL := "TOTAL"
+const BOX_HEADER_TOP := 16.0
+const BOX_RULES: Array[float] = [62.0, 236.0]   # under the header, over the total
+const BOX_RULE_COLOUR := Color(0.85, 0.62, 0.16, 0.85)
+const BOX_INSET := 12.0                          # the bands' and rules' side margin
+const CHAIN_BAND := Rect2(BOX_INSET, 70, 264 - 2 * BOX_INSET, 24)
+const KILL_BAND_TOP := 96.0                      # each kill row's band: 31 tall, one per ROW_STEP
+## The players' tags and colours, as the HUD's "I P" and "II P".
+const PLAYER_TAGS: Array[String] = ["I P", "II P"]
+const PLAYER_TAG_COLOURS: Array[Color] = [Color(0.9, 0.7, 0.1), Color(0.1, 0.8, 0.2)]
 
 # --- The reward ------------------------------------------------------------------
 ## Reward per difficulty (0-5), times 30 for beating the other player or 10 for
@@ -118,9 +136,10 @@ const REWARD_SETTLE := 333                 # the lead; the others 60 x their pla
 const REWARD_HOLD := 750
 
 # --- Game over -------------------------------------------------------------------
-## "Game Over" in the gold font at 2x, its letters from x 176 at y 204.
+## "Game Over" in the gold font at 2x, centred where the original's nine
+## 36 px cells stood (x 176 to 500), at y 204.
 const GAME_OVER_TEXT := "Game Over"
-const GAME_OVER_LEFT := 176.0 * SCALE
+const GAME_OVER_CENTRE_X := (176.0 + 9 * 36 / 2.0) * SCALE
 const GAME_OVER_TOP := 204.0 * SCALE
 const GAME_OVER_CELL := GOLD_CELL * 2.0
 const GAME_OVER_FADE_END := 1500 * TICK
@@ -129,6 +148,9 @@ const GAME_OVER_FLY_END := 4500 * TICK
 const GAME_OVER_END := 5500 * TICK
 ## A flying letter ends 72x216: twice as wide, three times as tall.
 const GAME_OVER_GROWTH := Vector2(2, 3)
+## The original's tiny font was 8 px wide a character, and the results panel
+## was laid out in its columns: they still fix where each field goes.
+const ORIGINAL_COLUMN := 8.0
 
 enum Mode { NONE, INTRO, MISSION, RESULTS, GAME_OVER }
 
@@ -148,6 +170,7 @@ var _title: String = ""
 var _won := false
 var _panels: Array[ResultsPanel] = []
 var _panel_texture: Texture2D = null
+var _band_styles: Array[StyleBoxFlat] = []   # a kill row's band: even rows, odd rows
 var _rewarded := false
 var _letters: Array[FlyingLetter] = []
 
@@ -178,6 +201,7 @@ class RewardCopy:
 ## One letter of "Game Over" and where it flies.
 class FlyingLetter:
 	var glyph: String
+	var width: float   # the glyph's own width, drawn GAME_OVER_CELL high
 	var home: Vector2
 	var away: Vector2
 	var turns: float
@@ -187,6 +211,13 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = true
 	visible = false
+	for alpha in [0.05, 0.025]:
+		var band := StyleBoxFlat.new()
+		band.bg_color = Color(1, 1, 1, alpha)
+		band.border_color = Color(1, 1, 1, 0.07)
+		band.set_border_width_all(1)
+		band.set_corner_radius_all(4)
+		_band_styles.append(band)
 
 
 ## Covers the playfield with [param stage_num]'s intro and plays it; emits
@@ -245,12 +276,15 @@ func play_results(won: bool, tallies: Array, difficulty: int) -> void:
 ## "Game Over" over the lost stage's picture; emits [signal game_over_finished].
 func play_game_over() -> void:
 	_letters.clear()
+	var lefts := _glyph_lefts(GOLD_FONT, GAME_OVER_CELL, GAME_OVER_TEXT)
+	var left := GAME_OVER_CENTRE_X - _text_width(GOLD_FONT, GAME_OVER_CELL, GAME_OVER_TEXT) / 2.0
 	for i in GAME_OVER_TEXT.length():
 		if GAME_OVER_TEXT[i] == " ":
 			continue
 		var letter := FlyingLetter.new()
 		letter.glyph = GAME_OVER_TEXT[i]
-		letter.home = Vector2(GAME_OVER_LEFT + GAME_OVER_CELL.x * i, GAME_OVER_TOP)
+		letter.width = GOLD_FONT.get_char_size(GAME_OVER_TEXT.unicode_at(i), int(GAME_OVER_CELL.y)).x
+		letter.home = Vector2(left + lefts[i], GAME_OVER_TOP)
 		# Off whichever edge Random(4) picks, a whole enlarged letter beyond it.
 		match randi() % 4:
 			0: letter.away = Vector2(randi() % 640, -272)
@@ -387,7 +421,7 @@ static func rewards_for(totals: Array[int], difficulty: int) -> Array:
 ## top (anywhere across) or the far side of the screen (anywhere down).
 func _make_copies(panel: ResultsPanel, count: int) -> Array[RewardCopy]:
 	var copies: Array[RewardCopy] = []
-	var width := GOLD_CELL.x * _reward_text(panel).length()
+	var width := _text_width(GOLD_FONT, GOLD_CELL, _reward_text(panel))
 	var target_x := PANEL_HOME_X[panel.player] + floorf((PANEL_SIZE.x - width) / 2.0 / SCALE) * SCALE
 	for k in count:
 		var copy := RewardCopy.new()
@@ -460,27 +494,29 @@ func _draw_quarters(away: float) -> void:
 ## "Stage NN": dropping in, holding, then swelling to twice its size while each
 ## letter spins a full turn clockwise about its own centre and fades out.
 func _draw_stage_text() -> void:
-	var count := _stage_text.length()
 	var grow := _ramp(_t, INTRO_OUT_START, INTRO_END)
-	var cell := STAGE_CELL * (1.0 + grow)
+	var stretch := 1.0 + grow
+	var cell := STAGE_CELL * stretch
 	# Dropping in, then growing upward: the bottom stays at y 222 (the box's
 	# y and height blend linearly together in the original).
 	var top := lerpf(STAGE_TOP_START, STAGE_TOP, _ramp(_t, INTRO_IN_START, INTRO_IN_END)) \
 			- (cell.y - STAGE_CELL.y)
-	var left := (SCREEN_SIZE.x - cell.x * count) / 2.0
-	for i in count:
-		var centre := Vector2(left + cell.x * (i + 0.5), top + cell.y / 2.0)
-		_draw_glyph(GOLD_FONT, _stage_text[i], STAGE_CELL, centre, Vector2.ONE * (1.0 + grow),
+	var lefts := _glyph_lefts(GOLD_FONT, STAGE_CELL, _stage_text)
+	var left := (SCREEN_SIZE.x - _text_width(GOLD_FONT, STAGE_CELL, _stage_text) * stretch) / 2.0
+	for i in _stage_text.length():
+		var width := GOLD_FONT.get_char_size(_stage_text.unicode_at(i), int(STAGE_CELL.y)).x
+		var centre := Vector2(left + (lefts[i] + width / 2.0) * stretch, top + cell.y / 2.0)
+		_draw_glyph(GOLD_FONT, _stage_text[i], STAGE_CELL, centre, Vector2.ONE * stretch,
 				TAU * grow, Color(1, 1, 1, 1.0 - grow))
 
 
 func _draw_caption(alpha: float) -> void:
 	if _caption_lines.is_empty() or alpha <= 0.0:
 		return
-	var longest := 0
+	var widest := 0.0
 	for line in _caption_lines:
-		longest = maxi(longest, line.length())
-	var left := (SCREEN_SIZE.x - WHITE_CELL.x * longest) / 2.0
+		widest = maxf(widest, _text_width(WHITE_FONT, WHITE_CELL, line))
+	var left := (SCREEN_SIZE.x - widest) / 2.0
 	for i in _caption_lines.size():
 		_draw_text(WHITE_FONT, WHITE_CELL, Vector2(left, CAPTION_TOP + WHITE_CELL.y * i),
 				_caption_lines[i], Color(1, 1, 1, alpha))
@@ -489,7 +525,7 @@ func _draw_caption(alpha: float) -> void:
 ## The mission title, centred, its top at [param top]. It never fades: the
 ## original drew it without its alpha flag.
 func _draw_title(top: float) -> void:
-	var left := (SCREEN_SIZE.x - GOLD_CELL.x * _title.length()) / 2.0
+	var left := (SCREEN_SIZE.x - _text_width(GOLD_FONT, GOLD_CELL, _title)) / 2.0
 	_draw_text(GOLD_FONT, GOLD_CELL, Vector2(left, top), _title)
 
 
@@ -498,39 +534,61 @@ func _draw_panel(panel: ResultsPanel) -> void:
 	if _panel_texture:
 		draw_texture_rect(_panel_texture, Rect2(at, PANEL_SIZE), false)
 	else:
-		_draw_plain_panel(at)
+		_draw_box(at, panel.player)
 	# The kill counts show at once; everything scored rolls up after the slide.
 	var rolled := _ramp(_t, RESULTS_IN_END, RESULTS_COUNT_END)
-	var hits := "MaxHits %2d" % roundi(panel.max_hits * rolled)
-	_draw_text(TINY_FONT, TINY_CELL, at + MAX_HITS_AT * SCALE, hits)
-	var combos := "MaxCombos %2d" % roundi(panel.max_combos * rolled)
-	_draw_text_right(TINY_FONT, TINY_CELL, at + Vector2(NUMBERS_RIGHT, MAX_HITS_AT.y) * SCALE, combos)
+	# The original wrote these as monospace lines ("MaxHits %2d", "%2d      %2d
+	# xN ="); each field goes where its columns were, the numbers right-aligned.
+	_draw_text(TINY_FONT, TINY_CELL, at + MAX_HITS_AT * SCALE, "MaxHits")
+	_draw_text_right(TINY_FONT, TINY_CELL, at + (MAX_HITS_AT + Vector2(ORIGINAL_COLUMN * 10, 0)) * SCALE,
+			str(roundi(panel.max_hits * rolled)))
+	_draw_text_right(TINY_FONT, TINY_CELL, at + Vector2(NUMBERS_RIGHT - ORIGINAL_COLUMN * 3, MAX_HITS_AT.y) * SCALE,
+			"MaxCombos")
+	_draw_text_right(TINY_FONT, TINY_CELL, at + Vector2(NUMBERS_RIGHT, MAX_HITS_AT.y) * SCALE,
+			str(roundi(panel.max_combos * rolled)))
 	for row in KILL_CELLS.size():
 		var y := ROW_TEXT_AT.y + ROW_STEP * row
-		var counts := "%2d      %2d    x%d =" % [panel.kills[row][0], panel.kills[row][1], row + 1]
-		_draw_text(TINY_FONT, TINY_CELL, at + Vector2(ROW_TEXT_AT.x, y) * SCALE, counts)
-		var points := "%2d" % roundi(panel.row_points(row) * rolled)
+		for side in 2:
+			var right := ROW_TEXT_AT.x + ORIGINAL_COLUMN * (2 + 8 * side)
+			_draw_text_right(TINY_FONT, TINY_CELL, at + Vector2(right, y) * SCALE, str(panel.kills[row][side]))
+		_draw_text(TINY_FONT, TINY_CELL, at + Vector2(ROW_TEXT_AT.x + ORIGINAL_COLUMN * 14, y) * SCALE,
+				"x%d =" % (row + 1))
+		var points := str(roundi(panel.row_points(row) * rolled))
 		_draw_text_right(TINY_FONT, TINY_CELL, at + Vector2(NUMBERS_RIGHT, y - 4) * SCALE, points)
-	var total := "%3d" % roundi(panel.total * rolled)
+	var total := str(roundi(panel.total * rolled))
 	_draw_text_right(GOLD_FONT, GOLD_CELL, at + Vector2(NUMBERS_RIGHT, TOTAL_TOP) * SCALE, total)
 	_draw_reward(panel, at.x - PANEL_HOME_X[panel.player])
 
 
-## A panel for a theme without the original's picture: its layout, drawn.
-func _draw_plain_panel(at: Vector2) -> void:
-	var rect := Rect2(at, PANEL_SIZE)
-	draw_rect(rect, Color(0.33, 0.31, 0.25, 0.5))
-	draw_rect(rect.grow(-3.0 * SCALE), Color(0.85, 0.62, 0.16), false, 3.0 * SCALE)
-	_draw_text(GOLD_FONT, GOLD_CELL, at + Vector2((264 - 18 * 7) / 2.0, 18) * SCALE, "Results")
-	draw_line(at + Vector2(10, 64) * SCALE, at + Vector2(254, 64) * SCALE, Color(0.85, 0.62, 0.16), SCALE)
+## The results box's header and the name of its total, in the menus' language:
+## the in-game screens stay English but for these two, which in Chinese are the
+## original panel's own words, 战斗成绩 and 总计.
+func box_words() -> PackedStringArray:
+	return PackedStringArray([tr(BOX_HEADER), tr(BOX_TOTAL)])
+
+
+## Our results box (see BOX_THEME): the panel, the header and the player's tag,
+## the bands, the kill cells' tanks, the rules and "TOTAL". The counts go on it
+## where the original's panel had them.
+func _draw_box(at: Vector2, player: int) -> void:
+	BOX_THEME.get_stylebox("panel", "MenuPanel").draw(get_canvas_item(), Rect2(at, PANEL_SIZE))
+	var words := box_words()
+	var header_left := (PANEL_SIZE.x - _text_width(GOLD_FONT, GOLD_CELL, words[0])) / 2.0
+	_draw_text(GOLD_FONT, GOLD_CELL, at + Vector2(header_left, BOX_HEADER_TOP * SCALE), words[0])
+	draw_string(ThemeDB.fallback_font, at + Vector2(BOX_INSET + 4, 36) * SCALE, PLAYER_TAGS[player],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, int(14 * SCALE), PLAYER_TAG_COLOURS[player])
+	_band_styles[0].draw(get_canvas_item(), Rect2(at + CHAIN_BAND.position * SCALE, CHAIN_BAND.size * SCALE))
 	for row in KILL_CELL_ICONS.size():
+		var band := Rect2(BOX_INSET, KILL_BAND_TOP + ROW_STEP * row, 264 - 2 * BOX_INSET, ROW_STEP - 1)
+		_band_styles[row % 2].draw(get_canvas_item(), Rect2(at + band.position * SCALE, band.size * SCALE))
 		for side in 2:
 			var icon := ThemeManager.get_tank_texture("e%d" % KILL_CELL_ICONS[row][side])
 			if icon:
-				var icon_at := at + Vector2(21 + 64 * side, 96 + ROW_STEP * row) * SCALE
+				var icon_at := at + Vector2(21 + 64 * side, KILL_BAND_TOP + ROW_STEP * row) * SCALE
 				draw_texture_rect(icon, Rect2(icon_at, Vector2(32, 32) * SCALE), false)
-	draw_rect(Rect2(at + Vector2(20, 236) * SCALE, Vector2(224, 6) * SCALE), Color(0.95, 0.55, 0.1))
-	_draw_text(GOLD_FONT, GOLD_CELL, at + Vector2(20, TOTAL_TOP) * SCALE, "Total")
+	for y in BOX_RULES:
+		draw_line(at + Vector2(BOX_INSET, y) * SCALE, at + Vector2(264 - BOX_INSET, y) * SCALE, BOX_RULE_COLOUR, SCALE)
+	_draw_text(GOLD_FONT, GOLD_CELL, at + Vector2(20, TOTAL_TOP) * SCALE, words[1])
 
 
 ## Where [param player]'s panel is: sliding in, held, sliding back out.
@@ -573,15 +631,16 @@ func _draw_game_over() -> void:
 	var gone := _ramp(_t, GAME_OVER_FLY_START, GAME_OVER_FLY_END)
 	if gone >= 1.0:
 		return
-	var size := GAME_OVER_CELL * Vector2.ONE.lerp(GAME_OVER_GROWTH, gone)
+	var stretch := Vector2.ONE.lerp(GAME_OVER_GROWTH, gone)
 	for letter in _letters:
 		var top_left := letter.home.lerp(letter.away, gone)
+		var size := Vector2(letter.width, GAME_OVER_CELL.y) * stretch
 		_draw_glyph(GOLD_FONT, letter.glyph, GAME_OVER_CELL, top_left + size / 2.0,
-				size / GAME_OVER_CELL, TAU * letter.turns * gone, Color(1, 1, 1, shown * (1.0 - gone)))
+				stretch, TAU * letter.turns * gone, Color(1, 1, 1, shown * (1.0 - gone)))
 
 
-## [param text] in a bitmap font of [param cell]-sized glyphs, the cells' top-left
-## at [param top_left].
+## [param text] in [param font] drawn [param cell] high, its top-left at
+## [param top_left].
 func _draw_text(font: FontFile, cell: Vector2, top_left: Vector2, text: String,
 		color := Color.WHITE) -> void:
 	var size := int(cell.y)
@@ -591,17 +650,34 @@ func _draw_text(font: FontFile, cell: Vector2, top_left: Vector2, text: String,
 
 ## [param text] ending at [param top_right].x.
 func _draw_text_right(font: FontFile, cell: Vector2, top_right: Vector2, text: String) -> void:
-	_draw_text(font, cell, top_right - Vector2(cell.x * text.length(), 0), text)
+	_draw_text(font, cell, top_right - Vector2(_text_width(font, cell, text), 0), text)
 
 
-## One glyph of a [param cell]-sized font centred on [param centre], scaled by
-## [param stretch] and turned [param angle] radians clockwise about its centre.
+## One glyph of [param font] drawn [param cell] high, centred on [param centre],
+## scaled by [param stretch] and turned [param angle] radians clockwise about
+## its centre.
 func _draw_glyph(font: FontFile, glyph: String, cell: Vector2, centre: Vector2, stretch: Vector2,
 		angle: float, color: Color) -> void:
 	var size := int(cell.y)
+	var width := font.get_char_size(glyph.unicode_at(0), size).x
 	draw_set_transform(centre, angle, stretch)
-	draw_char(font, Vector2(-cell.x / 2.0, -cell.y / 2.0 + font.get_ascent(size)), glyph, size, color)
+	draw_char(font, Vector2(-width / 2.0, -cell.y / 2.0 + font.get_ascent(size)), glyph, size, color)
 	draw_set_transform(Vector2.ZERO)
+
+
+## [param text]'s width in [param font] drawn [param cell] high.
+static func _text_width(font: FontFile, cell: Vector2, text: String) -> float:
+	return font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, int(cell.y)).x
+
+
+## Where each of [param text]'s glyphs starts, from the text's left.
+static func _glyph_lefts(font: FontFile, cell: Vector2, text: String) -> Array[float]:
+	var lefts: Array[float] = []
+	var x := 0.0
+	for i in text.length():
+		lefts.append(x)
+		x += font.get_char_size(text.unicode_at(i), int(cell.y)).x
+	return lefts
 
 
 ## 0 before [param from], 1 after [param to], linear between.

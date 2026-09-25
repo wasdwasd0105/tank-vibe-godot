@@ -2,14 +2,14 @@ class_name ControlsPage
 extends PanelContainer
 ## One player's controls page, shown by the title screen's settings and by the
 ## pause menu's: a KEYBOARD tab that rebinds the keys, and a GAMEPAD tab with the
-## controller the player uses, MOVE / FIRE 1 / FIRE 2 in two slots each, and the
-## buttons that never change. It handles its own input while shown and emits
-## [signal closed] when the player backs out.
+## controller the player uses, whether it vibrates, MOVE / FIRE 1 / FIRE 2 in two
+## slots each, and the pause button, which never changes. It handles its own
+## input while shown and emits [signal closed] when the player backs out.
 ##
 ## Mouse: hovering focuses, clicking activates, right-clicking a slot empties it.
 ## Keyboard and controller: up / down move, left / right switch tabs, pick a slot
-## or a controller, fire / A / Enter change the focused row, Esc or B goes back,
-## and LB / RB switch tabs.
+## or a controller, or turn vibration on or off, fire / A / Enter change the
+## focused row, Esc or B goes back, and LB / RB switch tabs.
 
 signal closed
 
@@ -18,7 +18,7 @@ enum Tab { KEYBOARD, GAMEPAD }
 const TAB_TITLES: Array[String] = ["KEYBOARD", "GAMEPAD"]
 ## The GAMEPAD tab's rows for the buttons that never change: the row's name and
 ## the menu actions whose buttons it shows.
-const PAD_FIXED_ROWS: Array = [["PAUSE", ["pause"]], ["MENU OK/BACK", ["ui_accept", "ui_cancel"]]]
+const PAD_FIXED_ROWS: Array = [["PAUSE", ["pause"]]]
 const FIXED_ROW_TINT := Color(1, 1, 1, 0.5)
 
 @onready var _title: Label = %Title
@@ -34,6 +34,7 @@ var _tab_row: Button
 var _tab: Tab = Tab.KEYBOARD
 var _action_rows: Array[Button] = []     # KEYBOARD tab: a key per action
 var _controller_row: Button              # GAMEPAD tab: which controller the player uses
+var _vibration_row: Button               # GAMEPAD tab: whether it vibrates for the player
 var _pad_rows: Array[Button] = []        # GAMEPAD tab: MOVE, FIRE 1, FIRE 2, two slots each
 var _fixed_pad_rows: Array[Button] = []  # GAMEPAD tab: the buttons that never change
 var _pad_slot: int = 0                   # the slot picked along the GAMEPAD rows
@@ -54,6 +55,7 @@ func _ready() -> void:
 	var items: Array[Control] = [_tab_row]
 	items.append_array(_action_rows)
 	items.append(_controller_row)
+	items.append(_vibration_row)
 	items.append_array(_pad_rows)
 	items.append(_reset_button)
 	items.append(_back_button)
@@ -67,7 +69,7 @@ func _ready() -> void:
 func open(player: String, using_pad: bool) -> void:
 	_player = player
 	_actions = InputSettings.get_player_actions(player)
-	_title.text = "%s CONTROLS" % player.to_upper()
+	_title.text = tr("%s CONTROLS") % player.to_upper()
 	_tab = Tab.GAMEPAD if using_pad else Tab.KEYBOARD
 	_pad_slot = 0
 	_capture_action = ""
@@ -117,8 +119,8 @@ func _input(event: InputEvent) -> void:
 # =====================================================================
 
 ## The KEYBOARD / GAMEPAD tabs, then the KEYBOARD tab's row per action, or the
-## GAMEPAD tab's controller choice, rows of two slots and its fixed buttons.
-## Both tabs have six rows, so the page keeps its size.
+## GAMEPAD tab's controller choice, vibration switch, rows of two slots and its
+## fixed button. Both tabs have six rows, so the page keeps its size.
 func _build_rows() -> void:
 	_tab_row = MenuRows.make_tab_row(TAB_TITLES, "LB", "RB")
 	var layout := _rows.get_parent()
@@ -136,14 +138,8 @@ func _build_rows() -> void:
 		_focus_on_hover(row)
 		row.pressed.connect(_begin_capture.bind(i))
 		_action_rows.append(row)
-	_controller_row = MenuRows.make_value_row("CONTROLLER")
-	_rows.add_child(_controller_row)
-	_focus_on_hover(_controller_row)
-	_controller_row.pressed.connect(_cycle_pad_device.bind(1))
-	for side: String in ["Left", "Right"]:
-		var arrow := MenuRows.arrow(_controller_row, side)
-		arrow.pressed.connect(_cycle_pad_device.bind(-1 if side == "Left" else 1))
-		arrow.mouse_entered.connect(_controller_row.grab_focus)
+	_controller_row = _add_value_row("CONTROLLER", _cycle_pad_device)
+	_vibration_row = _add_value_row("VIBRATION", _toggle_vibration)
 	for i in InputSettings.PAD_CONTROLS.size():
 		var row := MenuRows.make_slot_row(InputSettings.PAD_CONTROL_NAMES[i], InputSettings.PAD_SLOTS)
 		_rows.add_child(row)
@@ -170,6 +166,20 @@ func _build_rows() -> void:
 		_fixed_pad_rows.append(row)
 
 
+## A "NAME  <  value  >" row: fire, a click or ">" calls [param change] with 1,
+## "<" with -1.
+func _add_value_row(title: String, change: Callable) -> Button:
+	var row := MenuRows.make_value_row(title)
+	_rows.add_child(row)
+	_focus_on_hover(row)
+	row.pressed.connect(change.bind(1))
+	for side: String in ["Left", "Right"]:
+		var arrow := MenuRows.arrow(row, side)
+		arrow.pressed.connect(change.bind(-1 if side == "Left" else 1))
+		arrow.mouse_entered.connect(row.grab_focus)
+	return row
+
+
 ## Hovering a button focuses it, so mouse and keyboard share one highlight.
 func _focus_on_hover(button: Button) -> void:
 	button.mouse_entered.connect(button.grab_focus)
@@ -186,11 +196,12 @@ func _refresh_rows() -> void:
 	_reset_button.text = "RESET BUTTONS" if pad else "RESET KEYS"
 	for row in _action_rows:
 		row.visible = not pad
-	for row in [_controller_row] + _pad_rows + _fixed_pad_rows:
+	for row in [_controller_row, _vibration_row] + _pad_rows + _fixed_pad_rows:
 		row.visible = pad
 	var device := InputSettings.get_pad_device(_player)
 	MenuRows.value_label(_controller_row).text = "%d   ·   %s" % [device + 1,
-			Input.get_joy_name(device) if device in Input.get_connected_joypads() else "not plugged in"]
+			Input.get_joy_name(device) if device in Input.get_connected_joypads() else tr("not plugged in")]
+	MenuRows.value_label(_vibration_row).text = "ON" if InputSettings.get_vibration(_player) else "OFF"
 	if _actions.size() == _action_rows.size():
 		for i in _action_rows.size():
 			var action := _actions[i]
@@ -234,9 +245,10 @@ func _refresh_slot_highlight() -> void:
 func _set_prompt(text: String) -> void:
 	if text.is_empty():
 		if _tab == Tab.GAMEPAD:
-			text = "A / click: change   ·   %s / Delete / right-click: empty\n%s" % [_view_button_name(), _pad_status_text()]
+			text = tr("A / click: change   ·   %s / Delete / right-click: empty") % _view_button_name() \
+					+ "\n" + _pad_status_text()
 		else:
-			text = "Click a row, or press fire on it, to change that key."
+			text = tr("Click a row, or press fire on it, to change that key.")
 	_prompt.text = text
 
 
@@ -247,16 +259,22 @@ func _pad_status_text() -> String:
 	var device := InputSettings.get_pad_device(_player)
 	var plugged := device in Input.get_connected_joypads()
 	var partner := InputSettings.get_pad_partner(_player)
+	# Named fields, as the languages put them in different orders.
+	var fields := {"who": who, "pad": device + 1, "partner": partner.to_upper(),
+			"name": Input.get_joy_name(device) if plugged else ""}
 	if partner != "":
-		return "%s shares controller %d with %s%s" % [who, device + 1, partner.to_upper(),
-				(":  " + Input.get_joy_name(device)) if plugged else ", which is not plugged in."]
+		if plugged:
+			return tr("{who} shares controller {pad} with {partner}:  {name}").format(fields)
+		return tr("{who} shares controller {pad} with {partner}, which is not plugged in.").format(fields)
 	if plugged:
-		return "%s plays on controller %d:  %s" % [who, device + 1, Input.get_joy_name(device)]
+		return tr("{who} plays on controller {pad}:  {name}").format(fields)
 	var other := "p2" if _player == "p1" else "p1"
 	var other_device := InputSettings.get_pad_device(other)
 	if other_device in Input.get_connected_joypads():
-		return "Controller %d is not plugged in: pick %d to share %s's." % [device + 1, other_device + 1, other.to_upper()]
-	return "Controller %d is not plugged in." % (device + 1)
+		fields["other_pad"] = other_device + 1
+		fields["other"] = other.to_upper()
+		return tr("Controller {pad} is not plugged in: pick {other_pad} to share {other}'s.").format(fields)
+	return tr("Controller %d is not plugged in.") % (device + 1)
 
 
 # =====================================================================
@@ -282,27 +300,30 @@ func _on_joy_connection_changed(_device: int, _connected: bool) -> void:
 
 
 ## Left / right: the tab strip switches tabs, the CONTROLLER row picks the
-## controller, and a GAMEPAD row picks its slot.
+## controller, VIBRATION turns rumble on or off, and a GAMEPAD row picks its slot.
 func _adjust(direction: int) -> void:
 	var focused := _nav.focus_owner()
 	if focused == _tab_row:
 		_select_tab(Tab.KEYBOARD if direction < 0 else Tab.GAMEPAD)
 	elif focused == _controller_row:
 		_cycle_pad_device(direction)
+	elif focused == _vibration_row:
+		_toggle_vibration(direction)
 	elif focused in _pad_rows:
 		_pad_slot = clampi(_pad_slot + direction, 0, InputSettings.PAD_SLOTS - 1)
 		_refresh_slot_highlight()
 
 
 ## Switches tabs. A focused row hands the focus to its counterpart on the other
-## tab: UP to RIGHT go with MOVE, and each fire button with itself.
+## tab: UP to RIGHT go with MOVE (as do CONTROLLER and VIBRATION), and each fire
+## button with itself.
 func _select_tab(tab: int) -> void:
 	if tab == _tab and _capture_action == "":
 		_refresh_tabs()  # a click on the active tab toggled it off
 		return
 	var focused := _nav.focus_owner()
 	var key_row := _action_rows.find(focused)
-	var pad_row := 0 if focused == _controller_row else _pad_rows.find(focused)
+	var pad_row := 0 if focused in [_controller_row, _vibration_row] else _pad_rows.find(focused)
 	_cancel_capture()
 	_tab = tab as Tab
 	_refresh_rows()
@@ -362,13 +383,13 @@ func _reset() -> void:
 	if _tab == Tab.GAMEPAD:
 		InputSettings.reset_pad_to_defaults(_player)
 		if InputSettings.is_pad_shared():
-			_set_prompt("P1 and P2 are back on their halves of controller %d."
+			_set_prompt(tr("P1 and P2 are back on their halves of controller %d.")
 					% (InputSettings.get_pad_device(_player) + 1))
 		else:
-			_set_prompt("%s controller reset to defaults." % _player.to_upper())
+			_set_prompt(tr("%s controller reset to defaults.") % _player.to_upper())
 	else:
 		InputSettings.reset_to_defaults(_player)
-		_set_prompt("%s keys reset to defaults." % _player.to_upper())
+		_set_prompt(tr("%s keys reset to defaults.") % _player.to_upper())
 	_refresh_rows()
 
 
@@ -382,11 +403,23 @@ func _cycle_pad_device(direction: int) -> void:
 	InputSettings.set_pad_device(_player, device)
 	_refresh_rows()
 	if InputSettings.is_pad_shared() and not was_shared:
-		_set_prompt("P1 and P2 now share controller %d: P1 has its left half, P2 its right." % (device + 1))
+		_set_prompt(tr("P1 and P2 now share controller %d: P1 has its left half, P2 its right.") % (device + 1))
 	elif was_shared and not InputSettings.is_pad_shared():
-		_set_prompt("P1 and P2 have controllers of their own: each has the whole layout again.")
+		_set_prompt(tr("P1 and P2 have controllers of their own: each has the whole layout again."))
 	else:
 		_set_prompt("")
+
+
+## The VIBRATION row: switches rumble on or off for this page's player. Switching
+## it on gives their controller a short buzz, so they feel what it does.
+func _toggle_vibration(_direction: int) -> void:
+	_cancel_capture()
+	var enabled := not InputSettings.get_vibration(_player)
+	InputSettings.set_vibration(_player, enabled)
+	if enabled:
+		InputSettings.rumble(InputSettings.PLAYERS.find(_player), 0.4, 0.5, 0.2)
+	_refresh_rows()
+	_set_prompt("")
 
 
 ## Empties [param slot] of the GAMEPAD row [param index] (the row's other input
@@ -401,14 +434,14 @@ func _empty_pad_slot(index: int, slot: int) -> void:
 	if old == "":
 		_set_prompt("")
 	else:
-		_set_prompt("%s no longer uses %s." % [_pad_control_name(control), InputSettings.get_pad_name(old)])
+		_set_prompt(tr("%s no longer uses %s.") % [_pad_control_name(control), InputSettings.get_pad_name(old)])
 
 
 ## KEYBOARD tab: waits for the key of the action in row [param index].
 func _begin_capture(index: int) -> void:
 	_capture_action = _actions[index]
 	_refresh_rows()
-	_set_prompt("Press a key for %s   (Esc or B cancels)" % InputSettings.ACTION_DISPLAY_NAMES[index])
+	_set_prompt(tr("Press a key for %s   (Esc or B cancels)") % tr(InputSettings.ACTION_DISPLAY_NAMES[index]))
 
 
 ## GAMEPAD tab: waits for what goes in [param slot] of the control in row
@@ -460,10 +493,10 @@ func _handle_key_capture(event: InputEvent) -> void:
 		_cancel_capture()
 		return
 	if physical_key == KEY_F11:
-		_set_prompt("F11 is reserved for fullscreen. Press another key.")
+		_set_prompt(tr("F11 is reserved for fullscreen. Press another key."))
 		return
 	if physical_key == KEY_BACKSLASH or physical_key == KEY_QUOTELEFT:
-		_set_prompt("%s is reserved for a debug key. Press another key." % ("\\" if physical_key == KEY_BACKSLASH else "`"))
+		_set_prompt(tr("%s is reserved for a debug key. Press another key.") % ("\\" if physical_key == KEY_BACKSLASH else "`"))
 		return
 	var action := _capture_action
 	var conflict := _find_conflicting_action(physical_key, action)
@@ -471,7 +504,7 @@ func _handle_key_capture(event: InputEvent) -> void:
 	_capture_action = ""
 	_refresh_rows()
 	if conflict != "":
-		_set_prompt("%s bound. Note: it is also used by %s." % [InputSettings.get_key_name(action), conflict])
+		_set_prompt(tr("%s bound. Note: it is also used by %s.") % [InputSettings.get_key_name(action), conflict])
 	else:
 		_set_prompt("")
 
@@ -505,12 +538,13 @@ func _handle_pad_capture(event: InputEvent) -> void:
 		return
 	var code := InputSettings.pad_code_for(event)
 	if InputSettings.is_pad_code_reserved(code):
-		_set_prompt("%s belongs to the system. Press another.\n%s" % [InputSettings.get_pad_name(code), _pad_capture_hint()])
+		_set_prompt(tr("%s belongs to the system. Press another.") % InputSettings.get_pad_name(code)
+				+ "\n" + _pad_capture_hint())
 		return
 	var value := InputSettings.pad_value_for(_capture_action, event)
 	if value == "":
-		var takes := "the D-pad or a stick" if _capture_action == "move" else "a button or a trigger"
-		_set_prompt("%s takes %s.\n%s" % [_pad_control_name(_capture_action), takes, _pad_capture_hint()])
+		var takes := tr("the D-pad or a stick") if _capture_action == "move" else tr("a button or a trigger")
+		_set_prompt(tr("%s takes %s.") % [_pad_control_name(_capture_action), takes] + "\n" + _pad_capture_hint())
 		return
 	_finish_pad_capture(value)
 
@@ -525,11 +559,11 @@ func _finish_pad_capture(value: String) -> void:
 	if moved.is_empty():
 		_set_prompt("")
 	elif moved["player"] == _player and moved["control"] == control:
-		_set_prompt("The two %s slots swapped." % _pad_control_name(control))
+		_set_prompt(tr("The two %s slots swapped.") % _pad_control_name(control))
 	elif old == "":
-		_set_prompt("%s no longer uses %s." % [_moved_name(moved), InputSettings.get_pad_name(value)])
+		_set_prompt(tr("%s no longer uses %s.") % [_moved_name(moved), InputSettings.get_pad_name(value)])
 	else:
-		_set_prompt("%s had %s, so it takes %s instead." % [_moved_name(moved),
+		_set_prompt(tr("%s had %s, so it takes %s instead.") % [_moved_name(moved),
 				InputSettings.get_pad_name(value), InputSettings.get_pad_name(old)])
 
 
@@ -541,13 +575,13 @@ func _moved_name(moved: Dictionary) -> String:
 
 
 func _pad_capture_prompt() -> String:
-	var what := "Press the D-pad, or push a stick," if _capture_action == "move" \
-			else "Press a button, or pull a trigger,"
-	return "%s for %s\n%s" % [what, _pad_control_name(_capture_action), _pad_capture_hint()]
+	var what := "Press the D-pad, or push a stick, for %s" if _capture_action == "move" \
+			else "Press a button, or pull a trigger, for %s"
+	return tr(what) % _pad_control_name(_capture_action) + "\n" + _pad_capture_hint()
 
 
 func _pad_capture_hint() -> String:
-	return "%s or Delete empties it   ·   Start or Esc cancels" % _view_button_name()
+	return tr("%s or Delete empties it   ·   Start or Esc cancels") % _view_button_name()
 
 
 ## The controller button that empties a slot, by its name on the pad ("View").
@@ -555,9 +589,9 @@ func _view_button_name() -> String:
 	return InputSettings.get_pad_name("b%d" % JOY_BUTTON_BACK)
 
 
-## "FIRE 1" for "shoot".
+## "FIRE 1" for "shoot", in the menus' language.
 func _pad_control_name(control: String) -> String:
-	return InputSettings.PAD_CONTROL_NAMES[InputSettings.PAD_CONTROLS.find(control)]
+	return tr(InputSettings.PAD_CONTROL_NAMES[InputSettings.PAD_CONTROLS.find(control)])
 
 
 ## Display name ("P2 FIRE 1") of another action already using [param physical_key], or "".
@@ -569,7 +603,7 @@ func _find_conflicting_action(physical_key: int, action: String) -> String:
 	return ""
 
 
-## "FIRE 2" for "p1_shoot2".
+## "FIRE 2" for "p1_shoot2", in the menus' language.
 func _action_display_name(action: String) -> String:
 	var index := InputSettings.PLAYER_ACTION_SUFFIXES.find(action.get_slice("_", 1))
-	return InputSettings.ACTION_DISPLAY_NAMES[index] if index >= 0 else action
+	return tr(InputSettings.ACTION_DISPLAY_NAMES[index]) if index >= 0 else action

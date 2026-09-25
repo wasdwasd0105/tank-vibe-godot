@@ -135,10 +135,11 @@ const WEAPON_TO_COOKIE: Dictionary = {
 }
 
 ## Secondary weapon data: reload_count (given on pickup/refill), max_count (bullets_max cap)
+## AP holds 100 (Sean, 2026-09-25); the original stopped at 50.
 const WEAPON_DATA: Dictionary = {
 	"rapid":     { "reload_count": 50, "max_count": 200 },
 	"fire":      { "reload_count": 30, "max_count": 150 },
-	"ap":        { "reload_count": 10, "max_count": 50 },
+	"ap":        { "reload_count": 10, "max_count": 100 },
 	"explosion": { "reload_count": 20, "max_count": 100 },
 	"mine":      { "reload_count": 25, "max_count": 75 },
 }

@@ -3,7 +3,8 @@ extends RefCounted
 ## File picker shared by the menu screens: the operating system's own dialog
 ## when the display server offers one, otherwise Godot's in-game FileDialog.
 ## Opens a file, or in save mode names one to write. Remembers the last folder
-## used per purpose (see InputSettings.save_import_dir).
+## used per purpose (see InputSettings.save_import_dir). Its title and the
+## filters' descriptions are translation keys, shown in the menus' language.
 
 signal file_picked(path: String)
 
@@ -33,15 +34,27 @@ func open(file_name := "") -> void:
 	var dir := start_dir()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
 		var mode := DisplayServer.FILE_DIALOG_MODE_SAVE_FILE if _save_mode else DisplayServer.FILE_DIALOG_MODE_OPEN_FILE
-		var err := DisplayServer.file_dialog_show(_title, dir, file_name, false, mode, _filters, _on_native_picked)
+		var err := DisplayServer.file_dialog_show(tr(_title), dir, file_name, false, mode, translated_filters(),
+				_on_native_picked)
 		if err == OK:
 			return
 		push_warning("MenuFilePicker: system file picker failed (%s), using the in-game dialog" % error_string(err))
 	var dialog := fallback_dialog()
+	dialog.title = tr(_title)   # the language may have changed since it was made
+	dialog.filters = translated_filters()
 	dialog.current_dir = dir
 	if _save_mode:
 		dialog.current_file = file_name
 	dialog.popup_centered()
+
+
+## The filters, "*.sav ; Tank.exe save files", with each description translated.
+func translated_filters() -> PackedStringArray:
+	var filters := PackedStringArray()
+	for filter in _filters:
+		var parts := filter.split(";", true, 1)
+		filters.append(filter if parts.size() < 2 else "%s; %s" % [parts[0], tr(parts[1].strip_edges())])
+	return filters
 
 
 ## Folder the picker opens in: the last one used for this purpose, else Documents.
@@ -66,11 +79,11 @@ func fallback_dialog() -> FileDialog:
 
 func make_fallback_dialog(embedded_run: bool) -> FileDialog:
 	var dialog := FileDialog.new()
-	dialog.title = _title
+	dialog.title = tr(_title)
 	dialog.mode_overrides_title = false
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE if _save_mode else FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = _filters
+	dialog.filters = translated_filters()
 	dialog.use_native_dialog = false
 	dialog.size = Vector2i(1100, 720)
 	if embedded_run:

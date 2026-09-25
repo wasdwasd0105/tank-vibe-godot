@@ -14,6 +14,17 @@ const DEFAULT_ENEMY_WAVE: Array = [18, 2, 0, 0]
 # Default spawn queue fallback (20 type-1 enemies)
 const DEFAULT_SPAWN_QUEUE: Array = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 
+# --- Difficulty: the original's records (Tank.exe 0x4d2860), by level 0-5 ---
+## How much of a stage's enemy list each difficulty sends, in percent.
+const DIFFICULTY_ENEMY_PERCENT: Array[int] = [50, 75, 100, 125, 150, 175]
+## How much of a stage's limit on enemies at once each difficulty allows, in percent.
+const DIFFICULTY_ON_SCREEN_PERCENT: Array[int] = [67, 83, 100, 117, 133, 150]
+## Whatever the stage and difficulty, the limit stays within these.
+const MIN_ON_SCREEN: int = 4
+const MAX_ON_SCREEN: int = 20
+## The original read a type listed more times than this as none.
+const MAX_TYPE_COUNT: int = 99
+
 # Path to map files directory
 const MAP_DIR: String = "res://maps/"
 ## Imported map files (see import_map_file) live here and count as extra pools.
@@ -269,7 +280,7 @@ static func load_stages_from_dat(path: String) -> Array:
 		var col_off := base + DAT_BGCOLOR_OFFSET
 		sd.bg_color = Color8(all_data[col_off], all_data[col_off + 1], all_data[col_off + 2])
 
-		# Parse enemy count (24 x LE16 at offset 144, we use first 4)
+		# Parse enemy count (24 x LE16 at offset 144, one per type)
 		for i in range(24):
 			var off := base + DAT_ENEMY_OFFSET + i * 2
 			var val: int = all_data[off] | (all_data[off + 1] << 8)
@@ -351,25 +362,25 @@ static func import_map_file(source_path: String) -> Dictionary:
 	var file_name := source_path.get_file()
 	var extension := source_path.get_extension().to_lower()
 	if extension != "dat":
-		return {"ok": false, "error": "unsupported file type .%s (expected a Tank.exe .dat)" % extension}
+		return {"ok": false, "error": TranslationServer.translate("unsupported file type .%s (expected a Tank.exe .dat)") % extension}
 	var source := FileAccess.open(source_path, FileAccess.READ)
 	if not source:
-		return {"ok": false, "error": "could not read %s" % file_name}
+		return {"ok": false, "error": TranslationServer.translate("could not read %s") % file_name}
 	var size := source.get_length()
 	source.close()
 
 	if size == 0 or size % DAT_STAGE_SIZE != 0:
-		return {"ok": false, "error": "%s is not a Tank.exe map file (size must be a multiple of %d bytes)" % [file_name, DAT_STAGE_SIZE]}
+		return {"ok": false, "error": TranslationServer.translate("%s is not a Tank.exe map file (size must be a multiple of %d bytes)") % [file_name, DAT_STAGE_SIZE]}
 	var stages := load_stages_from_dat(source_path)
 	if stages.is_empty():
-		return {"ok": false, "error": "no stages found in %s" % file_name}
+		return {"ok": false, "error": TranslationServer.translate("no stages found in %s") % file_name}
 
 	DirAccess.make_dir_recursive_absolute(USER_MAP_DIR)
 	var base := _sanitize_pool_name(file_name.get_basename())
 	var pool_name := _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(USER_MAP_DIR + n + ".dat"))
 	var err := DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + ".dat")
 	if err != OK:
-		return {"ok": false, "error": "could not copy %s into %s (%s)" % [file_name, USER_MAP_DIR, error_string(err)]}
+		return {"ok": false, "error": TranslationServer.translate("could not copy %s into %s (%s)") % [file_name, USER_MAP_DIR, error_string(err)]}
 
 	scan_map_pools()
 	return {"ok": true, "pool_id": USER_POOL_PREFIX + pool_name, "name": pool_name, "stage_count": stages.size()}
@@ -428,27 +439,61 @@ static func get_enemy_wave(stage_num: int) -> Array:
 				stage.enemy_count[2], stage.enemy_count[3]]
 	return DEFAULT_ENEMY_WAVE.duplicate()
 
-## Get enemy spawn queue for a stage (1-indexed)
-## Returns a shuffled array of tank type IDs (1-24) ready to spawn.
+## Get enemy spawn queue for a stage (1-indexed) at [param difficulty] (0-5)
+## Returns the tank type IDs (1-24) it sends, one per tank, in no particular
+## order: the spawner picks each next one by type (EnemySpawner._take_type).
 ## EnemyCount format: index = type (0→type1, 1→type2, ..., 23→type24),
-## value = how many of that type to spawn.
-static func get_enemy_spawn_queue(stage_num: int) -> Array:
+## value = how many of that type the stage lists, which the difficulty scales
+## (see enemies_for_difficulty).
+static func get_enemy_spawn_queue(stage_num: int, difficulty: int) -> Array:
 	var stages := get_stages()
 	var idx := stage_num - 1
 	if idx < 0 or idx >= stages.size():
 		return DEFAULT_SPAWN_QUEUE.duplicate()
 
 	var stage: StageData = stages[idx]
+	var listed: Array = stage.enemy_count.slice(0, 24)
+	if not listed.any(func(count: int) -> bool: return count > 0 and count <= MAX_TYPE_COUNT):
+		return DEFAULT_SPAWN_QUEUE.duplicate()  # the stage lists no enemies at all
+	var counts := enemies_for_difficulty(listed, difficulty)
 	var queue: Array = []
-	for i in range(mini(stage.enemy_count.size(), 24)):
-		var count: int = stage.enemy_count[i]
+	for i in range(counts.size()):
 		var type_id: int = i + 1  # index 0 = type 1, index 1 = type 2, etc.
-		for _j in range(count):
+		for _j in range(counts[i]):
 			queue.append(type_id)
-	if queue.is_empty():
-		return DEFAULT_SPAWN_QUEUE.duplicate()
-	queue.shuffle()
+	# Empty if the difficulty rounded every enemy away, as the original's could:
+	# the stage is then won as it starts.
 	return queue
+
+## How many of each type (index 0 = type 1) a stage listing [param counts] sends
+## at [param difficulty] (0-5), as the original's stage start worked it out
+## (0x4cabb0): each count times the difficulty's percentage, rounded by chance.
+## A count over 99 is none.
+static func enemies_for_difficulty(counts: Array, difficulty: int) -> Array[int]:
+	var percent: int = DIFFICULTY_ENEMY_PERCENT[clampi(difficulty, 0, DIFFICULTY_ENEMY_PERCENT.size() - 1)]
+	var scaled: Array[int] = []
+	for count: int in counts:
+		scaled.append(scale_by_chance(count if count <= MAX_TYPE_COUNT else 0, percent))
+	return scaled
+
+## How many enemies may be on the field at once in a stage whose own limit is
+## [param count], at [param difficulty] (0-5): scaled the same way, then held to
+## 4-20, as the original did (0x4cac91, 0x4991b8). The number of players
+## doesn't come into it.
+static func on_screen_for_difficulty(count: int, difficulty: int) -> int:
+	var percent: int = DIFFICULTY_ON_SCREEN_PERCENT[clampi(difficulty, 0, DIFFICULTY_ON_SCREEN_PERCENT.size() - 1)]
+	return clampi(scale_by_chance(count, percent), MIN_ON_SCREEN, MAX_ON_SCREEN)
+
+## [param count] × [param percent] / 100, with what's left after the point as the
+## chance of one more, as the original rounded (a Random(1000) against the
+## fraction in thousandths): 2 × 75 % is 1, or 2 half the time.
+static func scale_by_chance(count: int, percent: int) -> int:
+	var hundredths := count * percent
+	@warning_ignore("integer_division")
+	var result := hundredths / 100
+	if randi() % 100 < hundredths % 100:
+		result += 1
+	return result
 
 ## Get caption (name) for a stage (1-indexed)
 static func get_stage_caption(stage_num: int) -> String:
@@ -495,11 +540,12 @@ static func get_stage_bg_color(stage_num: int) -> Color:
 	var stage: StageData = stages[idx]
 	return stage.bg_color
 
-## Get max concurrent enemies for a stage
-static func get_max_concurrent(stage_num: int) -> int:
+## Get max concurrent enemies for a stage (1-indexed) at [param difficulty]
+## (0-5): see on_screen_for_difficulty.
+static func get_max_concurrent(stage_num: int, difficulty: int) -> int:
 	var stages := get_stages()
 	var idx := stage_num - 1
 	if idx < 0 or idx >= stages.size():
-		return 4
+		return MIN_ON_SCREEN
 	var stage: StageData = stages[idx]
-	return stage.max_count
+	return on_screen_for_difficulty(stage.max_count, difficulty)

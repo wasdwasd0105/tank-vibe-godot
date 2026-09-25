@@ -1,7 +1,7 @@
 extends Control
 
 @onready var stage_label: Label = $LeftPanel/StageLabel
-@onready var games_played_label: Label = $LeftPanel/GamesPlayed
+@onready var stages_played_label: Label = $LeftPanel/StagesPlayed
 @onready var p1_lives_label: Label = $LeftPanel/P1Lives
 @onready var p1_score_label: Label = $LeftPanel/P1Score
 
@@ -12,6 +12,8 @@ extends Control
 @onready var p2_score_label: Label = $RightPanel/P2Score
 @onready var countdown_label: Label = $CountdownLabel
 @onready var p1_header: Label = $LeftPanel/P1Header
+@onready var p1_hits_label: Label = $LeftPanel/P1Hits
+@onready var p2_hits_label: Label = $RightPanel/P2Hits
 
 # P1 stat icons + value labels
 @onready var p1_hp_icon: TextureRect = $LeftPanel/P1HpIcon
@@ -83,15 +85,35 @@ func _get_player_addons(pid: int) -> Array:
 	return GameManager.player_addons[pid]  # Fallback when tank not spawned
 
 ## A player out of lives reads "Game Over" where their lives were, as in the
-## original's corner (0x499a05).
+## original's corner (0x499a05). One sitting out reads "OFF".
 func _lives_text(pid: int) -> String:
+	if GameManager.player_disabled[pid]:
+		return "OFF"
 	if GameManager.player_lives[pid] < 0:
 		return "GAME OVER"
 	return "Lives: " + str(GameManager.player_lives[pid])
 
+## A player sitting out keeps their panel, dimmed: the score and the stats they
+## will come back with.
+const SITTING_OUT_ALPHA: float = 0.4
+
+## A hit chain shows as "N Hits" over the player's panel from its second hit
+## until it lapses, as the original's corner did (0x498b4c; it hid the line once
+## the chain lapsed, 0x498dfc). The original added the chain's bonus, " +N"; the
+## remake's chains score nothing, so it shows the count alone.
+func _show_hits(label: Label, pid: int) -> void:
+	if not label:
+		return
+	var chain := GameManager.get_hit_chain(pid)
+	label.visible = chain >= 2
+	if label.visible:
+		label.text = "%d Hits" % chain
+
 func _is_player_hud_hidden(pid: int) -> bool:
 	if not GameManager.player_active[pid]:
 		return true
+	if GameManager.player_disabled[pid]:
+		return false
 	var tree := get_tree()
 	if not tree:
 		return true
@@ -100,6 +122,10 @@ func _is_player_hud_hidden(pid: int) -> bool:
 		if game_node.get_player_dead_timer(pid) >= 15.0:
 			return true
 	return false
+
+func _dim(node: CanvasItem, dimmed: bool) -> void:
+	if node:
+		node.modulate.a = SITTING_OUT_ALPHA if dimmed else 1.0
 
 func _get_cookie_texture(weapon_type: String) -> Texture2D:
 	var cookie_type: int = CookieData.WEAPON_TO_COOKIE.get(weapon_type, -1)
@@ -168,8 +194,9 @@ func _update_player_stats(pid: int, hidden: bool,
 func update_display() -> void:
 	if stage_label:
 		stage_label.text = str(GameManager.current_stage)
-	if games_played_label:
-		games_played_label.text = "Played: " + str(InputSettings.get_games_played())
+	if stages_played_label:
+		# The save's stages cleared, the count its Load Game entry shows.
+		stages_played_label.text = "Played: " + str(GameManager.save_counter)
 	if enemy_count_label:
 		enemy_count_label.text = str(GameManager.enemies_remaining)
 	if credit_label:
@@ -189,6 +216,12 @@ func update_display() -> void:
 	if p1_score_label:
 		p1_score_label.text = str(GameManager.player_scores[0])
 		p1_score_label.visible = not p1_hidden
+	_show_hits(p1_hits_label, 0)
+
+	for node: CanvasItem in [p1_header, p1_lives_label, p1_score_label, p1_hp_icon, p1_hp_val,
+			p1_spd_icon, p1_spd_val, p1_wpn_icon, p1_wpn_val, p1_cookie_icon, p1_cookie_count,
+			p1_addon_0, p1_addon_1]:
+		_dim(node, GameManager.player_disabled[0])
 
 	# Player 2 info (right panel)
 	var p2_hidden := _is_player_hud_hidden(1)
@@ -204,6 +237,11 @@ func update_display() -> void:
 	if p2_score_label:
 		p2_score_label.text = str(GameManager.player_scores[1])
 		p2_score_label.visible = not p2_hidden
+	_show_hits(p2_hits_label, 1)
+	for node: CanvasItem in [p2_header, p2_lives_label, p2_score_label, p2_hp_icon, p2_hp_val,
+			p2_spd_icon, p2_spd_val, p2_wpn_icon, p2_wpn_val, p2_cookie_icon, p2_cookie_count,
+			p2_addon_0, p2_addon_1]:
+		_dim(node, GameManager.player_disabled[1])
 
 	# Game over countdown
 	if countdown_label and get_tree():

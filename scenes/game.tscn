@@ -67,19 +67,11 @@ texture_filter = 0
 [node name="EnemySpawner" type="Node2D" parent="."]
 script = ExtResource("3_spawner")
 
-[node name="SpawnPoint1" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(224, 48)
-
-[node name="SpawnPoint2" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(800, 48)
-
-[node name="SpawnPoint3" type="Marker2D" parent="EnemySpawner"]
-position = Vector2(1376, 48)
-
 [node name="SpawnTimer" type="Timer" parent="EnemySpawner"]
-wait_time = 2.0
+one_shot = true
 
 [node name="HUD" type="Control" parent="."]
+auto_translate_mode = 2
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -115,7 +107,7 @@ theme_override_font_sizes/font_size = 32
 text = "1"
 horizontal_alignment = 1
 
-[node name="GamesPlayed" type="Label" parent="HUD/LeftPanel"]
+[node name="StagesPlayed" type="Label" parent="HUD/LeftPanel"]
 layout_mode = 0
 offset_left = 6.0
 offset_top = 150.0
@@ -124,6 +116,18 @@ offset_bottom = 170.0
 theme_override_font_sizes/font_size = 20
 theme_override_colors/font_color = Color(0.5, 0.5, 0.5, 1)
 text = "Played: 0"
+horizontal_alignment = 1
+
+[node name="P1Hits" type="Label" parent="HUD/LeftPanel"]
+visible = false
+layout_mode = 0
+offset_left = 6.0
+offset_top = 612.0
+offset_right = 154.0
+offset_bottom = 638.0
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(0.3, 0.8, 1, 1)
+text = "2 Hits"
 horizontal_alignment = 1
 
 [node name="P1Header" type="Label" parent="HUD/LeftPanel"]
@@ -303,6 +307,18 @@ theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
 text = "Credit: 3"
 horizontal_alignment = 1
 clip_text = true
+
+[node name="P2Hits" type="Label" parent="HUD/RightPanel"]
+visible = false
+layout_mode = 0
+offset_left = 6.0
+offset_top = 612.0
+offset_right = 154.0
+offset_bottom = 638.0
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(0.3, 0.8, 1, 1)
+text = "2 Hits"
+horizontal_alignment = 1
 
 [node name="P2Header" type="Label" parent="HUD/RightPanel"]
 layout_mode = 0

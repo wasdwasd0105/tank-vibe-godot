@@ -122,7 +122,7 @@ func _run() -> void:
 	check(_game.get_phase() == "play" and not _overlay.visible, "over at 2.625 s: play")
 	await _frames(2)
 	check(_players().size() == 2, "both players' tanks roll in")
-	check(spawner._first_wave_pending and spawner.spawn_timer.time_left > 2.5
+	check(is_equal_approx(spawner.spawn_timer.wait_time, 3.0) and spawner.spawn_timer.time_left > 2.5
 		and tree.get_nodes_in_group("enemies").is_empty(), "the first enemy comes 3 s later")
 	await _key(KEY_ESCAPE)
 	check(_game.pause_menu.visible and tree.paused, "now Esc pauses")
@@ -218,6 +218,7 @@ func _run() -> void:
 	await _frames(2)
 
 	print("\n[C] A cleared stage waits for its leftover items")
+	GameManager.save_counter = 1855  # the save's stages cleared so far
 	for c in tree.get_nodes_in_group("cookies"):
 		c.queue_free()
 	await _frames(1)
@@ -243,6 +244,8 @@ func _run() -> void:
 	check(_game.get_phase() == "play", "one item left: still waiting after 1.2 s")
 	await tree.create_timer(1.3).timeout
 	check(_game.get_phase() == "mission", "the item had its 2.25 s: the stage ends")
+	check(GameManager.save_counter == 1856 and _game.hud.stages_played_label.text == "Played: 1856",
+		"one more stage cleared in the save, and Played shows it at once (%s)" % _game.hud.stages_played_label.text)
 
 	print("\n[D] Mission Complete, the results and the reward")
 	check(_overlay.get_screen() == "mission" and _overlay._title == "Mission Complete",
@@ -296,6 +299,7 @@ func _run() -> void:
 	GameManager.credits = 0
 	await _new_game(false, true)
 	await _frames(2)
+	var cleared := GameManager.save_counter
 	var p1: PlayerTank = _players()[0]
 	p1.is_invincible = false
 	p1._hit_grace_frame = -1
@@ -304,6 +308,8 @@ func _run() -> void:
 	await _frames(3)
 	check(GameManager.player_lives[0] < 0, "P1's last tank is gone")
 	check(_game.get_phase() == "mission" and _overlay._title == "Mission Fail", "\"Mission Fail\" at once")
+	check(GameManager.save_counter == cleared and _game.hud.stages_played_label.text == "Played: %d" % cleared,
+		"a lost stage isn't a cleared one: Played stays at %d" % cleared)
 	check(_events.count("game_over") == 1, "with the lose jingle")
 	check(_overlay._picture == ThemeManager.get_screen_texture("stage_lose"), "the lose picture")
 	check(_game.hud._lives_text(0) == "GAME OVER", "P1's corner reads GAME OVER")
@@ -317,8 +323,11 @@ func _run() -> void:
 	check(_game.get_phase() == "results", "held until 4.0 s")
 	_overlay.advance(0.02)
 	check(_game.get_phase() == "game_over" and _overlay.get_screen() == "game_over", "then Game Over")
+	var end_letter = _overlay._letters[-1]
+	var text_centre: float = (_overlay._letters[0].home.x + end_letter.home.x + end_letter.width) / 2.0
 	check(_overlay._letters.size() == 8 and _overlay._letters[0].glyph == "G"
-		and is_equal_approx(_overlay._letters[0].home.x, 176.0 * StageOverlay.SCALE), "its 8 letters from x 176")
+		and is_equal_approx(text_centre, 338.0 * StageOverlay.SCALE),
+		"its 8 letters centred where the original's stood (x 176 to 500)")
 	_overlay.advance(4.12)
 	check(_events.count("game_over_finished") == 0, "on until 4.125 s")
 	_overlay.advance(0.01)
@@ -386,14 +395,24 @@ func _run() -> void:
 		"hardest difficulty: 10 x 250 (and past it)")
 	check(StageOverlay.rewards_for([5] as Array[int], 1)[0]["amount"] == 660, "easy: 10 x 66")
 
-	print("\n[H] Theme pictures")
-	check(ThemeManager.get_stage_picture("si01.jpg") != null, "a stage picture is found whatever its case")
-	check(ThemeManager.get_stage_picture("SI5.JPG") == null, "a missing one is null (the intro plays over the map)")
-	check(ThemeManager.get_screen_texture("results_panel") != null, "the results panel picture")
+	print("\n[H] The stage pictures: the game's own, where a theme brings none")
+	var own: Array = []
+	for i in 10:
+		own.append(ThemeManager.get_stage_picture("SI0%d.JPG" % i))
+	check(not own.has(null) and own[1].resource_path == "res://assets/screens/stage_intro_1.png",
+		"an intro for each of the original's names, SI00 to SI09")
+	check(ThemeManager.get_stage_picture("si01.jpg") == own[1], "whatever its case")
+	check(ThemeManager.get_stage_picture("SI5.JPG") == null, "a name the original never had is null (the intro plays over the map)")
+	check(ThemeManager.get_screen_texture("stage_win").resource_path == "res://assets/screens/stage_win.png"
+		and ThemeManager.get_screen_texture("stage_lose").resource_path == "res://assets/screens/stage_lose.png",
+		"the stage won and lost pictures")
+	check(ThemeManager.get_screen_texture("results_panel") == null, "no results panel picture: the game's own box")
+	check(own[1].get_size() == Vector2(320, 240), "pixel art at 320x240, shown at 4x")
 	ThemeManager.load_theme("default")
-	check(ThemeManager.get_screen_texture("stage_win") == null, "a theme without pictures has none")
+	check(ThemeManager.get_screen_texture("stage_win") != null and ThemeManager.get_stage_picture("SI03.JPG") != null,
+		"a theme without pictures gets the game's own too")
 	_overlay.play_mission(true)
-	check(_overlay._plain_backdrop, "so its stage end closes a plain backdrop over the field")
+	check(not _overlay._plain_backdrop and _overlay._picture != null, "so its stage end closes the picture over the field")
 
 	get_tree().root.remove_child(_game)
 	_game.free()

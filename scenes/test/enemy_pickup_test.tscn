@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/enemy_pickup_test.gd" id="1_enemy_pickup_test"]
+
+[node name="EnemyPickupTest" type="Node"]
+script = ExtResource("1_enemy_pickup_test")

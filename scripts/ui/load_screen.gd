@@ -31,10 +31,10 @@ const IMPORT_TITLE := "Import a save"
 const IMPORT_FILTERS: PackedStringArray = [
 	"*.sav, *.SAV, *.tsave ; Saves (Tank.exe .sav or an exported .tsave)",
 	"*.sav, *.SAV ; Tank.exe save files",
-	"*.tsave ; Battle City saves",
+	"*.tsave ; Battle Tank saves",
 ]
 const EXPORT_TITLE := "Export a save"
-const EXPORT_FILTERS: PackedStringArray = ["*.tsave ; Battle City saves"]
+const EXPORT_FILTERS: PackedStringArray = ["*.tsave ; Battle Tank saves"]
 const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 
 @onready var _scroll: ScrollContainer = %SaveScroll
@@ -219,8 +219,9 @@ func _make_label(text: String, variation: StringName, min_width: float, expand: 
 
 func _format_details(info: Dictionary) -> String:
 	var cleared: int = info.get("counter", 0)
-	return "Stage %d   ·   Difficulty %d   ·   %d %s cleared" % [
-		info.get("stage", 1), info.get("difficulty", 1), cleared, "stage" if cleared == 1 else "stages"]
+	var template := "Stage %d   ·   Difficulty %d   ·   %d stage cleared" if cleared == 1 \
+			else "Stage %d   ·   Difficulty %d   ·   %d stages cleared"
+	return tr(template) % [info.get("stage", 1), info.get("difficulty", 1), cleared]
 
 
 func _format_players(info: Dictionary) -> String:
@@ -228,7 +229,8 @@ func _format_players(info: Dictionary) -> String:
 	if info.get("p1_active", false):
 		parts.append("P1  %s" % _format_score(info.get("p1_score", 0)))
 	if info.get("p2_active", false):
-		parts.append("P2  %s" % _format_score(info.get("p2_score", 0)))
+		parts.append("P2  %s%s" % [_format_score(info.get("p2_score", 0)),
+			"  (%s)" % tr("OFF") if info.get("p2_disabled", false) else ""])  # sitting out
 	return "    ".join(parts)
 
 
@@ -381,11 +383,11 @@ func _on_export_pressed() -> void:
 func _duplicate(info: Dictionary) -> void:
 	var result: Dictionary = SaveManager.duplicate_save(info["filepath"])
 	if not result.get("ok", false):
-		_set_hint("Duplicate failed: %s" % result.get("error", "unknown error"), true)
+		_set_hint(tr("Duplicate failed: %s") % result.get("error", tr("unknown error")), true)
 		return
 	_rebuild_list(0)
 	_focus_save(result["filepath"])
-	_set_hint("Duplicated \"%s\" as \"%s\"" % [info.get("save_name", "?"), result["save_name"]])
+	_set_hint(tr("Duplicated \"%s\" as \"%s\"") % [info.get("save_name", "?"), result["save_name"]])
 
 
 ## Asks where to write [param info]'s save; _export_to() writes it there.
@@ -400,9 +402,9 @@ func _export_to(path: String) -> void:
 		return
 	var result: Dictionary = SaveManager.export_save(_export_info["filepath"], path)
 	if result.get("ok", false):
-		_set_hint("Exported \"%s\" to %s" % [_export_info.get("save_name", "?"), result["path"]])
+		_set_hint(tr("Exported \"%s\" to %s") % [_export_info.get("save_name", "?"), result["path"]])
 	else:
-		_set_hint("Export failed: %s" % result.get("error", "unknown error"), true)
+		_set_hint(tr("Export failed: %s") % result.get("error", tr("unknown error")), true)
 
 
 ## Focuses the row of the save stored at [param filepath].
@@ -457,8 +459,9 @@ func _set_hint(text: String, is_error: bool = false) -> void:
 func _import_file(path: String) -> void:
 	var result: Dictionary = SaveManager.import_save_file(path)
 	if not result.get("ok", false):
-		_set_hint("Import failed: %s" % result.get("error", "unknown error"), true)
+		_set_hint(tr("Import failed: %s") % result.get("error", tr("unknown error")), true)
 		return
 	_rebuild_list(0)
 	_focus_save(result["filepath"])
-	_set_hint("Imported \"%s\" from %s   ·   click it to continue" % [result["save_name"], path.get_file()])
+	_set_hint(tr("Imported \"{name}\" from {file}   ·   click it to continue").format(
+			{"name": result["save_name"], "file": path.get_file()}))

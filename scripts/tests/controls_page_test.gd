@@ -4,8 +4,9 @@ extends Node
 ## button or a trigger; a taken input swaps rather than doubles; saved and
 ## reloaded), A / B / Start keeping their menu jobs, the title screen's
 ## controls page with its KEYBOARD and GAMEPAD tabs driven by simulated keys and
-## controller input, and two players sharing one controller. Being a test scene
-## it runs on its own settings file, never the player's.
+## controller input, two players sharing one controller, and each player's
+## VIBRATION switch. Being a test scene it runs on its own settings file, never
+## the player's.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/controls_page_test.tscn
 
@@ -124,6 +125,19 @@ func _visible_rows(rows: Array) -> int:
 	return n
 
 
+## "PAUSE Start": a fixed row's name and keycaps.
+func _fixed_line(row: Button) -> String:
+	var line: Array = []
+	for part in MenuRows.layout_of(row).get_children():
+		if part is Label and part.text != "":
+			line.append(part.text)
+	return " ".join(line)
+
+
+func _row_name(row: Button) -> String:
+	return MenuRows.layout_of(row).get_node("Name").text
+
+
 func _run() -> void:
 	var tree := get_tree()
 	await tree.process_frame
@@ -199,7 +213,7 @@ func _run() -> void:
 	check(_slots("shoot") == ["b0", "a5+"] and _slots("move") == ["dpad", "ls"] and _pad_codes("p1_shoot") == ["a5+", "b0"]
 		and InputSettings.get_binding("p1_shoot") == KEY_J, "resetting the controller leaves the keys alone")
 	var bare := ConfigFile.new()
-	bare.set_value("controller", "vibration", true)
+	bare.set_value("controller", "p1_vibration", true)
 	bare.save(InputSettings.get_save_path())
 	InputSettings.load_and_apply()
 	check(not InputSettings._config.has_section("pad_bindings"), "a reload forgets what the file no longer has")
@@ -225,13 +239,16 @@ func _run() -> void:
 	await tree.process_frame
 	_screen._settings_button.grab_focus()
 	await _key(KEY_ENTER)
+	var common_rows: Array = _screen._common.rows().map(_row_name)
+	check(common_rows == ["SFX VOLUME", "MUSIC VOLUME", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
+		"the settings page has no VIBRATION row: it is on each player's controls page (%s)" % str(common_rows))
 	_screen._common.p1_row.grab_focus()
 	check(MenuRows.layout_of(_screen._common.p1_row).get_node("Name").text == "P1 CONTROLS", "the settings row is P1 CONTROLS")
 	await _key(KEY_ENTER)
 	check(_screen._page == _screen.Page.KEYBIND and _cp._title.text == "P1 CONTROLS"
 		and _cp._tab == _cp.Tab.KEYBOARD, "opened with Enter: P1 CONTROLS, on the KEYBOARD tab")
 	check(_visible_rows(_cp._action_rows) == 6 and _visible_rows(_cp._pad_rows) == 0
-		and MenuRows.tab(_cp._tab_row, 0).button_pressed, "KEYBOARD: the six key rows")
+		and not _cp._vibration_row.visible and MenuRows.tab(_cp._tab_row, 0).button_pressed, "KEYBOARD: the six key rows")
 	check(MenuRows.value_label(_cp._action_rows[0]).text == "W" and MenuRows.value_label(_cp._action_rows[4]).text == "T",
 		"showing W for UP and T for FIRE 1")
 	var keyboard_size: Vector2 = _cp.get_combined_minimum_size()
@@ -241,20 +258,14 @@ func _run() -> void:
 	await tree.process_frame
 	check(_cp._tab == _cp.Tab.GAMEPAD and MenuRows.tab(_cp._tab_row, 1).button_pressed
 		and _visible_rows(_cp._action_rows) == 0 and _visible_rows(_cp._pad_rows) == 3
-		and _cp._controller_row.visible and _visible_rows(_cp._fixed_pad_rows) == 2,
-		"right on the strip: GAMEPAD, with CONTROLLER, MOVE, FIRE 1, FIRE 2 and two fixed rows")
+		and _cp._controller_row.visible and _cp._vibration_row.visible and _visible_rows(_cp._fixed_pad_rows) == 1,
+		"right on the strip: GAMEPAD, with CONTROLLER, VIBRATION, MOVE, FIRE 1, FIRE 2 and a fixed row")
 	check(MenuRows.value_label(_cp._controller_row).text.begins_with("1"), "P1 is on controller 1")
 	check(_shown(0) == "D-pad | L-stick" and _shown(1) == "A | RT" and _shown(2) == "X | LT",
 		"its slots: D-pad | L-stick, A | RT, X | LT (%s, %s, %s)" % [_shown(0), _shown(1), _shown(2)])
-	var fixed: Array = []
-	for row: Button in _cp._fixed_pad_rows:
-		var line: Array = []
-		for part in MenuRows.layout_of(row).get_children():
-			if part is Label and part.text != "":
-				line.append(part.text)
-		fixed.append(" ".join(line))
-	check(fixed == ["PAUSE Start", "MENU OK/BACK A B"] and _cp._fixed_pad_rows[0].focus_mode == Control.FOCUS_NONE,
-		"the fixed rows: PAUSE Start, MENU OK/BACK A B, and they take no focus (%s)" % str(fixed))
+	var fixed: Array = _cp._fixed_pad_rows.map(_fixed_line)
+	check(fixed == ["PAUSE Start"] and _cp._fixed_pad_rows[0].focus_mode == Control.FOCUS_NONE,
+		"the fixed row: PAUSE Start, and it takes no focus (%s)" % str(fixed))
 	check(_cp.get_combined_minimum_size() == keyboard_size,
 		"both tabs are the same size, so the page does not jump (%s)" % str(keyboard_size))
 	check(_cp._reset_button.text == "RESET BUTTONS" and _cp._prompt.text.to_lower().contains("controller 1"),
@@ -404,6 +415,7 @@ func _run() -> void:
 		"RESET KEYS puts T back")
 
 	await _check_sharing()
+	await _check_vibration()
 	_screen.queue_free()
 	await tree.create_timer(0.5).timeout  # let the menu sounds finish before quitting
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
@@ -488,3 +500,71 @@ func _check_sharing() -> void:
 	check(InputSettings.get_pad_device("p2") == 1 and not InputSettings.is_pad_shared()
 		and _cp._prompt.text.begins_with("P1 and P2 have controllers of their own")
 		and _shown(0) == "D-pad | L-stick", "left: P2 back on controller 2, whole layout again")
+
+
+## [H] Vibration: a switch per player, on the GAMEPAD tab of their controls page.
+func _check_vibration() -> void:
+	print("\n[H] VIBRATION, for each player on their own")
+	check(InputSettings.get_vibration("p1") and InputSettings.get_vibration("p2"), "out of the box both players' controllers rumble")
+	_screen._open_keybinds("p1")
+	_cp._select_tab(1)
+	_cp._pad_rows[0].grab_focus()   # MOVE
+	await _pad(JOY_BUTTON_DPAD_UP)
+	check(_focus() == _cp._vibration_row and MenuRows.value_label(_cp._vibration_row).text == "ON",
+		"up from MOVE: VIBRATION, reading ON")
+	await _pad(JOY_BUTTON_DPAD_UP)
+	check(_focus() == _cp._controller_row, "with CONTROLLER above it")
+	await _pad(JOY_BUTTON_DPAD_DOWN)
+	await _pad(JOY_BUTTON_A)
+	check(not InputSettings.get_vibration("p1") and InputSettings.get_vibration("p2")
+		and MenuRows.value_label(_cp._vibration_row).text == "OFF", "A switches P1's off, and P2's stays on")
+	check(_focus() == _cp._vibration_row and _screen._page == _screen.Page.KEYBIND, "the page stays, on VIBRATION")
+	var cfg := _read_settings()
+	check(cfg.get_value("controller", "p1_vibration", true) == false, "saved to settings.cfg")
+	await _pad(JOY_BUTTON_DPAD_RIGHT)
+	check(InputSettings.get_vibration("p1") and MenuRows.value_label(_cp._vibration_row).text == "ON", "right switches it back on")
+	await _key(KEY_A)   # P1 left
+	check(not InputSettings.get_vibration("p1"), "and left off again")
+	MenuRows.arrow(_cp._vibration_row, "Right").pressed.emit()
+	check(InputSettings.get_vibration("p1"), "clicking an arrow switches it too")
+	_cp._vibration_row.pressed.emit()
+	check(not InputSettings.get_vibration("p1"), "and clicking the row")
+	_cp._pad_rows[1].grab_focus()
+	_cp._vibration_row.mouse_entered.emit()
+	check(_focus() == _cp._vibration_row, "hovering it focuses it")
+	await _pad(JOY_BUTTON_LEFT_SHOULDER)
+	check(_cp._tab == _cp.Tab.KEYBOARD and _focus() == _cp._action_rows[0], "switching tabs on VIBRATION lands on UP")
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	_cp._reset_button.grab_focus()
+	await _pad(JOY_BUTTON_A)
+	check(not InputSettings.get_vibration("p1") and _shown(0) == "D-pad | L-stick", "RESET BUTTONS leaves VIBRATION alone")
+	await _pad(JOY_BUTTON_B)
+	_screen._open_keybinds("p2")
+	_cp._select_tab(1)
+	check(MenuRows.value_label(_cp._vibration_row).text == "ON", "P2's page shows P2's own switch: ON")
+	_cp._pad_rows[0].grab_focus()
+	await _pad(JOY_BUTTON_A)   # a wait on P2's MOVE...
+	_cp._vibration_row.pressed.emit()   # ...ended by a click on VIBRATION
+	check(_cp._capture_action == "" and not InputSettings.get_vibration("p2") and not InputSettings.get_vibration("p1"),
+		"a click on it during a wait ends the wait and switches P2's off")
+	InputSettings.set_vibration("p2", true)
+
+	cfg = ConfigFile.new()   # a settings file from when one switch served both players
+	cfg.set_value("controller", "vibration", false)
+	cfg.save(InputSettings.get_save_path())
+	InputSettings.load_and_apply()
+	check(not InputSettings.get_vibration("p1") and not InputSettings.get_vibration("p2"),
+		"an older file's single VIBRATION OFF carries over to both players")
+	InputSettings.set_vibration("p2", true)
+	cfg = _read_settings()
+	check(not cfg.has_section_key("controller", "vibration") and cfg.get_value("controller", "p1_vibration", true) == false
+		and cfg.get_value("controller", "p2_vibration", false) == true, "and is saved as the two players' own switches")
+	cfg.set_value("controller", "vibration", true)   # an old copy of the game saved its switch again
+	cfg.save(InputSettings.get_save_path())
+	InputSettings.load_and_apply()
+	check(not InputSettings.get_vibration("p1") and InputSettings.get_vibration("p2"), "a player's own switch wins over the old one")
+	cfg.set_value("controller", "p1_vibration", "loud")
+	cfg.save(InputSettings.get_save_path())
+	InputSettings.load_and_apply()
+	check(InputSettings.get_vibration("p1"), "a hand-edited value that isn't ON or OFF counts as on")
+	await _pad(JOY_BUTTON_B)

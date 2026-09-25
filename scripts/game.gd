@@ -60,12 +60,17 @@ func _ready() -> void:
 	Events.bomb_all_enemies.connect(_on_bomb_all_enemies)
 	Events.freeze_enemies.connect(_on_freeze_enemies)
 	Events.fortify_base.connect(_on_fortify_base)
+	Events.freeze_players.connect(_on_freeze_players)
+	Events.bomb_all_players.connect(_on_bomb_all_players)
+	Events.base_guard_broken.connect(_on_base_guard_broken)
+	Events.enemy_reinforcements.connect(_on_enemy_reinforcements)
 	# Deferred: a tank reports its death before its life is taken
 	# (PlayerTank.destroy), and the handler needs the count after it.
 	Events.player_died.connect(_on_player_died, CONNECT_DEFERRED)
 
 	# Connect pause menu signals
 	if pause_menu:
+		pause_menu.player_enabled_requested.connect(set_player_enabled)
 		pause_menu.restart_requested.connect(_on_pause_restart)
 		pause_menu.main_menu_requested.connect(_on_pause_main_menu)
 		pause_menu.exit_requested.connect(_on_pause_exit)
@@ -107,7 +112,7 @@ func _begin_play() -> void:
 	Events.stage_started.emit(GameManager.current_stage)
 
 func _spawn_player(player_id: int) -> void:
-	if GameManager.player_lives[player_id] < 0:
+	if GameManager.player_lives[player_id] < 0 or GameManager.player_disabled[player_id]:
 		return
 	_played_stage[player_id] = true
 	var player_scene := preload("res://scenes/tanks/player_tank.tscn")
@@ -160,8 +165,11 @@ func _process(delta: float) -> void:
 	if _phase != Phase.PLAY:
 		return
 
-	# Mid-game join: inactive or dead player can join by pressing fire
+	# Mid-game join: inactive or dead player can join by pressing fire (not one
+	# sitting out: they come back from the pause menu)
 	for pid in range(2):
+		if GameManager.player_disabled[pid]:
+			continue
 		if not GameManager.player_active[pid] or GameManager.player_lives[pid] < 0:
 			var prefix: String = "p1_" if pid == 0 else "p2_"
 			if Input.is_action_just_pressed(prefix + "shoot") or Input.is_action_just_pressed(prefix + "shoot2"):
@@ -172,10 +180,7 @@ func _process(delta: float) -> void:
 					# Restore base if it was destroyed
 					if _base_destroyed:
 						_restore_base()
-					if _game_over_countdown >= 0:
-						_game_over_countdown = -1.0  # Cancel countdown
-						enemy_spawner.hold(false)
-						_update_hud()
+					_cancel_lose_countdown()
 
 	# Track per-player dead timers
 	for pid in range(2):
@@ -216,6 +221,11 @@ func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	if pid >= 0:
 		GameManager.add_score(pid, points, enemy.tank_type_id)
 		GameManager.note_kill(pid)
+		# The score shows over the wreck. Not for a bomb's kills, which leave the
+		# tanks' health untouched: the original's bomb bypassed its Damage routine,
+		# which is where it wrote them.
+		if enemy.health <= 0:
+			KillText.spawn(effects_container, points, GameManager.get_combo(pid), enemy.global_position)
 	_update_hud()
 
 func _on_all_enemies_defeated() -> void:
@@ -266,6 +276,39 @@ func _start_lose_countdown() -> void:
 	_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
 	enemy_spawner.hold(true)
 
+## Someone is back in: the stage goes on.
+func _cancel_lose_countdown() -> void:
+	if _game_over_countdown >= 0:
+		_game_over_countdown = -1.0
+		enemy_spawner.hold(false)
+		_update_hud()
+
+## Takes [param player_id] out of the stage or brings them back (the pause menu's
+## PLAYER 2 option, for a two-player game with one person playing). Sitting out
+## costs nothing: their tank leaves the field with its HP and add-ons kept, and
+## lives, score, levels and weapon wait untouched, in the save too. Back in, they
+## drive out beside the base with all of it, if they have a life left.
+func set_player_enabled(player_id: int, enabled: bool) -> void:
+	var disabled := not enabled
+	if GameManager.player_disabled[player_id] == disabled:
+		return  # already so
+	GameManager.player_disabled[player_id] = disabled
+	_update_hud()  # at once, though the game is paused behind the menu
+	if enabled:
+		_player_dead_timers[player_id] = 0.0
+		_spawn_player(player_id)
+		if GameManager.player_lives[player_id] >= 0:
+			_cancel_lose_countdown()
+		return
+	for tank in get_tree().get_nodes_in_group("players"):
+		if tank is PlayerTank and tank.player_id == player_id and not tank.is_queued_for_deletion():
+			GameManager.save_player_state(tank)
+			SpawnBurst.spawn_at(get_tree(), tank.global_position)
+			tank.queue_free()
+	# The one left may have been out of lives already.
+	if GameManager.all_active_players_dead():
+		_start_lose_countdown()
+
 func _on_game_over() -> void:
 	if _phase != Phase.PLAY:
 		return
@@ -291,6 +334,9 @@ func _start_mission(won: bool) -> void:
 	GameManager.settle_chains()
 	if won:
 		Events.stage_cleared.emit()  # the win jingle (a loss's came with game_over)
+		# One more stage cleared in this save: the HUD's "Played" at once, and
+		# the Load Game list's count once next_stage() autosaves.
+		GameManager.save_counter += 1
 	stage_overlay.play_mission(won)
 	_update_hud()
 
@@ -324,9 +370,7 @@ func _on_reward_given(player: int, amount: int) -> void:
 
 func _on_results_finished() -> void:
 	if _won:
-		# Stages won in this save; next_stage() then autosaves and plays the
-		# next stage's intro.
-		GameManager.save_counter += 1
+		# The next stage's intro, after an autosave.
 		GameManager.next_stage()
 		return
 	_phase = Phase.GAME_OVER
@@ -343,6 +387,26 @@ func _on_freeze_enemies(duration: float) -> void:
 
 func _on_fortify_base(duration: float) -> void:
 	level_manager.fortify_base(duration)
+
+# --- Items an enemy took (see Cookie._apply_enemy_effect) ---
+
+func _on_freeze_players(duration: float) -> void:
+	GameManager.freeze_all_players(duration)
+
+## "Bomb !!": every player tank on the field is destroyed, invincible or not,
+## and dies as it would to a shell (a life, then a new tank). Tanks still
+## appearing are spared.
+func _on_bomb_all_players() -> void:
+	for tank in get_tree().get_nodes_in_group("players"):
+		if tank is PlayerTank and not tank.is_materializing and not tank.is_queued_for_deletion():
+			tank.health = 0
+			tank.destroy()
+
+func _on_base_guard_broken() -> void:
+	level_manager.break_base_guard()
+
+func _on_enemy_reinforcements(taker_type: int) -> void:
+	enemy_spawner.add_reinforcements(taker_type)
 
 func _restore_base() -> void:
 	_base_destroyed = false

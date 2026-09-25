@@ -1,10 +1,10 @@
 extends Node
 ## Headless test for the pause menu: Esc or Start opens it over the paused
 ## stage; RESUME / RESTART STAGE / MAIN MENU / SETTINGS / QUIT GAME; the
-## settings page changes sound, vibration and a key without leaving the stage,
-## and opens a player's controls page (the title screen's) on the right tab;
-## Esc, B and Start step back a page at a time. Driven by simulated keys and
-## controller buttons. A test run keeps its own settings file.
+## settings page changes sound, a key and a player's vibration without leaving
+## the stage, and opens a player's controls page (the title screen's) on the
+## right tab; Esc, B and Start step back a page at a time. Driven by simulated
+## keys and controller buttons. A test run keeps its own settings file.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/pause_menu_test.tscn
 
@@ -95,7 +95,7 @@ func _run() -> void:
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused and _requests == ["resume_requested"], "Esc again: resumed")
 
-	print("\n[B] SETTINGS: sound, vibration and fullscreen, straight from the pause")
+	print("\n[B] SETTINGS: sound and fullscreen, straight from the pause")
 	await _key(KEY_ESCAPE)
 	var order: Array = []
 	for button: Button in _menu._page_items(0):
@@ -103,7 +103,7 @@ func _run() -> void:
 	check(order == ["RESUME", "RESTART STAGE", "MAIN MENU", "SETTINGS", "QUIT GAME"], "the order: %s" % str(order))
 	var in_panel: Array = []
 	for child in _menu._resume_button.get_parent().get_children():
-		if child is Button:
+		if child is Button and child.visible:   # PLAYER 2 hides in a one-player game
 			in_panel.append(child.text)
 	check(in_panel == order, "and the panel shows them in that order")
 	await _key(KEY_UP)
@@ -112,8 +112,8 @@ func _run() -> void:
 	await _key(KEY_ENTER)
 	check(_menu._settings_panel.visible and not _menu._main_panel.visible and _focus() == _menu._common.sfx_row,
 		"Enter: the settings page, on SFX VOLUME")
-	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "VIBRATION", "FULLSCREEN", "P1 CONTROLS", "P2 CONTROLS"],
-		"its rows: %s" % str(_row_names()))
+	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
+		"its rows, VIBRATION now being on each player's controls page: %s" % str(_row_names()))
 	var sfx := SoundManager.get_sfx_volume()
 	await _key(KEY_LEFT)
 	check(is_equal_approx(SoundManager.get_sfx_volume(), snappedf(sfx, 0.1) - 0.1)
@@ -123,12 +123,7 @@ func _run() -> void:
 		"the row shows the new level")
 	await _key(KEY_DOWN)
 	await _key(KEY_DOWN)
-	check(_focus() == _menu._common.vibration_row, "down twice: VIBRATION")
-	var vibration := InputSettings.get_saved_vibration()
-	await _key(KEY_ENTER)
-	check(InputSettings.get_saved_vibration() != vibration
-		and MenuRows.value_label(_menu._common.vibration_row).text == ("ON" if not vibration else "OFF"),
-		"Enter toggles vibration")
+	check(_focus() == _menu._common.fullscreen_row, "down twice: FULLSCREEN")
 	check(MenuRows.value_label(_menu._common.fullscreen_row).text == ("ON" if WindowManager.is_fullscreen() else "OFF"),
 		"FULLSCREEN shows the window's state")
 	check(tree.paused and _menu.visible, "and the stage stays paused throughout")
@@ -171,10 +166,17 @@ func _run() -> void:
 	check(_menu._settings_panel.visible, "down three times, A: the settings")
 	for i in 4:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
-	check(_focus() == _menu._common.p1_row, "down four times: P1 CONTROLS")
+	check(_focus() == _menu._common.p1_row, "down four times (past LANGUAGE): P1 CONTROLS")
 	await _pad(JOY_BUTTON_A)
 	check(cp.visible and cp._tab == cp.Tab.GAMEPAD and _focus() == cp._pad_rows[0],
 		"A: P1 CONTROLS on the GAMEPAD tab (opened with a pad), on MOVE")
+	await _pad(JOY_BUTTON_DPAD_UP)
+	check(_focus() == cp._vibration_row and MenuRows.value_label(cp._vibration_row).text == "ON",
+		"up: P1's VIBRATION, ON")
+	await _pad(JOY_BUTTON_A)
+	check(not InputSettings.get_vibration("p1") and InputSettings.get_vibration("p2")
+		and MenuRows.value_label(cp._vibration_row).text == "OFF" and tree.paused,
+		"A switches P1's vibration off, mid-stage, and leaves P2's on")
 	await _pad(JOY_BUTTON_B)
 	check(_menu._settings_panel.visible and _focus() == _menu._common.p1_row, "B: back to the settings")
 	await _pad(JOY_BUTTON_B)
