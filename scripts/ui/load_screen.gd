@@ -77,6 +77,7 @@ var _left_of: Dictionary = {}
 
 
 func _ready() -> void:
+	WindowManager.leave_game()  # the menus stay in the window
 	_nav = MenuFocus.new(get_viewport())
 	_picker = MenuFilePicker.new(self, IMPORT_TITLE, IMPORT_FILTERS, "save")
 	_picker.file_picked.connect(_import_file)

@@ -83,6 +83,7 @@ func _ready() -> void:
 
 	InputSettings.game_speed_changed.connect(_apply_game_speed)
 	_apply_game_speed()
+	WindowManager.enter_game()  # fullscreen for play, with ALWAYS FULLSCREEN on
 
 	debug_freeze = DebugFreeze.new()
 	debug_freeze.name = "DebugFreeze"

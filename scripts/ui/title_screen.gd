@@ -65,6 +65,7 @@ var _using_pad: bool = false
 
 
 func _ready() -> void:
+	WindowManager.leave_game()  # the menus stay in the window
 	_nav = MenuFocus.new(get_viewport())
 	_map_picker = MenuFilePicker.new(self, MAP_IMPORT_TITLE, MAP_IMPORT_FILTERS, "map")
 	_map_picker.file_picked.connect(_import_map_file)

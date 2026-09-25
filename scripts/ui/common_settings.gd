@@ -2,7 +2,7 @@ class_name CommonSettings
 extends RefCounted
 ## The settings the title screen and the pause menu both offer, as rows added to
 ## a settings list: SFX and music volume, optionally fullscreen, whether the
-## game always opens fullscreen, the game's speed, the menus' language, and a
+## stages always play fullscreen, the game's speed, the menus' language, and a
 ## row per player that opens their controls page (keys, controller buttons,
 ## vibration).
 ##
@@ -120,13 +120,10 @@ func _cycle_music_volume(direction: int) -> void:
 	refresh()
 
 
-## ALWAYS FULLSCREEN on or off, kept for the next start; switched on, the
-## window goes fullscreen now too.
+## ALWAYS FULLSCREEN on or off: the stages play fullscreen, the menus in the
+## window. Switched in a stage (the pause menu), it applies at once.
 func _toggle_always_fullscreen(_direction: int) -> void:
-	var on := not InputSettings.get_always_fullscreen()
-	InputSettings.save_always_fullscreen(on)
-	if on and not WindowManager.is_fullscreen():
-		WindowManager.set_fullscreen(true)
+	WindowManager.set_always_fullscreen(not InputSettings.get_always_fullscreen())
 	refresh()
 
 

@@ -138,16 +138,23 @@ func _run() -> void:
 		and not InputSettings.get_always_fullscreen(), "down: ALWAYS FULLSCREEN, OFF out of the box")
 	await _key(KEY_RIGHT)
 	check(InputSettings.get_always_fullscreen() and MenuRows.value_label(always_row).text == "ON" and asked == [true],
-		"right: ON, saved, and the window goes fullscreen now too (%s)" % str(asked))
+		"right: ON, saved, and in a stage the window goes fullscreen at once (%s)" % str(asked))
 	asked.clear()
-	WindowManager.apply_start_mode()
-	check(asked == [true], "and the game will open fullscreen")
+	WindowManager.leave_game()  # a menu screen comes up
+	WindowManager.apply_start_mode()  # as the game opens
+	check(asked == [false], "the menus get the window back, and the game opens in it (%s)" % str(asked))
+	WindowManager.enter_game()  # a stage entered from the menus
+	WindowManager.enter_game()  # the next one
+	check(asked == [false, true], "a stage entered from them goes fullscreen; the next stage leaves it be")
 	await _key(KEY_LEFT)
+	check(not InputSettings.get_always_fullscreen() and MenuRows.value_label(always_row).text == "OFF"
+		and asked == [false, true, false], "left: OFF, and the stage goes back to the window at once")
 	asked.clear()
-	WindowManager.apply_start_mode()
-	check(not InputSettings.get_always_fullscreen() and MenuRows.value_label(always_row).text == "OFF" and asked.is_empty(),
-		"left: OFF again, and the game opens in a window")
-	WindowManager.set_fullscreen(false)
+	WindowManager.leave_game()
+	WindowManager.set_always_fullscreen(true)  # as switched on the title's settings
+	check(InputSettings.get_always_fullscreen() and asked.is_empty(), "switched on in the menus: saved, the window left alone")
+	WindowManager.set_always_fullscreen(false)
+	WindowManager.enter_game()  # back in this stage for the rest of the test
 	var speed_row: Button = _menu._common.game_speed_row
 	var speed_text := func() -> String: return MenuRows.value_label(speed_row).text
 	await _key(KEY_DOWN)

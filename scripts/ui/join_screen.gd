@@ -31,6 +31,7 @@ var _status_labels: Array[Label] = []
 
 
 func _ready() -> void:
+	WindowManager.leave_game()  # the menus stay in the window
 	for pid in 2:
 		_cards.add_child(_make_card(pid))
 	_start_button.pressed.connect(_start_game)
