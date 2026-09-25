@@ -4,12 +4,14 @@ extends Node
 ## over the wreck, "N Combos" over it once a combo is on, dipping, then rising
 ## and fading to half, over the explosion; none for a bomb's kills or an enemy's;
 ## and a hit chain's "N Hits" over the player's panel from its second hit until
-## it lapses.
+## it lapses. The killer's controller thumps for each kill (not the bomb's), and
+## a bomb taken rumbles as hard as a lost tank.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/kill_text_test.tscn
 
 var _fail := 0
 var _game: Node
+var _rumbles: Array = []  # [player, weak, strong, seconds] per rumble asked for
 
 
 func check(cond: bool, msg: String) -> void:
@@ -39,6 +41,11 @@ func _enemy(type_id: int, tile: Vector2i) -> EnemyTank:
 	e.tree_exited.connect(_game.enemy_spawner._on_enemy_removed)
 	_game.enemy_spawner._active_enemies += 1
 	return e
+
+
+## A rumble as _rumbles records it.
+func _r(pid: int, pattern: Array[float]) -> Array:
+	return [pid, pattern[0], pattern[1], pattern[2]]
 
 
 ## Lets every hit chain and combo lapse, as 2.7 s without a hit or a kill would
@@ -111,9 +118,12 @@ func _run() -> void:
 		e.queue_free()
 	await tree.process_frame
 
+	InputSettings.rumbled.connect(func(pid: int, weak: float, strong: float, seconds: float) -> void:
+		_rumbles.append([pid, weak, strong, seconds]))
 	var e1 := _enemy(1, Vector2i(8, 10))
 	var e1_at := e1.global_position
 	_kill(e1, 0)
+	check(_rumbles == [_r(0, PlayerTank.KILL_RUMBLE)], "and P1's controller thumps for it: %s" % str(_rumbles))
 	var shown := _texts()
 	check(shown.size() == 1 and Array(shown[0].get_lines()) == ["+ 100"] and GameManager.player_scores[0] == 100,
 		"P1's shell takes out a 100-point tank: \"+ 100\" over it, and 100 scored")
@@ -133,9 +143,12 @@ func _run() -> void:
 	var c1 := _enemy(1, Vector2i(14, 10))
 	var c2 := _enemy(3, Vector2i(20, 10))
 	var c3 := _enemy(5, Vector2i(26, 10))
+	_rumbles.clear()
 	_kill(c1, 1)
 	_kill(c2, 1)
 	_kill(c3, 1)
+	check(_rumbles == [_r(1, PlayerTank.KILL_RUMBLE), _r(1, PlayerTank.KILL_RUMBLE), _r(1, PlayerTank.KILL_RUMBLE)],
+		"a thump on P2's controller for each of P2's kills, none on P1's")
 	var lines: Array = _texts().map(func(t: KillText) -> String: return " / ".join(t.get_lines()))
 	check(lines == ["+ 100", "2 Combos / + 100", "3 Combos / + 200"],
 		"P2's three quick kills: %s" % str(lines))
@@ -153,6 +166,7 @@ func _run() -> void:
 	var b1 := _enemy(1, Vector2i(8, 16))
 	var b2 := _enemy(3, Vector2i(14, 16))
 	var score_before: int = GameManager.player_scores[0]
+	_rumbles.clear()
 	_game.enemy_spawner.destroy_all_enemies(0)
 	await tree.process_frame
 	check(not is_instance_valid(b1) and not is_instance_valid(b2) and _texts().is_empty(),
@@ -161,6 +175,11 @@ func _run() -> void:
 	var victim := _enemy(1, Vector2i(20, 16))
 	_kill(victim, -1)
 	check(_texts().is_empty(), "an enemy's weapon (no player's): no words")
+	check(_rumbles.is_empty(), "and no thumps for either (the bomb's own rumble covers its kills)")
+	InputSettings.set_vibration("p1", false)
+	_kill(_enemy(1, Vector2i(26, 16)), 0)
+	check(_rumbles.is_empty(), "P1 with VIBRATION off: none for P1's kill")
+	InputSettings.set_vibration("p1", true)
 
 	print("\n[E] A hit chain: \"N Hits\" over the player's panel")
 	var hud = _game.hud
@@ -194,6 +213,23 @@ func _run() -> void:
 	await tree.process_frame
 	check(hud.p2_hits_label.visible and hud.p2_hits_label.text == "2 Hits" and not hud.p1_hits_label.visible,
 		"P2's chain on P2's panel")
+
+	print("\n[F] A bomb taken: as hard a rumble as a lost tank")
+	var p1: PlayerTank = null
+	for tank in tree.get_nodes_in_group("players"):
+		if tank is PlayerTank and tank.player_id == 0:
+			p1 = tank
+	var d1 := _enemy(1, Vector2i(8, 22))
+	var d2 := _enemy(3, Vector2i(14, 22))
+	_rumbles.clear()
+	var bomb = load("res://scenes/powerups/powerup.tscn").instantiate()
+	bomb.setup(CookieData.CookieType.TANK_BOMB)
+	_game.powerups_container.add_child(bomb)
+	bomb._apply_effect(p1)
+	bomb.queue_free()
+	await tree.process_frame
+	check(not is_instance_valid(d1) and not is_instance_valid(d2) and _rumbles == [_r(0, PlayerTank.DEATH_RUMBLE)],
+		"P1 takes a bomb: the tanks go up, and P1's controller gives a lost tank's big rumble, once: %s" % str(_rumbles))
 
 	tree.root.remove_child(_game)
 	_game.free()

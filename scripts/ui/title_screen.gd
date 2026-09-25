@@ -294,7 +294,7 @@ func _refresh_settings_values() -> void:
 		var pool: LevelData.MapPool = _available_pools[_pool_index]
 		var stage_count := LevelData.get_stage_count()
 		var template := "%s   ·   %d stage" if stage_count == 1 else "%s   ·   %d stages"
-		map_text = tr(template) % [_pool_name(pool), stage_count]
+		map_text = tr(template) % [pool.display_name, stage_count]
 	MenuRows.value_label(_map_row).text = map_text
 	MenuRows.value_label(_credits_row).text = str(GameManager.max_credits)
 	var difficulty := clampi(GameManager.difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY)
@@ -304,14 +304,6 @@ func _refresh_settings_values() -> void:
 	MenuRows.arrow(_difficulty_row, "Left").disabled = difficulty <= MIN_DIFFICULTY
 	MenuRows.arrow(_difficulty_row, "Right").disabled = difficulty >= MAX_DIFFICULTY
 	_common.refresh()
-
-
-## A map pool's name as the MAP row shows it: an imported one's "(imported)" in
-## the menus' language.
-func _pool_name(pool: LevelData.MapPool) -> String:
-	if not pool.display_name.ends_with(LevelData.IMPORTED_SUFFIX):
-		return pool.display_name
-	return "%s %s" % [pool.display_name.trim_suffix(LevelData.IMPORTED_SUFFIX), tr("(imported)")]
 
 
 ## Called with the file chosen in the IMPORT MAP picker.

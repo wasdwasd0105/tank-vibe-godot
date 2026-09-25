@@ -29,8 +29,14 @@ const MAX_TYPE_COUNT: int = 99
 const MAP_DIR: String = "res://maps/"
 ## Imported map files (see import_map_file) live here and count as extra pools.
 const USER_MAP_DIR: String = "user://maps/"
+## A test run's own (InputSettings.is_test_run), as with its saves and settings:
+## the player's imported maps never change what a test plays, and no test can
+## touch them. See user_map_dir().
+const TEST_MAP_DIR: String = "user://test_maps/"
+## The settings script, for its static test-run check: preloaded rather than
+## reached through its autoload, so this class loads anywhere, tools included.
+const _SETTINGS_SCRIPT := preload("res://scripts/autoload/input_settings.gd")
 const USER_POOL_PREFIX: String = "user:"
-const IMPORTED_SUFFIX: String = " (imported)"
 
 # --- Tile Category Classification ---
 enum TileCategory {
@@ -329,13 +335,13 @@ static func load_stages_from_dat(path: String) -> Array:
 ## each Tank.exe .dat file is one.
 static func scan_map_pools() -> Array:
 	_available_pools.clear()
-	_scan_pool_dir(MAP_DIR, "", "", true)
-	_scan_pool_dir(USER_MAP_DIR, USER_POOL_PREFIX, IMPORTED_SUFFIX, false)
+	_scan_pool_dir(MAP_DIR, "", true)
+	_scan_pool_dir(user_map_dir(), USER_POOL_PREFIX, false)
 	_available_pools.sort_custom(func(a, b): return a.id.naturalcasecmp_to(b.id) < 0)
 	print("LevelData: Found %d map pools" % _available_pools.size())
 	return _available_pools
 
-static func _scan_pool_dir(dir_path: String, id_prefix: String, name_suffix: String, required: bool) -> void:
+static func _scan_pool_dir(dir_path: String, id_prefix: String, required: bool) -> void:
 	var dir := DirAccess.open(dir_path)
 	if not dir:
 		if required:
@@ -348,7 +354,7 @@ static func _scan_pool_dir(dir_path: String, id_prefix: String, name_suffix: Str
 		if not dir.current_is_dir() and entry.get_extension().to_lower() == "dat":
 			var pool := MapPool.new()
 			pool.id = id_prefix + entry.get_basename()
-			pool.display_name = entry.get_basename() + name_suffix
+			pool.display_name = entry.get_basename()
 			pool.type = "dat"
 			pool.path = dir_path + entry
 			_available_pools.append(pool)
@@ -375,15 +381,20 @@ static func import_map_file(source_path: String) -> Dictionary:
 	if stages.is_empty():
 		return {"ok": false, "error": TranslationServer.translate("no stages found in %s") % file_name}
 
-	DirAccess.make_dir_recursive_absolute(USER_MAP_DIR)
+	var dir := user_map_dir()
+	DirAccess.make_dir_recursive_absolute(dir)
 	var base := _sanitize_pool_name(file_name.get_basename())
-	var pool_name := _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(USER_MAP_DIR + n + ".dat"))
-	var err := DirAccess.copy_absolute(source_path, USER_MAP_DIR + pool_name + ".dat")
+	var pool_name := _unique_pool_name(base, func(n: String) -> bool: return FileAccess.file_exists(dir + n + ".dat"))
+	var err := DirAccess.copy_absolute(source_path, dir + pool_name + ".dat")
 	if err != OK:
-		return {"ok": false, "error": TranslationServer.translate("could not copy %s into %s (%s)") % [file_name, USER_MAP_DIR, error_string(err)]}
+		return {"ok": false, "error": TranslationServer.translate("could not copy %s into %s (%s)") % [file_name, dir, error_string(err)]}
 
 	scan_map_pools()
 	return {"ok": true, "pool_id": USER_POOL_PREFIX + pool_name, "name": pool_name, "stage_count": stages.size()}
+
+## Where imported maps are kept: the player's folder, or a test run's own.
+static func user_map_dir() -> String:
+	return TEST_MAP_DIR if _SETTINGS_SCRIPT.is_test_run() else USER_MAP_DIR
 
 ## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
 static func _sanitize_pool_name(name: String) -> String:
@@ -404,6 +415,15 @@ static func get_available_pools() -> Array:
 	if _available_pools.is_empty():
 		scan_map_pools()
 	return _available_pools
+
+## How many stages [param pool] holds, from its file's size, without loading
+## it: every 6000-byte record but the first (the title demo, skipped).
+static func get_pool_stage_count(pool: MapPool) -> int:
+	var file := FileAccess.open(pool.path, FileAccess.READ)
+	if not file:
+		return 0
+	@warning_ignore("integer_division")
+	return maxi(file.get_length() / DAT_STAGE_SIZE - 1, 0)
 
 ## Load stages from a specific map pool
 static func load_pool(pool: MapPool) -> void:

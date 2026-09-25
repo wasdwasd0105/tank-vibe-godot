@@ -1,8 +1,9 @@
 extends Node
 ## Headless test for the pause menu: Esc or Start opens it over the paused
 ## stage; RESUME / RESTART STAGE / MAIN MENU / SETTINGS / QUIT GAME; the
-## settings page changes sound, a key and a player's vibration without leaving
-## the stage, and opens a player's controls page (the title screen's) on the
+## settings page changes sound, the game's speed (the stage's clock follows it,
+## and time runs normally again outside the stage), a key and a player's
+## vibration without leaving the stage, and opens a player's controls page (the title screen's) on the
 ## right tab; Esc, B and Start step back a page at a time. Driven by simulated
 ## keys and controller buttons. A test run keeps its own settings file.
 ## Run as an override main scene:
@@ -112,7 +113,7 @@ func _run() -> void:
 	await _key(KEY_ENTER)
 	check(_menu._settings_panel.visible and not _menu._main_panel.visible and _focus() == _menu._common.sfx_row,
 		"Enter: the settings page, on SFX VOLUME")
-	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
+	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "GAME SPEED", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
 		"its rows, VIBRATION now being on each player's controls page: %s" % str(_row_names()))
 	var sfx := SoundManager.get_sfx_volume()
 	await _key(KEY_LEFT)
@@ -126,6 +127,24 @@ func _run() -> void:
 	check(_focus() == _menu._common.fullscreen_row, "down twice: FULLSCREEN")
 	check(MenuRows.value_label(_menu._common.fullscreen_row).text == ("ON" if WindowManager.is_fullscreen() else "OFF"),
 		"FULLSCREEN shows the window's state")
+	var speed_row: Button = _menu._common.game_speed_row
+	var speed_text := func() -> String: return MenuRows.value_label(speed_row).text
+	await _key(KEY_DOWN)
+	check(_focus() == speed_row and speed_text.call() == "100%" and is_equal_approx(Engine.time_scale, 1.0),
+		"down: GAME SPEED, 100% as the original's default, the stage at normal time")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 117 and speed_text.call() == "117%"
+		and is_equal_approx(Engine.time_scale, 1.17), "right: 117%, saved, and the stage's clock runs at it")
+	for i in 4:
+		await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 150 and MenuRows.arrow(speed_row, "Right").disabled
+		and is_equal_approx(Engine.time_scale, 1.5), "up to 150%, the original's fastest, and no further")
+	for i in 5:
+		await _key(KEY_LEFT)
+	check(InputSettings.get_saved_game_speed() == 83 and MenuRows.arrow(speed_row, "Left").disabled
+		and is_equal_approx(Engine.time_scale, 0.83), "down to 83%, its slowest")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 100 and is_equal_approx(Engine.time_scale, 1.0), "and back to 100%")
 	check(tree.paused and _menu.visible, "and the stage stays paused throughout")
 
 	print("\n[C] P1 CONTROLS: the controls page, inside the pause")
@@ -164,9 +183,9 @@ func _run() -> void:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
 	await _pad(JOY_BUTTON_A)
 	check(_menu._settings_panel.visible, "down three times, A: the settings")
-	for i in 4:
+	for i in 5:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
-	check(_focus() == _menu._common.p1_row, "down four times (past LANGUAGE): P1 CONTROLS")
+	check(_focus() == _menu._common.p1_row, "down five times (past GAME SPEED and LANGUAGE): P1 CONTROLS")
 	await _pad(JOY_BUTTON_A)
 	check(cp.visible and cp._tab == cp.Tab.GAMEPAD and _focus() == cp._pad_rows[0],
 		"A: P1 CONTROLS on the GAMEPAD tab (opened with a pad), on MOVE")
@@ -211,6 +230,21 @@ func _run() -> void:
 	ev.pressed = false
 	Input.parse_input_event(ev)
 	Input.flush_buffered_events()
+
+	print("\n[G] The game's speed belongs to the stage")
+	InputSettings.save_game_speed(133)
+	check(is_equal_approx(Engine.time_scale, 1.33), "133%: the stage runs at it")
+	tree.root.remove_child(_game)
+	_game.free()
+	check(is_equal_approx(Engine.time_scale, 1.0), "the stage gone (the title, the load screen): normal time again")
+	_game = load("res://scenes/game.tscn").instantiate()
+	_game.show_intro = false
+	tree.root.add_child(_game)
+	await tree.process_frame
+	check(is_equal_approx(Engine.time_scale, 1.33), "the next stage starts at the setting")
+	tree.root.remove_child(_game)
+	_game.free()
+	InputSettings.save_game_speed(InputSettings.DEFAULT_GAME_SPEED)
 
 	await tree.create_timer(0.5).timeout  # let the menu sounds finish before quitting
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))

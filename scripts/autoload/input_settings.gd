@@ -1,5 +1,11 @@
 extends Node
 
+## The GAME SPEED setting changed (see save_game_speed).
+signal game_speed_changed
+## A player's controller was asked to rumble with their vibration on, whether
+## or not one is plugged in (see rumble).
+signal rumbled(player_id: int, weak: float, strong: float, duration: float)
+
 const SAVE_PATH: String = "user://settings.cfg"
 ## A test run keeps its settings here instead, starting from the defaults each
 ## time, so it never touches (or depends on) the player's own settings.
@@ -544,6 +550,21 @@ func save_difficulty(value: int) -> void:
 func get_saved_difficulty() -> int:
 	return _config.get_value("game", "difficulty", 1)
 
+## The original's game speeds, in percent: its clock ran at speed / 75 ticks a
+## millisecond (0x4c7a3b; table 0x4d3c58), 100 % unless changed in its options.
+const GAME_SPEEDS: Array[int] = [83, 100, 117, 133, 150]
+const DEFAULT_GAME_SPEED := 100
+
+func save_game_speed(percent: int) -> void:
+	_config.set_value("game", "game_speed", percent)
+	_config.save(_save_path)
+	game_speed_changed.emit()
+
+## The GAME SPEED setting, one of GAME_SPEEDS.
+func get_saved_game_speed() -> int:
+	var percent: int = _config.get_value("game", "game_speed", DEFAULT_GAME_SPEED)
+	return percent if percent in GAME_SPEEDS else DEFAULT_GAME_SPEED
+
 ## The menus' language, a locale code ("en", "zh_CN"); see Localization.
 func save_language(code: String) -> void:
 	_config.set_value("game", "language", code)
@@ -609,6 +630,7 @@ func _split_vibration() -> void:
 func rumble(player_id: int, weak: float, strong: float, duration: float) -> void:
 	if player_id < 0 or player_id >= PLAYERS.size() or not get_vibration(PLAYERS[player_id]):
 		return
+	rumbled.emit(player_id, weak, strong, duration)
 	var device := get_pad_device(PLAYERS[player_id])
 	if device in Input.get_connected_joypads():
 		Input.start_joy_vibration(device, weak, strong, duration)

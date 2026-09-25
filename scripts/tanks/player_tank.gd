@@ -64,10 +64,14 @@ const HIT_GRACE: float = 0.5625
 var _hit_grace_frame: int = -1
 
 # Controller rumble [weak motor, strong motor, seconds]: a jolt per hit that
-# costs HP, a big one when the tank is destroyed or a mine throws it.
+# costs HP, a big one when the tank is destroyed or a mine throws it; and
+# (Sean, 2026-09-25) a lighter thump for each enemy the player destroys, and
+# the big one again for a bomb taken, which covers the bomb's own kills.
 const HIT_RUMBLE: Array[float] = [0.45, 0.6, 0.2]
 const DEATH_RUMBLE: Array[float] = [0.9, 1.0, 0.55]
 const MINE_THROW_RUMBLE: Array[float] = [0.6, 0.9, 0.35]
+const KILL_RUMBLE: Array[float] = [0.3, 0.5, 0.15]
+const BOMB_RUMBLE: Array[float] = DEATH_RUMBLE
 
 const MOVE_ACTIONS: Array[String] = ["up", "down", "left", "right"]
 const MOVE_DIRECTIONS: Array[Vector2] = [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]
@@ -697,7 +701,12 @@ func _read_move_direction() -> Vector2:
 	return best
 
 func _rumble(pattern: Array[float]) -> void:
-	InputSettings.rumble(player_id, pattern[0], pattern[1], pattern[2])
+	rumble_player(player_id, pattern)
+
+## Rumbles player [param pid]'s controller with [param pattern], their tank on
+## the field or not (a kill by a shell still flying, or by a mine).
+static func rumble_player(pid: int, pattern: Array[float]) -> void:
+	InputSettings.rumble(pid, pattern[0], pattern[1], pattern[2])
 
 func take_damage() -> void:
 	if is_invincible and _hit_grace_frame != Engine.get_process_frames():

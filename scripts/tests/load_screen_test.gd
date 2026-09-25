@@ -2,9 +2,10 @@ extends Node
 ## Headless test for the title menu's order, the maps it offers, and the Load
 ## Game screen's save actions: LOAD GAME comes before NEW GAME; only Tank.exe
 ## .dat maps are offered or imported; each save has a MORE button that pops up
-## a window of options to duplicate it, export it to a file (and import it
-## back) and delete it, by mouse or keyboard. A test run keeps its own saves (and settings), so the
-## player's are never touched.
+## a window of options to change the map it plays on, duplicate it, export it
+## to a file (and import it back) and delete it, by mouse or keyboard; a loaded
+## save plays on its own map without changing the MAP setting. A test run keeps its own saves (and
+## settings), so the player's are never touched.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/load_screen_test.tscn
 
@@ -144,8 +145,8 @@ func _run() -> void:
 	await _open("res://scenes/load_screen.tscn")
 	check(_names() == ["Beta", "Alpha"], "two saves, newest first: %s" % str(_names()))
 	check(_beside(0) == ["MORE"] and _beside(1) == ["MORE"], "beside each row, MORE alone: %s" % str(_beside(0)))
-	check(_window_texts() == ["DUPLICATE", "EXPORT", "DELETE"] and not _screen._popup_layer.visible,
-		"its options %s wait in a hidden window" % str(_window_texts()))
+	check(_screen._popup_buttons[0] == _screen._map_button and _window_texts().slice(1) == ["DUPLICATE", "EXPORT", "DELETE"]
+		and not _screen._popup_layer.visible, "its options, MAP then %s, wait in a hidden window" % str(_window_texts().slice(1)))
 	check(_screen._import_button.text == "IMPORT", "the footer's IMPORT takes any save")
 	var row: Button = _screen._rows[1]
 	var more: Button = _screen._more_buttons[1]
@@ -160,6 +161,8 @@ func _run() -> void:
 	check(_window_for(1) and more.button_pressed and _focus().text == "DUPLICATE"
 		and _screen._popup_title.text == "Alpha" and _screen._hint.text == _screen.OPTIONS_HINT,
 		"Enter on MORE: Alpha's window pops up, on DUPLICATE")
+	check(_screen._map_button.text == "MAP: v1_2_2" and _screen._map_button.disabled,
+		"MAP on top shows its map, greyed: no other map here (%s)" % _screen._map_button.text)
 	var window: Rect2 = _screen._popup.get_global_rect()
 	var more_rect := more.get_global_rect()
 	check(absf(window.end.x - more_rect.end.x) < 1.0 and window.position.y >= more_rect.end.y
@@ -206,7 +209,7 @@ func _run() -> void:
 		and copy["players"] == alpha["players"], "the same game under its own name")
 	check(_focus() == _screen._rows[2] and _screen._hint.text.contains("Alpha_copy"), "focus and hint on the copy")
 	await _open_more(1)
-	_screen._popup_buttons[0].pressed.emit()
+	_screen._popup_buttons[1].pressed.emit()
 	check(_names().has("Alpha_copy_2") and not _screen._popup_layer.visible, "a second copy: Alpha_copy_2, the window closed")
 
 	print("\n[E] EXPORT to a file, IMPORT it back")
@@ -258,6 +261,70 @@ func _run() -> void:
 	await _key(KEY_ENTER)
 	check(not _names().has("Alpha_copy_2") and not FileAccess.file_exists(SaveManager.get_save_dir() + "Alpha_copy_2.tsave"),
 		"second press: gone")
+
+	print("\n[G] A save plays on its own map; the MAP setting stays the player's pick")
+	var other := LevelData.MapPool.new()  # a second map, as an imported one would be
+	other.id = "user:test_other_map"
+	other.display_name = "test_other_map"
+	other.type = "dat"
+	other.path = "res://maps/v1_2_2.dat"
+	LevelData.get_available_pools().append(other)
+	GameManager.set_map_pool(other.id)
+	InputSettings.save_map_pool(other.id)  # picked on MAP, as an import does
+	SaveManager._restore_from_data(_save_data("Beta", "2026-09-25T14:00:00", 43, 100))  # LOAD GAME
+	check(GameManager.current_map_pool_id == "v1_2_2", "the save plays on its own map, v1_2_2")
+	check(InputSettings.get_saved_map_pool() == other.id,
+		"and the MAP setting keeps the player's pick (%s)" % InputSettings.get_saved_map_pool())
+	await _open("res://scenes/main.tscn")  # back to the title
+	check(GameManager.current_map_pool_id == other.id
+		and MenuRows.value_label(_screen._map_row).text.begins_with("test_other_map"),
+		"back on the title, the MAP row and new games have it again: %s" % MenuRows.value_label(_screen._map_row).text)
+	LevelData.scan_map_pools()
+	GameManager.set_map_pool("v1_2_2")
+	InputSettings.save_map_pool("v1_2_2")
+
+	print("\n[H] MAP: the map a save plays on, any that reaches its stage, kept in the save")
+	# A two-stage map beside the bundled one, in the test run's own maps folder.
+	var tiny_path := LevelData.user_map_dir() + "tiny.dat"
+	DirAccess.make_dir_recursive_absolute(LevelData.user_map_dir())
+	var tiny := FileAccess.open(tiny_path, FileAccess.WRITE)
+	tiny.store_buffer(FileAccess.get_file_as_bytes("res://maps/v1_2_2.dat").slice(0, 3 * LevelData.DAT_STAGE_SIZE))
+	tiny.close()
+	LevelData.scan_map_pools()
+	for data: Dictionary in [_save_data("Early", "2026-09-22 10:00:00", 2, 100),
+			_save_data("Late", "2026-09-22 11:00:00", 3, 100)]:
+		SaveManager._write_as_new(data, data["meta"]["save_name"])
+	await _open("res://scenes/load_screen.tscn")
+	var early := _names().find("Early")
+	var early_path := SaveManager.get_save_dir() + "Early.tsave"
+	check(_screen._map_labels[early].text == "v1_2_2" and _screen._map_labels.size() == _names().size(),
+		"each row shows its map under the date: %s" % _screen._map_labels[early].text)
+	await _open_more(early)
+	check(_screen._map_button.text == "MAP: v1_2_2" and not _screen._map_button.disabled
+		and _focus() == _screen._map_button, "Early, at stage 2: MAP shows v1_2_2, focused (%s)" % _screen._map_button.text)
+	await _key(KEY_ENTER)
+	check(_screen._map_button.text == "MAP: tiny"
+		and SaveManager._read_save_data(early_path)["header"]["map_pool"] == "user:tiny",
+		"Enter: the next map, tiny, written into the save (%s)" % _screen._map_button.text)
+	check(_screen._map_labels[early].text == "tiny", "and its row shows it at once")
+	check(_window_for(early) and _focus() == _screen._map_button, "the window stays up, on MAP")
+	await _key(KEY_ENTER)
+	check(SaveManager._read_save_data(early_path)["header"]["map_pool"] == "v1_2_2", "again: round to v1_2_2")
+	await _key(KEY_ENTER)
+	await _key(KEY_ESCAPE)
+	var late := _names().find("Late")
+	await _open_more(late)
+	check(_screen._map_button.disabled and _screen._map_button.text == "MAP: v1_2_2" and _focus().text == "DUPLICATE",
+		"Late, at stage 3: tiny's two stages don't reach it, so MAP is greyed and DUPLICATE has the focus")
+	await _key(KEY_ESCAPE)
+	var early_saved: Dictionary = SaveManager._read_save_data(early_path)
+	check(early_saved["header"]["current_stage"] == 2 and early_saved["header"]["saved_iso"] == "2026-09-22 10:00:00"
+		and early_saved["players"]["player1"]["score"] == 100, "the rest of the save as it was, its date too")
+	SaveManager._restore_from_data(early_saved)  # LOAD GAME
+	check(GameManager.current_map_pool_id == "user:tiny", "loaded, it plays on tiny")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tiny_path))
+	LevelData.scan_map_pools()
+	GameManager.set_map_pool("v1_2_2")
 
 	# Clean up what the test wrote outside its save folder.
 	for name in DirAccess.get_files_at(EXPORT_DIR):

@@ -269,6 +269,7 @@ func _apply_effect(player: PlayerTank) -> void:
 			Events.freeze_enemies.emit(40.0)
 		CookieData.CookieType.TANK_BOMB:
 			Events.bomb_all_enemies.emit(player.player_id)
+			PlayerTank.rumble_player(player.player_id, PlayerTank.BOMB_RUMBLE)  # as hard as losing a tank
 		CookieData.CookieType.TANK_LIFE:
 			GameManager.add_life(player.player_id)
 		CookieData.CookieType.BULLETS_MAX:

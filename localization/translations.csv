@@ -25,7 +25,6 @@ Import failed: %s,导入失败：%s
 unknown error,未知错误
 Imported %s   ·   %d stage   ·   selected,已导入 %s   ·   %d 关   ·   已选用
 Imported %s   ·   %d stages   ·   selected,已导入 %s   ·   %d 关   ·   已选用
-(imported),（已导入）
 Default,默认
 JueZhuanTanKe,决战坦克
 SFX VOLUME,音效音量
@@ -35,6 +34,7 @@ P1 CONTROLS,P1 按键
 P2 CONTROLS,P2 按键
 ON,开
 OFF,关
+GAME SPEED,游戏速度
 LANGUAGE,语言
 %s CONTROLS,%s 按键
 KEYBOARD,键盘
@@ -107,14 +107,15 @@ TO START,开始
 READY,已就绪
 NO CREDITS,投币已用完
 No saved games yet.\nThe game saves automatically after every cleared stage.,还没有存档。\n每通过一关，游戏都会自动存档。
-"Click a save to continue it   ·   MORE duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可复制、导出或删除   ·   Esc 返回
+"Click a save to continue it   ·   MORE changes its map, duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可更换地图、复制、导出或删除   ·   Esc 返回
 IMPORT,导入
 MORE,更多
+MAP: %s,地图：%s
 DUPLICATE,复制
 EXPORT,导出
 DELETE,删除
 CONFIRM?,确定？
-DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes,复制：复制此存档   ·   导出：写入文件   ·   删除：移除此存档   ·   Esc 关闭
+MAP picks the map it plays on   ·   DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes,地图：选择此存档用的地图   ·   复制：复制此存档   ·   导出：写入文件   ·   删除：移除此存档   ·   Esc 关闭
 Press CONFIRM? again to delete this save. Moving away cancels.,再按一次「确定？」即删除此存档，移开则取消。
 Import a save,导入存档
 Saves (Tank.exe .sav or an exported .tsave),存档（Tank.exe 的 .sav 或导出的 .tsave）

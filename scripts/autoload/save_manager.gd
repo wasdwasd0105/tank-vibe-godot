@@ -57,6 +57,21 @@ func save_game() -> void:
 	else:
 		push_warning("SaveManager: Failed to write save file: " + GameManager.current_save_file)
 
+## Makes the save at [param filepath] play on map pool [param pool_id] from
+## now on (the Load Game screen's MAP option), the rest of it untouched.
+## Returns {"ok": true} or {"ok": false, "error": ...}.
+func set_save_map_pool(filepath: String, pool_id: String) -> Dictionary:
+	var data := _read_save_data(filepath)
+	if not (data.get("header") is Dictionary):
+		return {"ok": false, "error": tr("could not read %s") % filepath.get_file()}
+	data["header"]["map_pool"] = pool_id
+	var file := FileAccess.open(filepath, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": tr("could not write %s") % filepath}
+	file.store_string(JSON.stringify(data, "  "))
+	file.close()
+	return {"ok": true}
+
 ## Load a save file and restore GameManager state, then start its stage.
 func load_game(filepath: String) -> void:
 	var file := FileAccess.open(filepath, FileAccess.READ)
@@ -291,11 +306,12 @@ func _restore_from_data(data: Dictionary) -> void:
 	gm.save_created_iso = header.get("created_iso", "")
 
 	# Reopen the map this save was played on; without it a stage-30 save loaded
-	# against a one-stage pool silently clamps back to stage 1.
+	# against a one-stage pool silently clamps back to stage 1. Only for this
+	# game: the MAP setting, the map new games start on, stays the player's
+	# choice (the title screen puts it back).
 	var pool_id: String = header.get("map_pool", "")
 	if not pool_id.is_empty() and pool_id != gm.current_map_pool_id:
 		gm.set_map_pool(pool_id)
-		InputSettings.save_map_pool(pool_id)
 
 	# Reset runtime state
 	gm.is_game_over = false
@@ -384,6 +400,7 @@ func _read_save_info(filepath: String) -> Dictionary:
 		"counter": header.get("counter", 0),
 		"difficulty": header.get("difficulty", 1),
 		"saved_iso": header.get("saved_iso", ""),
+		"map_pool": header.get("map_pool", ""),
 		"p1_active": p1_data != null and p1_data is Dictionary,
 		"p1_score": p1_data.get("score", 0) if p1_data is Dictionary else 0,
 		"p2_active": p2_data != null and p2_data is Dictionary,

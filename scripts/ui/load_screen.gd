@@ -1,11 +1,13 @@
 extends Control
-## Load Game screen: every saved game is a clickable row with a MORE button
-## that pops up a small window of its options: DUPLICATE, EXPORT and DELETE.
+## Load Game screen: every saved game is a clickable row (its stage, players,
+## date and the map it plays on) with a MORE button that pops up a small window
+## of its options: MAP, DUPLICATE, EXPORT and DELETE.
 ##
-## Mouse: click a row to continue it. MORE pops up its options under it:
-## DUPLICATE copies the save into a new one beside it, EXPORT writes it to a
-## file of your choosing, DELETE and then CONFIRM? removes it. A click outside
-## the window closes it. IMPORT brings in an original Tank.exe .sav or an
+## Mouse: click a row to continue it. MORE pops up its options under it: MAP
+## shows the map the save plays on and steps it to the next map that reaches
+## the save's stage, written into the save; DUPLICATE copies the save into a
+## new one beside it, EXPORT writes it to a file of your choosing, DELETE and
+## then CONFIRM? removes it. A click outside the window closes it. IMPORT brings in an original Tank.exe .sav or an
 ## exported .tsave.
 ## Keyboard / controller: up/down move through the saves and the footer, right
 ## goes from a save to its MORE and left comes back (and moves between IMPORT
@@ -14,14 +16,18 @@ extends Control
 
 const TITLE_SCENE := "res://scenes/main.tscn"
 const MORE_TEXT := "MORE"
+const MAP_TEXT := "MAP: %s"
 const DUPLICATE_TEXT := "DUPLICATE"
 const EXPORT_TEXT := "EXPORT"
 const DELETE_TEXT := "DELETE"
 const CONFIRM_TEXT := "CONFIRM?"
-const DEFAULT_HINT := "Click a save to continue it   ·   MORE duplicates, exports or deletes it   ·   Esc goes back"
-const OPTIONS_HINT := "DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes"
+const DEFAULT_HINT := "Click a save to continue it   ·   MORE changes its map, duplicates, exports or deletes it   ·   Esc goes back"
+const OPTIONS_HINT := "MAP picks the map it plays on   ·   DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes"
 const CONFIRM_HINT := "Press CONFIRM? again to delete this save. Moving away cancels."
 const ROW_HEIGHT := 84.0
+## The date's column; a longer map name under it widens it, up to MAP_MAX_WIDTH.
+const DATE_WIDTH := 210.0
+const MAP_MAX_WIDTH := 260.0
 const MORE_WIDTH := 130.0
 ## The options window: its width, its gap from MORE, and how much it dims the rest.
 const POPUP_WIDTH := 230.0
@@ -48,6 +54,7 @@ var _nav: MenuFocus
 var _saves: Array = []  # save info dictionaries from SaveManager.get_save_list()
 var _rows: Array[Button] = []
 var _more_buttons: Array[Button] = []
+var _map_labels: Array[Label] = []  # each row's map, under its date
 ## What up/down walk through while the window is closed: the saves and the footer.
 var _main_items: Array[Control] = []
 # The options window, one for every save: a layer that dims the screen and
@@ -55,7 +62,8 @@ var _main_items: Array[Control] = []
 var _popup_layer: Control
 var _popup: PanelContainer
 var _popup_title: Label
-var _popup_buttons: Array[Button] = []  # DUPLICATE, EXPORT, DELETE
+var _popup_buttons: Array[Button] = []  # MAP, DUPLICATE, EXPORT, DELETE
+var _map_button: Button
 var _delete_button: Button
 var _popup_info: Dictionary = {}  # the save the window is open for
 var _open_more: Button = null      # and the MORE button that opened it
@@ -132,6 +140,7 @@ func _rebuild_list(focus_index: int) -> void:
 		child.queue_free()
 	_rows.clear()
 	_more_buttons.clear()
+	_map_labels.clear()
 	_nav.aliases.clear()
 	_right_of.clear()
 	_left_of.clear()
@@ -173,9 +182,18 @@ func _add_save_entry(info: Dictionary) -> void:
 	column.add_child(_make_label(_format_details(info), &"ValueLabel", 0, true))
 	column.add_child(_make_label(_format_players(info), &"HintLabel", 0, true))
 	layout.add_child(column)
-	var date := _make_label(_format_date(info), &"HintLabel", 210)
-	date.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	layout.add_child(date)
+	# The date, and under it the map the save plays on.
+	var side := VBoxContainer.new()
+	side.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	side.alignment = BoxContainer.ALIGNMENT_CENTER
+	side.add_theme_constant_override("separation", 2)
+	for text: String in [_format_date(info), _map_name(_save_pool_id(info))]:
+		var label := _make_label(text, &"HintLabel", DATE_WIDTH)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		side.add_child(label)
+	layout.add_child(side)
+	_map_labels.append(side.get_child(1))
+	_fit_map_label(_map_labels[-1])
 	row.pressed.connect(_load_save.bind(info))
 	row.mouse_entered.connect(row.grab_focus)
 	entry.add_child(row)
@@ -288,6 +306,10 @@ func _build_popup() -> void:
 	_popup_title = _make_label("", &"HintLabel", 0)
 	_popup_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(_popup_title)
+	_map_button = _make_row_button("", &"RowActionButton", 0)
+	_map_button.pressed.connect(_on_map_pressed)
+	column.add_child(_map_button)
+	_popup_buttons.append(_map_button)
 	for option: Array in [[DUPLICATE_TEXT, &"RowActionButton", _on_duplicate_pressed],
 			[EXPORT_TEXT, &"RowActionButton", _on_export_pressed],
 			[DELETE_TEXT, &"DangerButton", _on_delete_pressed]]:
@@ -295,7 +317,7 @@ func _build_popup() -> void:
 		button.pressed.connect(option[2])
 		column.add_child(button)
 		_popup_buttons.append(button)
-	_delete_button = _popup_buttons[2]
+	_delete_button = _popup_buttons[3]
 	_delete_button.focus_exited.connect(_on_delete_focus_exited)
 
 
@@ -309,14 +331,15 @@ func _toggle_options(index: int) -> void:
 	_open_more = more
 	_popup_info = _saves[index]
 	_popup_title.text = str(_popup_info.get("save_name", ""))
+	_refresh_map_button()
 	more.set_pressed_no_signal(true)
 	_popup_layer.visible = true
 	_place_popup(more)
-	# Up and down stay in the window while it is open.
+	# Up and down stay in the window while it is open (skipping a greyed MAP).
 	var buttons: Array[Control] = []
 	buttons.assign(_popup_buttons)
 	_nav.items = buttons
-	_popup_buttons[0].grab_focus()
+	(_popup_buttons[1] if _map_button.disabled else _map_button).grab_focus()
 	_set_hint(OPTIONS_HINT)
 
 
@@ -370,6 +393,64 @@ func _on_focus_changed(control: Control) -> void:
 
 func _load_save(info: Dictionary) -> void:
 	SaveManager.load_game(info["filepath"])
+
+
+## The map save [param info] plays on: its own record, else (a save from before
+## saves kept one) the map selected when it loads.
+func _save_pool_id(info: Dictionary) -> String:
+	var pool_id: String = info.get("map_pool", "")
+	return pool_id if not pool_id.is_empty() else GameManager.current_map_pool_id
+
+
+## The maps save [param info] can play on: those that reach its stage.
+func _map_choices(info: Dictionary) -> Array[String]:
+	var choices: Array[String] = []
+	for pool: LevelData.MapPool in LevelData.get_available_pools():
+		if LevelData.get_pool_stage_count(pool) >= int(info.get("stage", 1)):
+			choices.append(pool.id)
+	return choices
+
+
+## Widens a row's map line to its name, within MAP_MAX_WIDTH (longer ones trim).
+func _fit_map_label(label: Label) -> void:
+	var width := label.get_theme_font(&"font").get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			label.get_theme_font_size(&"font_size")).x
+	label.custom_minimum_size.x = clampf(ceilf(width), DATE_WIDTH, MAP_MAX_WIDTH)
+
+
+## The name map pool [param pool_id] goes by in the menus; the id itself if
+## it's gone (an imported map since deleted).
+func _map_name(pool_id: String) -> String:
+	for pool: LevelData.MapPool in LevelData.get_available_pools():
+		if pool.id == pool_id:
+			return pool.display_name
+	return pool_id
+
+
+## MAP shows the open save's map, greyed out when no other map reaches its stage.
+func _refresh_map_button() -> void:
+	var current := _save_pool_id(_popup_info)
+	_map_button.text = tr(MAP_TEXT) % _map_name(current)
+	var choices := _map_choices(_popup_info)
+	_map_button.disabled = choices.is_empty() or (choices.size() == 1 and choices[0] == current)
+
+
+## MAP: the next map that reaches the save's stage, written into the save.
+func _on_map_pressed() -> void:
+	if _map_button.disabled:
+		return
+	var choices := _map_choices(_popup_info)
+	var next: String = choices[(choices.find(_save_pool_id(_popup_info)) + 1) % choices.size()]
+	var result: Dictionary = SaveManager.set_save_map_pool(_popup_info["filepath"], next)
+	if not result.get("ok", false):
+		_set_hint(result.get("error", tr("unknown error")), true)
+		return
+	_popup_info["map_pool"] = next
+	var row_map := _map_labels[_saves.find(_popup_info)]
+	row_map.text = _map_name(next)
+	_fit_map_label(row_map)
+	_refresh_map_button()
+	_place_popup(_open_more)  # the name's width may have changed
 
 
 func _on_duplicate_pressed() -> void:

@@ -2,7 +2,7 @@
 
 How Tank.exe v1.22 sends a stage's enemies onto the field: when (the waves, in the play tick 0x4cbae4), and where and which (the spawn try, 0x498190). How many a stage sends, and how many may be on the field at once, are the difficulty's (difficulty_original_spec.md).
 
-**Units.** 1 tick = 0.75 ms. The map is 40×30 tiles of 16 px; the remake doubles them. Tank types are the original's numbers 0–23 (the remake's type IDs 1–24).
+**Units.** 1 tick = 0.75 ms at the original's default game speed (section 5). The map is 40×30 tiles of 16 px; the remake doubles them. Tank types are the original's numbers 0–23 (the remake's type IDs 1–24).
 
 ## 1. The map's border
 
@@ -45,6 +45,15 @@ Free spots along the top, of 39 (maps/v1_2_2.dat):
 
 The remake's old fixed points (columns 1, 19 and 37) were walled in on many stages, and it broke the walls there. On all of stages 38, 48 and 50–52, for example.
 
+## 5. The game's speed — 0x4c7a1e
+
+Every tick count above runs on the game's clock, which its speed option sets.
+- DXTimerTimer (0x4c7960) gets DelphiX's lag count: the 5 ms timer intervals since the last frame (the form's DXTimer has Interval 5; DelphiX's idle handler, 0x452660).
+- It turns that into ticks: `min(lag × 5, 100) × speed / 75`, speed from the table at 0x4d3c58, indexed by the options' GameSpeed −1..3: **83, 100, 117, 133, 150 %**, with 0 (100 %) the default.
+- So at 100 %, 1 tick = 0.75 ms; at 150 %, 0.5 ms. The first wave comes after 3 s at 100 % (2 s at 150 %), and a wave's gap per try is 0.94 s (0.63 s).
+- The readme's "enemies appear 4 sec after you" counts ticks as ms. The copy in `Tank V1.22` has `GameSpeed=3` (150 %) in TANK.ini, and the readme calls 150 % fun.
+- Frames never lose more than the few ms short of a whole 5 ms interval, so the clock runs at or just under its rate.
+
 ## The remake
 
 `EnemySpawner` (scripts/level/enemy_spawner.gd), with `LevelManager.is_open_ground` for the free-spot test:
@@ -53,6 +62,8 @@ The remake's old fixed points (columns 1, 19 and 37) were walled in on many stag
 - **Type:** `_take_type`: a random one of the distinct types in `_spawn_queue`, one of it taken off. The queue's order means nothing now; `LevelData.get_enemy_spawn_queue` no longer shuffles it.
 - **Place:** `_pick_spot`: a random one of the 39 spots (a 2×2 block whose top-left is on tile row 0, columns 0–38) with no wall, water or base on it. The tank's centre goes to the block's centre.
 - **Everyone out:** `game.gd` holds the timer (`hold`) for the rejoin countdown, as before.
+
+- **Game speed:** the GAME SPEED setting (title and pause settings, `InputSettings.GAME_SPEEDS`, 100 % by default) sets `Engine.time_scale` while a stage runs (`game.gd _apply_game_speed`). Tanks, shells, timers, waves and the stage screens all follow it; sounds keep their pitch, and the menus outside a stage run at normal time. The remake's times above are the 100 % ones.
 
 **Deliberate differences:**
 - **Never on a tank.** A spot is passed over while a tank overlaps it (hitboxes within 60 px on both axes), whether on the field, in the air or still appearing. With none free, the try is refused, which ends the wave. The original stacked them; the remake used to wait for its fixed point to clear.

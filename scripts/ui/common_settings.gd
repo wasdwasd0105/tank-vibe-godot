@@ -1,9 +1,9 @@
 class_name CommonSettings
 extends RefCounted
 ## The settings the title screen and the pause menu both offer, as rows added to
-## a settings list: SFX and music volume, optionally fullscreen, the menus'
-## language, and a row per player that opens their controls page (keys,
-## controller buttons, vibration).
+## a settings list: SFX and music volume, optionally fullscreen, the game's
+## speed, the menus' language, and a row per player that opens their controls
+## page (keys, controller buttons, vibration).
 ##
 ## The host keeps this object, puts [method rows] in its navigation, passes
 ## left / right on them through [method adjust], and opens the controls page on
@@ -14,6 +14,7 @@ signal controls_requested(player: String)
 var sfx_row: Button
 var music_row: Button
 var fullscreen_row: Button   # null unless asked for
+var game_speed_row: Button
 var language_row: Button
 var p1_row: Button
 var p2_row: Button
@@ -25,6 +26,7 @@ func _init(container: VBoxContainer, with_fullscreen: bool) -> void:
 	if with_fullscreen:
 		fullscreen_row = _add_value_row(container, "FULLSCREEN", _toggle_fullscreen)
 		WindowManager.fullscreen_changed.connect(_on_fullscreen_changed)
+	game_speed_row = _add_value_row(container, "GAME SPEED", _cycle_game_speed)
 	language_row = _add_value_row(container, "LANGUAGE", _cycle_language)
 	p1_row = _add_controls_row(container, "P1 CONTROLS", "p1")
 	p2_row = _add_controls_row(container, "P2 CONTROLS", "p2")
@@ -36,6 +38,7 @@ func rows() -> Array[Control]:
 	var list: Array[Control] = [sfx_row, music_row]
 	if fullscreen_row:
 		list.append(fullscreen_row)
+	list.append(game_speed_row)
 	list.append(language_row)
 	list.append(p1_row)
 	list.append(p2_row)
@@ -56,6 +59,8 @@ func adjust(focused: Control, direction: int) -> bool:
 		_cycle_music_volume(direction)
 	elif fullscreen_row and focused == fullscreen_row:
 		_toggle_fullscreen(direction)
+	elif focused == game_speed_row:
+		_cycle_game_speed(direction)
 	elif focused == language_row:
 		_cycle_language(direction)
 	else:
@@ -74,6 +79,10 @@ func refresh() -> void:
 	MenuRows.arrow(music_row, "Right").disabled = music >= 1.0
 	if fullscreen_row:
 		MenuRows.value_label(fullscreen_row).text = "ON" if WindowManager.is_fullscreen() else "OFF"
+	var speed := InputSettings.get_saved_game_speed()
+	MenuRows.value_label(game_speed_row).text = "%d%%" % speed
+	MenuRows.arrow(game_speed_row, "Left").disabled = speed <= InputSettings.GAME_SPEEDS[0]
+	MenuRows.arrow(game_speed_row, "Right").disabled = speed >= InputSettings.GAME_SPEEDS[-1]
 	# Each language's name is written in itself, whichever is shown.
 	MenuRows.value_label(language_row).text = Localization.get_language_name(Localization.get_language())
 	MenuRows.value_label(p1_row).text = InputSettings.get_player_controls_text("p1")
@@ -101,6 +110,15 @@ func _cycle_sfx_volume(direction: int) -> void:
 
 func _cycle_music_volume(direction: int) -> void:
 	SoundManager.set_music_volume(_stepped_volume(SoundManager.get_music_volume(), direction))
+	refresh()
+
+
+## The next speed of the original's five, stopping at either end; a running
+## stage takes it up at once (game.gd).
+func _cycle_game_speed(direction: int) -> void:
+	var speeds := InputSettings.GAME_SPEEDS
+	var at := speeds.find(InputSettings.get_saved_game_speed())
+	InputSettings.save_game_speed(speeds[clampi(at + direction, 0, speeds.size() - 1)])
 	refresh()
 
 

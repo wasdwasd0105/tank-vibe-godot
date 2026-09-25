@@ -81,6 +81,9 @@ func _ready() -> void:
 	stage_overlay.results_finished.connect(_on_results_finished)
 	stage_overlay.game_over_finished.connect(_on_game_over_finished)
 
+	InputSettings.game_speed_changed.connect(_apply_game_speed)
+	_apply_game_speed()
+
 	debug_freeze = DebugFreeze.new()
 	debug_freeze.name = "DebugFreeze"
 	debug_freeze.setup(level_manager)
@@ -141,6 +144,16 @@ func _player_revive_position(player_id: int) -> Vector2:
 	var tl: Vector2i = level_manager.find_clear_area(ideal, Vector2i(2, 2))
 	# The 2x2 block center sits at the shared corner of its four tiles.
 	return level_manager.tile_to_world(tl) + Vector2(16, 16)
+
+## The stage runs at the GAME SPEED setting's pace, as the original's speed
+## option set its clock (83 % to 150 %): tanks, shells, timers, the enemies'
+## waves and the stage screens alike. Sounds keep their pitch, and outside a
+## stage time runs normally.
+func _apply_game_speed() -> void:
+	Engine.time_scale = InputSettings.get_saved_game_speed() / 100.0
+
+func _exit_tree() -> void:
+	Engine.time_scale = 1.0
 
 func get_level_manager() -> LevelManager:
 	return level_manager
@@ -221,11 +234,13 @@ func _on_enemy_destroyed(enemy: Node2D, points: int) -> void:
 	if pid >= 0:
 		GameManager.add_score(pid, points, enemy.tank_type_id)
 		GameManager.note_kill(pid)
-		# The score shows over the wreck. Not for a bomb's kills, which leave the
-		# tanks' health untouched: the original's bomb bypassed its Damage routine,
-		# which is where it wrote them.
+		# The score shows over the wreck, and the killer's controller thumps. Not
+		# for a bomb's kills, which leave the tanks' health untouched: the
+		# original's bomb bypassed its Damage routine, which is where it wrote
+		# them (and the bomb's own big rumble covers them).
 		if enemy.health <= 0:
 			KillText.spawn(effects_container, points, GameManager.get_combo(pid), enemy.global_position)
+			PlayerTank.rumble_player(pid, PlayerTank.KILL_RUMBLE)
 	_update_hud()
 
 func _on_all_enemies_defeated() -> void:
