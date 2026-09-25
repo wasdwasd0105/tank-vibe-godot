@@ -116,15 +116,15 @@ func _run() -> void:
 	print("\n[A] The pause menu of a two-player game has PLAYER 2")
 	await _key(KEY_ESCAPE)
 	check(_menu.visible and tree.paused, "Esc: paused")
-	check(_page_texts() == ["RESUME", "RESTART STAGE", "PLAYER 2: ON", "MAIN MENU", "SETTINGS", "QUIT GAME"],
-		"under RESTART STAGE: %s" % str(_page_texts()))
+	check(_page_texts() == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "PLAYER 2: ON", "SETTINGS", "MAIN MENU", "QUIT GAME"],
+		"under the fullscreen switch: %s" % str(_page_texts()))
 
 	print("\n[B] Switching player 2 off: the tank leaves, everything kept")
 	p2.health = 5  # took a hit this stage
 	var p2_at := p2.global_position
-	await _key(KEY_DOWN)
-	await _key(KEY_DOWN)
-	check(_focus() == _menu._p2_button, "Down, Down reaches PLAYER 2")
+	for i in 3:
+		await _key(KEY_DOWN)
+	check(_focus() == _menu._p2_button, "down three times reaches PLAYER 2")
 	await _key(KEY_ENTER)
 	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF"
 		and _menu.visible and _focus() == _menu._p2_button, "Enter: PLAYER 2: OFF, still in the menu")
@@ -169,8 +169,8 @@ func _run() -> void:
 
 	print("\n[D] Left / right on PLAYER 2 flip it too")
 	await _key(KEY_ESCAPE)
-	await _key(KEY_DOWN)
-	await _key(KEY_DOWN)
+	for i in 3:
+		await _key(KEY_DOWN)
 	await _key(KEY_RIGHT)
 	check(not GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: ON" and _tank(1) != null,
 		"Right: back on, a tank beside the base")
@@ -190,8 +190,8 @@ func _run() -> void:
 		"player 1 out of lives: the countdown to Mission Fail starts")
 	await _key(KEY_ESCAPE)
 	check(_menu._p2_button.text == "PLAYER 2: OFF" and not _menu._p2_button.disabled, "PLAYER 2 can still come on")
-	await _key(KEY_DOWN)
-	await _key(KEY_DOWN)
+	for i in 3:
+		await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
 	check(_tank(1) != null and _game.get_game_over_countdown() < 0,
 		"switched on, player 2's tank comes and the countdown stops")

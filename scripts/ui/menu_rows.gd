@@ -8,7 +8,8 @@ extends RefCounted
 ## the mouse.
 
 const ROW_HEIGHT := 46.0
-const NAME_WIDTH := 230.0
+## Wide enough for the longest name, ALWAYS FULLSCREEN, so every row's arrows line up.
+const NAME_WIDTH := 290.0
 const LAYOUT_MARGIN := 16.0
 const KEYCAP_WIDTH := 76.0
 ## Slots are wider than a key's keycap, so their columns line up down the rows.

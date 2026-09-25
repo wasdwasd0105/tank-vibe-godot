@@ -1,7 +1,8 @@
 extends Node
 ## Headless test for the pause menu: Esc or Start opens it over the paused
-## stage; RESUME / RESTART STAGE / MAIN MENU / SETTINGS / QUIT GAME; the
-## settings page changes sound, the game's speed (the stage's clock follows it,
+## stage; RESUME / RESTART STAGE / ENTER FULLSCREEN (it switches and stays) /
+## SETTINGS / MAIN MENU / QUIT GAME; the settings page changes sound, whether
+## the game always opens fullscreen, the game's speed (the stage's clock follows it,
 ## and time runs normally again outside the stage), a key and a player's
 ## vibration without leaving the stage, and opens a player's controls page (the title screen's) on the
 ## right tab; Esc, B and Start step back a page at a time. Driven by simulated
@@ -101,19 +102,21 @@ func _run() -> void:
 	var order: Array = []
 	for button: Button in _menu._page_items(0):
 		order.append(button.text)
-	check(order == ["RESUME", "RESTART STAGE", "MAIN MENU", "SETTINGS", "QUIT GAME"], "the order: %s" % str(order))
+	check(order == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "SETTINGS", "MAIN MENU", "QUIT GAME"],
+		"the order: %s" % str(order))
 	var in_panel: Array = []
 	for child in _menu._resume_button.get_parent().get_children():
 		if child is Button and child.visible:   # PLAYER 2 hides in a one-player game
 			in_panel.append(child.text)
 	check(in_panel == order, "and the panel shows them in that order")
-	await _key(KEY_UP)
-	await _key(KEY_UP)
-	check(_focus() == _menu._settings_button, "up twice (round past QUIT GAME): SETTINGS")
+	for i in 3:
+		await _key(KEY_UP)
+	check(_focus() == _menu._settings_button, "up three times (round past QUIT GAME and MAIN MENU): SETTINGS")
 	await _key(KEY_ENTER)
 	check(_menu._settings_panel.visible and not _menu._main_panel.visible and _focus() == _menu._common.sfx_row,
 		"Enter: the settings page, on SFX VOLUME")
-	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "GAME SPEED", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
+	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "ALWAYS FULLSCREEN", "GAME SPEED", "LANGUAGE",
+		"P1 CONTROLS", "P2 CONTROLS"],
 		"its rows, VIBRATION now being on each player's controls page: %s" % str(_row_names()))
 	var sfx := SoundManager.get_sfx_volume()
 	await _key(KEY_LEFT)
@@ -127,6 +130,24 @@ func _run() -> void:
 	check(_focus() == _menu._common.fullscreen_row, "down twice: FULLSCREEN")
 	check(MenuRows.value_label(_menu._common.fullscreen_row).text == ("ON" if WindowManager.is_fullscreen() else "OFF"),
 		"FULLSCREEN shows the window's state")
+	var always_row: Button = _menu._common.always_fullscreen_row
+	var asked: Array = []  # what the window was asked for, fullscreen or not
+	WindowManager.fullscreen_changed.connect(func(on: bool) -> void: asked.append(on))
+	await _key(KEY_DOWN)
+	check(_focus() == always_row and MenuRows.value_label(always_row).text == "OFF"
+		and not InputSettings.get_always_fullscreen(), "down: ALWAYS FULLSCREEN, OFF out of the box")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_always_fullscreen() and MenuRows.value_label(always_row).text == "ON" and asked == [true],
+		"right: ON, saved, and the window goes fullscreen now too (%s)" % str(asked))
+	asked.clear()
+	WindowManager.apply_start_mode()
+	check(asked == [true], "and the game will open fullscreen")
+	await _key(KEY_LEFT)
+	asked.clear()
+	WindowManager.apply_start_mode()
+	check(not InputSettings.get_always_fullscreen() and MenuRows.value_label(always_row).text == "OFF" and asked.is_empty(),
+		"left: OFF again, and the game opens in a window")
+	WindowManager.set_fullscreen(false)
 	var speed_row: Button = _menu._common.game_speed_row
 	var speed_text := func() -> String: return MenuRows.value_label(speed_row).text
 	await _key(KEY_DOWN)
@@ -183,9 +204,9 @@ func _run() -> void:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
 	await _pad(JOY_BUTTON_A)
 	check(_menu._settings_panel.visible, "down three times, A: the settings")
-	for i in 5:
+	for i in 6:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
-	check(_focus() == _menu._common.p1_row, "down five times (past GAME SPEED and LANGUAGE): P1 CONTROLS")
+	check(_focus() == _menu._common.p1_row, "down six times (past ALWAYS FULLSCREEN, GAME SPEED and LANGUAGE): P1 CONTROLS")
 	await _pad(JOY_BUTTON_A)
 	check(cp.visible and cp._tab == cp.Tab.GAMEPAD and _focus() == cp._pad_rows[0],
 		"A: P1 CONTROLS on the GAMEPAD tab (opened with a pad), on MOVE")
@@ -212,6 +233,23 @@ func _run() -> void:
 		await _key(KEY_ENTER)
 		check(_requests == [pick[1]] and not _menu.visible and not tree.paused,
 			"%s: unpaused, then %s" % [(pick[0] as Button).text, pick[1]])
+
+	print("\n[E2] ENTER FULLSCREEN switches the window and stays in the menu")
+	var fullscreen_asks: Array = []
+	WindowManager.fullscreen_changed.connect(func(on: bool) -> void: fullscreen_asks.append(on))
+	await _key(KEY_ESCAPE)
+	await _key(KEY_DOWN)
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._fullscreen_button and _menu._fullscreen_button.text == "ENTER FULLSCREEN",
+		"down twice from RESUME: ENTER FULLSCREEN")
+	await _key(KEY_ENTER)
+	check(fullscreen_asks == [true] and _menu._fullscreen_button.text == "EXIT FULLSCREEN"
+		and _menu.visible and tree.paused and _focus() == _menu._fullscreen_button,
+		"Enter: fullscreen, the button now EXIT FULLSCREEN, still paused on it")
+	WindowManager.set_fullscreen(false)  # as EXIT FULLSCREEN, F11 or the settings' row would
+	check(_menu._fullscreen_button.text == "ENTER FULLSCREEN", "back in a window, however switched: ENTER FULLSCREEN")
+	await _key(KEY_ESCAPE)
+	check(not _menu.visible and not tree.paused, "Esc: resumed")
 
 	print("\n[F] Mouse, and no pausing during a game over")
 	await _key(KEY_ESCAPE)

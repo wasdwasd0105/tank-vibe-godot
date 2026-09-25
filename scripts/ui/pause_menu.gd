@@ -1,8 +1,9 @@
 extends Control
-## The pause screen, in the menus' style: RESUME, RESTART STAGE, MAIN MENU,
-## SETTINGS and QUIT GAME over the dimmed stage. In a two-player game, PLAYER 2
-## ON / OFF under RESTART STAGE lets one person play on while player 2 sits out,
-## their tank off the field and everything they had kept. SETTINGS changes the sound,
+## The pause screen, in the menus' style: RESUME, RESTART STAGE, ENTER / EXIT
+## FULLSCREEN, SETTINGS, MAIN MENU and QUIT GAME over the dimmed stage. In a
+## two-player game, PLAYER 2 ON / OFF under the fullscreen switch lets one
+## person play on while player 2 sits out, their tank off the field and
+## everything they had kept. SETTINGS changes the sound,
 ## fullscreen, the menus' language and each player's controls and vibration (the
 ## same controls page as the title screen) without leaving the stage; changes
 ## apply at once.
@@ -25,6 +26,7 @@ const PAGE_FADE_TIME := 0.12
 @onready var _main_panel: Control = %MainPanel
 @onready var _resume_button: Button = %ResumeButton
 @onready var _p2_button: Button = %PlayerTwoButton
+@onready var _fullscreen_button: Button = %FullscreenButton
 @onready var _settings_button: Button = %SettingsButton
 @onready var _restart_button: Button = %RestartButton
 @onready var _main_menu_button: Button = %MainMenuButton
@@ -48,11 +50,13 @@ func _ready() -> void:
 	_nav = MenuFocus.new(get_viewport())
 	_common = CommonSettings.new(_settings_rows, true)
 	_common.controls_requested.connect(_open_controls)
-	for button: Button in [_resume_button, _p2_button, _settings_button, _restart_button,
-			_main_menu_button, _quit_button, _settings_back_button]:
+	for button: Button in [_resume_button, _fullscreen_button, _p2_button, _settings_button,
+			_restart_button, _main_menu_button, _quit_button, _settings_back_button]:
 		button.mouse_entered.connect(button.grab_focus)   # hover focuses, as in every menu
 	_resume_button.pressed.connect(_resume)
 	_p2_button.pressed.connect(_toggle_p2)
+	_fullscreen_button.pressed.connect(_toggle_fullscreen)
+	WindowManager.fullscreen_changed.connect(_refresh_fullscreen)
 	_settings_button.pressed.connect(_open_settings)
 	_restart_button.pressed.connect(_leave.bind(restart_requested))
 	_main_menu_button.pressed.connect(_leave.bind(main_menu_requested))
@@ -109,6 +113,7 @@ func _open() -> void:
 	visible = true
 	get_tree().paused = true
 	_common.refresh()
+	_refresh_fullscreen(WindowManager.is_fullscreen())
 	_refresh_p2()
 	_show_page(Page.MAIN, _resume_button)
 
@@ -121,6 +126,17 @@ func _refresh_p2() -> void:
 	var off: bool = GameManager.player_disabled[1]
 	_p2_button.text = tr("PLAYER 2: %s") % tr("OFF" if off else "ON")
 	_p2_button.disabled = not off and GameManager.player_lives[0] < 0
+
+
+## ENTER FULLSCREEN or EXIT FULLSCREEN, for the window as it is ([param on]:
+## fullscreen), however it was switched (here, the settings' row, F11).
+func _refresh_fullscreen(on: bool) -> void:
+	_fullscreen_button.text = "EXIT FULLSCREEN" if on else "ENTER FULLSCREEN"
+
+
+## Switches fullscreen and stays on the page, the stage still paused.
+func _toggle_fullscreen() -> void:
+	WindowManager.set_fullscreen(not WindowManager.is_fullscreen())
 
 
 ## Takes player 2 out of the stage, or brings them back, and stays on the page.
@@ -173,9 +189,10 @@ func _page_items(page: Page) -> Array[Control]:
 	var items: Array[Control] = []
 	match page:
 		Page.MAIN:
-			items.assign([_resume_button, _restart_button, _main_menu_button, _settings_button, _quit_button])
+			items.assign([_resume_button, _restart_button, _fullscreen_button, _settings_button,
+					_main_menu_button, _quit_button])
 			if _p2_button.visible:
-				items.insert(2, _p2_button)  # under RESTART STAGE
+				items.insert(3, _p2_button)  # under the fullscreen switch
 		Page.SETTINGS:
 			items.assign(_common.rows())
 			items.append(_settings_back_button)

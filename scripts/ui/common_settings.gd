@@ -1,9 +1,10 @@
 class_name CommonSettings
 extends RefCounted
 ## The settings the title screen and the pause menu both offer, as rows added to
-## a settings list: SFX and music volume, optionally fullscreen, the game's
-## speed, the menus' language, and a row per player that opens their controls
-## page (keys, controller buttons, vibration).
+## a settings list: SFX and music volume, optionally fullscreen, whether the
+## game always opens fullscreen, the game's speed, the menus' language, and a
+## row per player that opens their controls page (keys, controller buttons,
+## vibration).
 ##
 ## The host keeps this object, puts [method rows] in its navigation, passes
 ## left / right on them through [method adjust], and opens the controls page on
@@ -14,6 +15,7 @@ signal controls_requested(player: String)
 var sfx_row: Button
 var music_row: Button
 var fullscreen_row: Button   # null unless asked for
+var always_fullscreen_row: Button
 var game_speed_row: Button
 var language_row: Button
 var p1_row: Button
@@ -26,6 +28,7 @@ func _init(container: VBoxContainer, with_fullscreen: bool) -> void:
 	if with_fullscreen:
 		fullscreen_row = _add_value_row(container, "FULLSCREEN", _toggle_fullscreen)
 		WindowManager.fullscreen_changed.connect(_on_fullscreen_changed)
+	always_fullscreen_row = _add_value_row(container, "ALWAYS FULLSCREEN", _toggle_always_fullscreen)
 	game_speed_row = _add_value_row(container, "GAME SPEED", _cycle_game_speed)
 	language_row = _add_value_row(container, "LANGUAGE", _cycle_language)
 	p1_row = _add_controls_row(container, "P1 CONTROLS", "p1")
@@ -38,6 +41,7 @@ func rows() -> Array[Control]:
 	var list: Array[Control] = [sfx_row, music_row]
 	if fullscreen_row:
 		list.append(fullscreen_row)
+	list.append(always_fullscreen_row)
 	list.append(game_speed_row)
 	list.append(language_row)
 	list.append(p1_row)
@@ -59,6 +63,8 @@ func adjust(focused: Control, direction: int) -> bool:
 		_cycle_music_volume(direction)
 	elif fullscreen_row and focused == fullscreen_row:
 		_toggle_fullscreen(direction)
+	elif focused == always_fullscreen_row:
+		_toggle_always_fullscreen(direction)
 	elif focused == game_speed_row:
 		_cycle_game_speed(direction)
 	elif focused == language_row:
@@ -79,6 +85,7 @@ func refresh() -> void:
 	MenuRows.arrow(music_row, "Right").disabled = music >= 1.0
 	if fullscreen_row:
 		MenuRows.value_label(fullscreen_row).text = "ON" if WindowManager.is_fullscreen() else "OFF"
+	MenuRows.value_label(always_fullscreen_row).text = "ON" if InputSettings.get_always_fullscreen() else "OFF"
 	var speed := InputSettings.get_saved_game_speed()
 	MenuRows.value_label(game_speed_row).text = "%d%%" % speed
 	MenuRows.arrow(game_speed_row, "Left").disabled = speed <= InputSettings.GAME_SPEEDS[0]
@@ -110,6 +117,16 @@ func _cycle_sfx_volume(direction: int) -> void:
 
 func _cycle_music_volume(direction: int) -> void:
 	SoundManager.set_music_volume(_stepped_volume(SoundManager.get_music_volume(), direction))
+	refresh()
+
+
+## ALWAYS FULLSCREEN on or off, kept for the next start; switched on, the
+## window goes fullscreen now too.
+func _toggle_always_fullscreen(_direction: int) -> void:
+	var on := not InputSettings.get_always_fullscreen()
+	InputSettings.save_always_fullscreen(on)
+	if on and not WindowManager.is_fullscreen():
+		WindowManager.set_fullscreen(true)
 	refresh()
 
 

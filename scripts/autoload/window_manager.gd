@@ -1,14 +1,22 @@
 extends Node
 
 ## Global window manager — handles fullscreen toggle and window scaling.
-## Press F11 or F to toggle fullscreen from any screen; the pause menu's
-## settings have a FULLSCREEN row too.
+## Press F11 or F to toggle fullscreen from any screen; the pause menu has an
+## ENTER / EXIT FULLSCREEN button and its settings a FULLSCREEN row. With the
+## ALWAYS FULLSCREEN setting on, the game opens fullscreen.
 
 signal fullscreen_changed(on: bool)
 
 func _ready() -> void:
-	# Start maximized so the game fills the screen
-	get_window().mode = Window.MODE_MAXIMIZED
+	apply_start_mode()
+
+## How the game opens: fullscreen with ALWAYS FULLSCREEN on, else maximized so
+## the game fills the screen.
+func apply_start_mode() -> void:
+	if InputSettings.get_always_fullscreen():
+		set_fullscreen(true)
+	else:
+		get_window().mode = Window.MODE_MAXIMIZED
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_fullscreen"):

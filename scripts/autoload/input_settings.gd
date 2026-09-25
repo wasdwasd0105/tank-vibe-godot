@@ -560,6 +560,15 @@ func save_game_speed(percent: int) -> void:
 	_config.save(_save_path)
 	game_speed_changed.emit()
 
+## ALWAYS FULLSCREEN: the game opens fullscreen (WindowManager) instead of in
+## a maximized window.
+func save_always_fullscreen(on: bool) -> void:
+	_config.set_value("game", "always_fullscreen", on)
+	_config.save(_save_path)
+
+func get_always_fullscreen() -> bool:
+	return _config.get_value("game", "always_fullscreen", false)
+
 ## The GAME SPEED setting, one of GAME_SPEEDS.
 func get_saved_game_speed() -> int:
 	var percent: int = _config.get_value("game", "game_speed", DEFAULT_GAME_SPEED)
