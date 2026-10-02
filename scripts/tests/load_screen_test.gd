@@ -36,6 +36,18 @@ func _key(code: Key) -> void:
 	await get_tree().process_frame
 
 
+## Types [param text] into whatever has the keys.
+func _type(text: String) -> void:
+	for i in text.length():
+		for pressed in [true, false]:
+			var ev := InputEventKey.new()
+			ev.unicode = text.unicode_at(i)
+			ev.pressed = pressed
+			Input.parse_input_event(ev)
+			Input.flush_buffered_events()
+	await get_tree().process_frame
+
+
 func _focus() -> Control:
 	return get_viewport().gui_get_focus_owner()
 
@@ -145,7 +157,8 @@ func _run() -> void:
 	await _open("res://scenes/load_screen.tscn")
 	check(_names() == ["Beta", "Alpha"], "two saves, newest first: %s" % str(_names()))
 	check(_beside(0) == ["MORE"] and _beside(1) == ["MORE"], "beside each row, MORE alone: %s" % str(_beside(0)))
-	check(_screen._popup_buttons[0] == _screen._map_button and _window_texts().slice(1) == ["DUPLICATE", "EXPORT", "DELETE"]
+	check(_screen._popup_buttons[0] == _screen._map_button
+		and _window_texts().slice(1) == ["RENAME", "DUPLICATE", "EXPORT", "DELETE"]
 		and not _screen._popup_layer.visible, "its options, MAP then %s, wait in a hidden window" % str(_window_texts().slice(1)))
 	check(_screen._import_button.text == "IMPORT", "the footer's IMPORT takes any save")
 	var row: Button = _screen._rows[1]
@@ -158,9 +171,9 @@ func _run() -> void:
 	check(_focus() == row, "left: back to the row")
 	await _key(KEY_RIGHT)
 	await _key(KEY_ENTER)
-	check(_window_for(1) and more.button_pressed and _focus().text == "DUPLICATE"
+	check(_window_for(1) and more.button_pressed and _focus().text == "RENAME"
 		and _screen._popup_title.text == "Alpha" and _screen._hint.text == _screen.OPTIONS_HINT,
-		"Enter on MORE: Alpha's window pops up, on DUPLICATE")
+		"Enter on MORE: Alpha's window pops up, on RENAME")
 	check(_screen._map_button.text == "MAP: v1_2_2" and _screen._map_button.disabled,
 		"MAP on top shows its map, greyed: no other map here (%s)" % _screen._map_button.text)
 	var window: Rect2 = _screen._popup.get_global_rect()
@@ -171,10 +184,10 @@ func _run() -> void:
 	check([_screen._rows[0].get_global_rect(), row.get_global_rect()] == rows_before,
 		"floating over the list: no row moves")
 	var walked: Array = []
-	for i in 3:
+	for i in 4:
 		await _key(KEY_DOWN)
 		walked.append(_focus().text)
-	check(walked == ["EXPORT", "DELETE", "DUPLICATE"], "down walks the options, round again: %s" % str(walked))
+	check(walked == ["DUPLICATE", "EXPORT", "DELETE", "RENAME"], "down walks the options, round again: %s" % str(walked))
 	await _key(KEY_UP)
 	check(_focus().text == "DELETE", "up too")
 	await _key(KEY_ESCAPE)
@@ -200,6 +213,7 @@ func _run() -> void:
 
 	print("\n[D] DUPLICATE")
 	await _open_more(1)
+	await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
 	check(_names() == ["Beta", "Alpha", "Alpha_copy"], "Enter on DUPLICATE: a copy right after it %s" % str(_names()))
 	var copy_path: String = SaveManager.get_save_dir() + "Alpha_copy.tsave"
@@ -209,12 +223,13 @@ func _run() -> void:
 		and copy["players"] == alpha["players"], "the same game under its own name")
 	check(_focus() == _screen._rows[2] and _screen._hint.text.contains("Alpha_copy"), "focus and hint on the copy")
 	await _open_more(1)
-	_screen._popup_buttons[1].pressed.emit()
+	_screen._popup_buttons[2].pressed.emit()
 	check(_names().has("Alpha_copy_2") and not _screen._popup_layer.visible, "a second copy: Alpha_copy_2, the window closed")
 
 	print("\n[E] EXPORT to a file, IMPORT it back")
 	DirAccess.make_dir_recursive_absolute(EXPORT_DIR)
 	await _open_more(1)
+	await _key(KEY_DOWN)
 	await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
 	var dialog: FileDialog = _screen._export_picker._dialog
@@ -314,8 +329,8 @@ func _run() -> void:
 	await _key(KEY_ESCAPE)
 	var late := _names().find("Late")
 	await _open_more(late)
-	check(_screen._map_button.disabled and _screen._map_button.text == "MAP: v1_2_2" and _focus().text == "DUPLICATE",
-		"Late, at stage 3: tiny's two stages don't reach it, so MAP is greyed and DUPLICATE has the focus")
+	check(_screen._map_button.disabled and _screen._map_button.text == "MAP: v1_2_2" and _focus().text == "RENAME",
+		"Late, at stage 3: tiny's two stages don't reach it, so MAP is greyed and RENAME has the focus")
 	await _key(KEY_ESCAPE)
 	var early_saved: Dictionary = SaveManager._read_save_data(early_path)
 	check(early_saved["header"]["current_stage"] == 2 and early_saved["header"]["saved_iso"] == "2026-09-22 10:00:00"
@@ -326,6 +341,8 @@ func _run() -> void:
 	LevelData.scan_map_pools()
 	GameManager.set_map_pool("v1_2_2")
 
+	await _check_rename()
+
 	# Clean up what the test wrote outside its save folder.
 	for name in DirAccess.get_files_at(EXPORT_DIR):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(EXPORT_DIR + name))
@@ -335,3 +352,92 @@ func _run() -> void:
 	await tree.create_timer(0.3).timeout
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)
+
+
+## [I] RENAME: a window to type a save's new name in. The file follows the
+## name, and so does a game running on it.
+func _check_rename() -> void:
+	print("\n[I] RENAME: a save's new name, typed in a window")
+	var dir := SaveManager.get_save_dir()
+	await _open("res://scenes/load_screen.tscn")
+	var beta_before: Dictionary = SaveManager._read_save_data(dir + "Beta.tsave")
+	var beta := _names().find("Beta")
+	await _open_more(beta)
+	check(_window_texts()[1] == "RENAME" and _focus().text == "RENAME", "RENAME, under MAP")
+	await _key(KEY_ENTER)
+	var field: LineEdit = _screen._rename_field
+	check(_screen._rename_layer.visible and not _screen._popup_layer.visible and field.has_focus()
+		and field.text == "Beta" and _screen._rename_note.text == _screen.RENAME_NOTE,
+		"Enter: the RENAME window, Beta in its field, typing, the rules under it")
+	check(field.get_selected_text() == "Beta", "all of the name picked, so typing replaces it")
+	await _type("Final Run")
+	await _key(KEY_ENTER)
+	var renamed := dir + "Final Run.tsave"
+	check(not _screen._rename_layer.visible and _names().has("Final Run") and not _names().has("Beta")
+		and FileAccess.file_exists(renamed) and not FileAccess.file_exists(dir + "Beta.tsave"),
+		"typed Final Run, Enter: the save and its file renamed %s" % str(_names()))
+	var saved: Dictionary = SaveManager._read_save_data(renamed)
+	check(saved["meta"]["save_name"] == "Final Run" and saved["header"] == beta_before["header"]
+		and saved["players"] == beta_before["players"], "the name kept in it, the game as it was")
+	var index := _names().find("Final Run")
+	check(_focus() == _screen._rows[index] and _screen._hint.text == "Renamed \"Beta\" to \"Final Run\"",
+		"its row focused, and the hint says so")
+
+	await _open_more(index)
+	await _key(KEY_ENTER)
+	await _type("alpha")
+	await _key(KEY_ENTER)
+	check(_screen._rename_layer.visible and field.has_focus()
+		and _screen._rename_note.text == "A save called Alpha already exists."
+		and _screen._rename_note.has_theme_color_override("font_color"),
+		"another save's name, in any case, is refused in red, still typing")
+	field.select_all()
+	await _type("Bad/Name")
+	await _key(KEY_ENTER)
+	check(_screen._rename_note.text == "A name can only use letters, digits, spaces, - and _.", "so is a / in it")
+	field.select_all()
+	await _type("   ")
+	await _key(KEY_ENTER)
+	check(_screen._rename_note.text == "Type a name first.", "and a name of spaces")
+	await _key(KEY_ESCAPE)
+	check(not _screen._rename_layer.visible and _names().has("Final Run") and _focus() == _screen._more_buttons[index],
+		"Esc: nothing renamed, back on MORE")
+	await _open_more(index)
+	await _key(KEY_ENTER)
+	_screen._rename_cancel_button.pressed.emit()
+	check(not _screen._rename_layer.visible and _names().has("Final Run"), "CANCEL too")
+
+	await _open_more(index)
+	await _key(KEY_ENTER)
+	await _type("FINAL RUN")
+	_screen._rename_save_button.pressed.emit()
+	check(_names().has("FINAL RUN") and DirAccess.get_files_at(dir).has("FINAL RUN.tsave")
+		and not DirAccess.get_files_at(dir).has("Final Run.tsave"), "SAVE: only the case changed, the file's too")
+	index = _names().find("FINAL RUN")
+	await _open_more(index)
+	await _key(KEY_ENTER)
+	await _type("  Last   Stand  ")
+	await _key(KEY_ENTER)
+	check(_names().has("Last Stand"), "spaces at the ends dropped, and runs of them made one: %s" % str(_names()))
+	var names_before: Array = _names()
+	index = _names().find("Last Stand")
+	await _open_more(index)
+	await _key(KEY_ENTER)
+	await _key(KEY_ENTER)
+	check(not _screen._rename_layer.visible and not _screen._hint.text.begins_with("Renamed")
+		and _names() == names_before and _focus() == _screen._more_buttons[index],
+		"Enter on the same name just closes the window, back on MORE")
+
+	var path := dir + "Last Stand.tsave"
+	GameManager.current_save_file = path   # the game being played is this save
+	var result: Dictionary = SaveManager.rename_save(path, "Next Stage")
+	check(result.get("ok", false) and GameManager.current_save_file == dir + "Next Stage.tsave",
+		"renaming the save of the game being played: the game saves under the new name")
+	SaveManager.save_game()
+	check(SaveManager._read_save_data(dir + "Next Stage.tsave")["meta"]["save_name"] == "Next Stage"
+		and not FileAccess.file_exists(path), "and its autosave keeps it")
+	GameManager.current_save_file = ""
+	check(SaveManager.rename_save(dir + "Next Stage.tsave", "x".repeat(41)).get("error", "")
+		== "A name can be up to 40 characters.", "a name over 40 characters is refused")
+	check(SaveManager._sanitize_save_name("  my  save!!  ") == "my save_",
+		"an imported file's name keeps its spaces, the rest made safe")

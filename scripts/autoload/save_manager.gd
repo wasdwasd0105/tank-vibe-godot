@@ -9,6 +9,8 @@ const SAVE_DIR := "user://save/"
 const TEST_SAVE_DIR := "user://test_save/"
 ## The bundled copy of the original game's 64-stage map.
 const ORIGINAL_POOL_ID := "v1_2_2"
+## The longest name a save can have.
+const SAVE_NAME_MAX := 40
 
 var _dir: String = SAVE_DIR
 
@@ -164,6 +166,65 @@ func duplicate_save(filepath: String) -> Dictionary:
 	if original.is_empty():
 		original = _get_save_name_from_path(filepath)
 	return _write_as_new(data, _unique_save_name(_sanitize_save_name(original + "_copy")))
+
+## Renames the save at [param filepath] to [param new_name] (tidied by
+## clean_save_name): its file and the name kept in it, so the autosaves keep it
+## too. Returns {"ok": true, "filepath": ..., "save_name": ...} or {"ok": false,
+## "error": ...}, the error saying what is wrong with the name.
+func rename_save(filepath: String, new_name: String) -> Dictionary:
+	new_name = clean_save_name(new_name)
+	var name_error := save_name_error(new_name, filepath)
+	if not name_error.is_empty():
+		return {"ok": false, "error": name_error}
+	var data := _read_save_data(filepath)
+	if data.is_empty():
+		return {"ok": false, "error": tr("could not read %s") % filepath.get_file()}
+	var new_path := _dir + new_name + ".tsave"
+	if new_path != filepath:
+		# Through a stand-in name, so that a change of case alone renames the
+		# file on a file system that ignores case (a Mac's, Windows').
+		var step := new_path + ".renaming"
+		if DirAccess.rename_absolute(filepath, step) != OK:
+			return {"ok": false, "error": tr("could not rename %s") % filepath.get_file()}
+		if DirAccess.rename_absolute(step, new_path) != OK:
+			DirAccess.rename_absolute(step, filepath)  # put it back
+			return {"ok": false, "error": tr("could not rename %s") % filepath.get_file()}
+	var meta = data.get("meta")
+	if not (meta is Dictionary):
+		meta = {}
+	meta["save_name"] = new_name
+	data["meta"] = meta
+	var file := FileAccess.open(new_path, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": tr("could not write %s") % new_path}
+	file.store_string(JSON.stringify(data, "  "))
+	file.close()
+	if GameManager.current_save_file == filepath:
+		GameManager.current_save_file = new_path
+	return {"ok": true, "filepath": new_path, "save_name": new_name}
+
+## A name as typed, tidied: no spaces at its ends, and single spaces inside.
+static func clean_save_name(text: String) -> String:
+	return RegEx.create_from_string("\\s+").sub(text.strip_edges(), " ", true)
+
+## Why [param save_name] can't name a save, or "" when it can. A name is up to
+## SAVE_NAME_MAX letters, digits, spaces, "-" and "_": all safe in a file name
+## and all in the menus' fonts. It can't be another save's in any case (a Mac's
+## and Windows' file names ignore case), the save at [param own_filepath] aside.
+func save_name_error(save_name: String, own_filepath: String = "") -> String:
+	if save_name.is_empty():
+		return tr("Type a name first.")
+	if save_name.length() > SAVE_NAME_MAX:
+		return tr("A name can be up to %d characters.") % SAVE_NAME_MAX
+	if RegEx.create_from_string("^[A-Za-z0-9_ -]+$").search(save_name) == null:
+		return tr("A name can only use letters, digits, spaces, - and _.")
+	var dir := DirAccess.open(_dir)
+	if dir:
+		for fname in dir.get_files():
+			if fname.get_extension() == "tsave" and fname.get_basename().to_lower() == save_name.to_lower() \
+					and (_dir + fname).to_lower() != own_filepath.to_lower():
+				return tr("A save called %s already exists.") % fname.get_basename()
+	return ""
 
 ## Writes a copy of a save to [param dest_path], outside the game (".tsave" is
 ## added to a name without an extension). Returns {"ok": true, "path": ...} or
@@ -453,9 +514,11 @@ func _pool_for_imported_save(stage: int) -> String:
 		GameManager.set_map_pool(GameManager.current_map_pool_id)
 	return best
 
-## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
+## Keep only what a save's name may hold (see save_name_error): letters, digits,
+## spaces, "_" and "-", up to SAVE_NAME_MAX of them; anything else becomes "_".
 func _sanitize_save_name(name: String) -> String:
-	var clean := RegEx.create_from_string("[^A-Za-z0-9_-]+").sub(name, "_", true).left(40)
+	var clean := clean_save_name(RegEx.create_from_string("[^A-Za-z0-9_ -]+").sub(name, "_", true)).left(SAVE_NAME_MAX)
+	clean = clean.strip_edges()
 	return clean if not clean.is_empty() else "Imported"
 
 ## Append _2, _3, ... until no save file with that name exists.

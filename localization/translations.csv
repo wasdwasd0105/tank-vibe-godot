@@ -109,15 +109,25 @@ TO JOIN,加入
 TO START,开始
 READY,已就绪
 No saved games yet.\nThe game saves automatically after every cleared stage.,还没有存档。\n每通过一关，游戏都会自动存档。
-"Click a save to continue it   ·   MORE changes its map, duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可更换地图、复制、导出或删除   ·   Esc 返回
+"Click a save to continue it   ·   MORE changes its map, renames, duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可更换地图、重命名、复制、导出或删除   ·   Esc 返回
 IMPORT,导入
 MORE,更多
 MAP: %s,地图：%s
 DUPLICATE,复制
+RENAME,重命名
+RENAME SAVE,重命名存档
+NAME,名称
+"Letters, digits, spaces, - and _   ·   Enter saves   ·   Esc cancels",字母、数字、空格、- 和 _   ·   Enter 保存   ·   Esc 取消
+Type a name first.,请先输入名称。
+A name can be up to %d characters.,名称最多 %d 个字符。
+"A name can only use letters, digits, spaces, - and _.",名称只能使用字母、数字、空格、- 和 _。
+A save called %s already exists.,已有名为 %s 的存档。
+"Renamed ""%s"" to ""%s""",已将「%s」重命名为「%s」
+could not rename %s,无法重命名 %s
 EXPORT,导出
 DELETE,删除
 CONFIRM?,确定？
-MAP picks the map it plays on   ·   DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes,地图：选择此存档用的地图   ·   复制：复制此存档   ·   导出：写入文件   ·   删除：移除此存档   ·   Esc 关闭
+MAP picks its map   ·   RENAME names it   ·   DUPLICATE copies it   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes,地图：选择地图   ·   重命名：改名   ·   复制：复制存档   ·   导出：写入文件   ·   删除：移除存档   ·   Esc 关闭
 Press CONFIRM? again to delete this save. Moving away cancels.,再按一次「确定？」即删除此存档，移开则取消。
 Import a save,导入存档
 Saves (Tank.exe .sav or an exported .tsave),存档（Tank.exe 的 .sav 或导出的 .tsave）

@@ -1,14 +1,15 @@
 extends Control
 ## Load Game screen: every saved game is a clickable row (its stage, players,
 ## date and the map it plays on) with a MORE button that pops up a small window
-## of its options: MAP, DUPLICATE, EXPORT and DELETE.
+## of its options: MAP, RENAME, DUPLICATE, EXPORT and DELETE.
 ##
 ## Mouse: click a row to continue it. MORE pops up its options under it: MAP
 ## shows the map the save plays on and steps it to the next map that reaches
-## the save's stage, written into the save; DUPLICATE copies the save into a
-## new one beside it, EXPORT writes it to a file of your choosing, DELETE and
-## then CONFIRM? removes it. A click outside the window closes it. IMPORT brings in an original Tank.exe .sav or an
-## exported .tsave.
+## the save's stage, written into the save; RENAME opens a window to type the
+## save's new name in (Enter saves it, Esc cancels); DUPLICATE copies the save
+## into a new one beside it, EXPORT writes it to a file of your choosing, DELETE
+## and then CONFIRM? removes it. A click outside the options window closes it.
+## IMPORT brings in an original Tank.exe .sav or an exported .tsave.
 ## Keyboard / controller: up/down move through the saves and the footer, right
 ## goes from a save to its MORE and left comes back (and moves between IMPORT
 ## and BACK), fire / Enter / A activate. In the window up/down pick an option
@@ -17,12 +18,15 @@ extends Control
 const TITLE_SCENE := "res://scenes/main.tscn"
 const MORE_TEXT := "MORE"
 const MAP_TEXT := "MAP: %s"
+const RENAME_TEXT := "RENAME"
 const DUPLICATE_TEXT := "DUPLICATE"
 const EXPORT_TEXT := "EXPORT"
 const DELETE_TEXT := "DELETE"
 const CONFIRM_TEXT := "CONFIRM?"
-const DEFAULT_HINT := "Click a save to continue it   ·   MORE changes its map, duplicates, exports or deletes it   ·   Esc goes back"
-const OPTIONS_HINT := "MAP picks the map it plays on   ·   DUPLICATE copies the save   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes"
+const DEFAULT_HINT := "Click a save to continue it   ·   MORE changes its map, renames, duplicates, exports or deletes it   ·   Esc goes back"
+const OPTIONS_HINT := "MAP picks its map   ·   RENAME names it   ·   DUPLICATE copies it   ·   EXPORT writes it to a file   ·   DELETE removes it   ·   Esc closes"
+const RENAME_TITLE := "RENAME SAVE"
+const RENAME_NOTE := "Letters, digits, spaces, - and _   ·   Enter saves   ·   Esc cancels"
 const CONFIRM_HINT := "Press CONFIRM? again to delete this save. Moving away cancels."
 const ROW_HEIGHT := 84.0
 ## The date's column; a longer map name under it widens it, up to MAP_MAX_WIDTH.
@@ -33,6 +37,9 @@ const MORE_WIDTH := 130.0
 const POPUP_WIDTH := 230.0
 const POPUP_GAP := 8.0
 const POPUP_DIM := Color(0, 0, 0, 0.35)
+## The RENAME window: its width, and how much it dims the screen.
+const RENAME_WIDTH := 760.0
+const RENAME_DIM := Color(0, 0, 0, 0.55)
 const IMPORT_TITLE := "Import a save"
 const IMPORT_FILTERS: PackedStringArray = [
 	"*.sav, *.SAV, *.tsave ; Saves (Tank.exe .sav or an exported .tsave)",
@@ -71,6 +78,16 @@ var _pending_delete := false
 var _picker: MenuFilePicker
 var _export_picker: MenuFilePicker
 var _export_info: Dictionary = {}  # the save EXPORT was pressed on
+# The RENAME window: a layer that dims the screen, the NAME row with its field,
+# a note (the rules, or what's wrong) and SAVE / CANCEL.
+var _rename_layer: Control
+var _rename_row: Button
+var _rename_field: LineEdit
+var _rename_note: Label
+var _rename_save_button: Button
+var _rename_cancel_button: Button
+var _rename_items: Array[Control] = []
+var _rename_info: Dictionary = {}  # the save being renamed
 # Horizontal keyboard neighbours: control -> the control to its right / left.
 var _right_of: Dictionary = {}
 var _left_of: Dictionary = {}
@@ -89,10 +106,14 @@ func _ready() -> void:
 	_back_button.mouse_entered.connect(_back_button.grab_focus)
 	get_viewport().gui_focus_changed.connect(_on_focus_changed)
 	_build_popup()
+	_build_rename_window()
 	_rebuild_list(0)
 
 
 func _input(event: InputEvent) -> void:
+	if _rename_field.has_focus():
+		_typing_input(event)
+		return
 	if not MenuFocus.is_navigation_event(event):
 		return
 	# Loading a save or going back changes scene, which removes this node from
@@ -116,6 +137,8 @@ func _input(event: InputEvent) -> void:
 			_set_pending_delete(false)
 		elif _open_more:
 			_close_options(true)
+		elif _rename_layer.visible:
+			_close_rename(true)
 		else:
 			_go_back()
 	else:
@@ -311,14 +334,15 @@ func _build_popup() -> void:
 	_map_button.pressed.connect(_on_map_pressed)
 	column.add_child(_map_button)
 	_popup_buttons.append(_map_button)
-	for option: Array in [[DUPLICATE_TEXT, &"RowActionButton", _on_duplicate_pressed],
+	for option: Array in [[RENAME_TEXT, &"RowActionButton", _on_rename_pressed],
+			[DUPLICATE_TEXT, &"RowActionButton", _on_duplicate_pressed],
 			[EXPORT_TEXT, &"RowActionButton", _on_export_pressed],
 			[DELETE_TEXT, &"DangerButton", _on_delete_pressed]]:
 		var button := _make_row_button(option[0], option[1], 0)
 		button.pressed.connect(option[2])
 		column.add_child(button)
 		_popup_buttons.append(button)
-	_delete_button = _popup_buttons[3]
+	_delete_button = _popup_buttons[4]
 	_delete_button.focus_exited.connect(_on_delete_focus_exited)
 
 
@@ -454,6 +478,10 @@ func _on_map_pressed() -> void:
 	_place_popup(_open_more)  # the name's width may have changed
 
 
+func _on_rename_pressed() -> void:
+	_open_rename(_popup_info)
+
+
 func _on_duplicate_pressed() -> void:
 	_duplicate(_popup_info)
 
@@ -532,6 +560,153 @@ func _set_hint(text: String, is_error: bool = false) -> void:
 		_hint.add_theme_color_override("font_color", ERROR_COLOR)
 	else:
 		_hint.remove_theme_color_override("font_color")
+
+
+# =====================================================================
+# The RENAME window
+# =====================================================================
+
+## Builds the window, hidden, centred over a layer that dims the screen: its
+## title, the NAME row with its field, a note, and SAVE and CANCEL. Clicks
+## outside it do nothing; CANCEL or Esc close it.
+func _build_rename_window() -> void:
+	_rename_layer = Control.new()
+	_rename_layer.name = "RenameLayer"
+	_rename_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_rename_layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	_rename_layer.visible = false
+	add_child(_rename_layer)
+	var dim := ColorRect.new()
+	dim.color = RENAME_DIM
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_rename_layer.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_rename_layer.add_child(center)
+
+	var window := PanelContainer.new()
+	window.name = "RenameWindow"
+	window.theme_type_variation = &"MenuPanel"
+	var style := (get_theme_stylebox(&"panel", &"MenuPanel") as StyleBoxFlat).duplicate() as StyleBoxFlat
+	style.set_content_margin_all(26.0)
+	style.bg_color.a = 0.98
+	style.border_color = Color(0.98, 0.78, 0.22)
+	window.add_theme_stylebox_override(&"panel", style)
+	window.custom_minimum_size = Vector2(RENAME_WIDTH, 0)
+	center.add_child(window)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 14)
+	window.add_child(column)
+
+	var title := _make_label(RENAME_TITLE, &"RowNameLabel", 0)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(title)
+	_rename_row = MenuRows.make_field_row("NAME", SaveManager.SAVE_NAME_MAX, "")
+	MenuRows.name_label(_rename_row).custom_minimum_size.x = 160
+	_rename_field = MenuRows.field(_rename_row)
+	_rename_field.keep_editing_on_text_submit = true   # a name refused is typed on
+	_rename_field.focus_entered.connect(func() -> void: _rename_field.select_all())
+	_rename_field.text_submitted.connect(func(_text: String) -> void: _submit_rename())
+	_rename_row.pressed.connect(_rename_field.grab_focus)   # fire, Enter or a click types in it
+	_rename_row.mouse_entered.connect(_hover_rename.bind(_rename_row))
+	column.add_child(_rename_row)
+	_rename_note = _make_label("", &"HintLabel", 0)
+	_rename_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(_rename_note)
+
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 40)
+	column.add_child(buttons)
+	_rename_save_button = _rename_button("SAVE", _submit_rename)
+	_rename_cancel_button = _rename_button("CANCEL", _close_rename.bind(true))
+	buttons.add_child(_rename_save_button)
+	buttons.add_child(_rename_cancel_button)
+	_rename_items.assign([_rename_row, _rename_save_button])  # CANCEL: right of SAVE
+
+
+func _rename_button(text: String, action: Callable) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.theme_type_variation = &"MenuItemButton"
+	button.custom_minimum_size = Vector2(260, 64)
+	button.pressed.connect(action)
+	button.mouse_entered.connect(_hover_rename.bind(button))
+	return button
+
+
+## Hovering takes the focus, as everywhere in the menus, but not from the field
+## being typed in: that would take the keys away from it.
+func _hover_rename(control: Control) -> void:
+	if not _rename_field.has_focus():
+		control.grab_focus()
+
+
+## Opens the window for save [param info]: its name in the field, all of it
+## picked, so typing replaces it.
+func _open_rename(info: Dictionary) -> void:
+	_close_options(false)
+	_rename_info = info
+	_rename_field.text = str(info.get("save_name", ""))
+	_set_rename_note(RENAME_NOTE)
+	_rename_layer.visible = true
+	_nav.items = _rename_items
+	_right_of[_rename_save_button] = _rename_cancel_button
+	_left_of[_rename_cancel_button] = _rename_save_button
+	_rename_field.grab_focus()
+
+
+## Closes the window; [param refocus] puts the focus back on the save's MORE.
+func _close_rename(refocus: bool) -> void:
+	if not _rename_layer.visible:
+		return
+	_rename_field.release_focus()
+	_rename_layer.visible = false
+	_nav.items = _main_items
+	var index := _saves.find(_rename_info)
+	_rename_info = {}
+	if refocus and index >= 0:
+		_more_buttons[index].grab_focus()
+
+
+## While the name is being typed, the field has the keys: Esc cancels the
+## rename, and a controller's button hands the keys back to the menu.
+func _typing_input(event: InputEvent) -> void:
+	if event.is_action_pressed(&"ui_cancel"):
+		_close_rename(true)
+	elif event is InputEventJoypadButton and event.pressed:
+		_rename_row.grab_focus()
+	else:
+		return
+	get_viewport().set_input_as_handled()
+
+
+## SAVE, or Enter in the field: renames the save, or says what's wrong with
+## the name. The same name again just closes the window.
+func _submit_rename() -> void:
+	var old_name := str(_rename_info.get("save_name", ""))
+	if SaveManager.clean_save_name(_rename_field.text) == old_name:
+		_close_rename(true)
+		return
+	var result: Dictionary = SaveManager.rename_save(_rename_info["filepath"], _rename_field.text)
+	if not result.get("ok", false):
+		_set_rename_note(result.get("error", tr("unknown error")), true)
+		_rename_field.grab_focus()
+		return
+	_close_rename(false)
+	_rebuild_list(0)
+	_focus_save(result["filepath"])
+	_set_hint(tr("Renamed \"%s\" to \"%s\"") % [old_name, result["save_name"]])
+
+
+func _set_rename_note(text: String, is_error: bool = false) -> void:
+	_rename_note.text = text
+	if is_error:
+		_rename_note.add_theme_color_override("font_color", ERROR_COLOR)
+	else:
+		_rename_note.remove_theme_color_override("font_color")
 
 
 # =====================================================================
