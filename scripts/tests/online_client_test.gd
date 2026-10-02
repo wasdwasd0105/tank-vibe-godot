@@ -12,6 +12,10 @@ const TIME_LIMIT := 200.0
 ## The game's password (online_test's).
 const PASSWORD := "Tank 1.22"
 const ONLINE_SCENE := "res://scenes/online_screen.tscn"
+## The host's own map set (online_test's HOST_MAP), which this computer lacks.
+const HOST_MAP := "Online_Test_Map"
+## The map set of the host's next game, which this client turns down.
+const HOST_MAP_B := "Online_Test_Map_B"
 
 var _fail := 0
 var _lines: PackedStringArray = []
@@ -80,6 +84,16 @@ func _row_labels(screen: Node, index: int) -> Array:
 	return out
 
 
+## Empties this process's maps folder: it starts without the host's map set.
+func _clear_maps(dir_path: String) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	for file_name in dir.get_files():
+		dir.remove(file_name)
+	LevelData.scan_map_pools()
+
+
 func _world() -> NetClientWorld:
 	var scene := get_tree().current_scene
 	return scene.get_node_or_null("NetClientWorld") as NetClientWorld if scene else null
@@ -110,6 +124,13 @@ func _run() -> void:
 	await get_tree().process_frame
 	check(_port > 0, "given the host's port (%d)" % _port)
 	var tree := get_tree()
+	var map_dir := LevelData.user_map_dir()
+	check(map_dir == "user://test_maps_online_client/", "maps of my own, apart from the host's: %s" % map_dir)
+	_clear_maps(map_dir)
+	var progress: Array = []
+	Net.map_progress.connect(func(received: int, _total: int) -> void: progress.append(received))
+	var downloads: Array = []
+	Net.map_download_finished.connect(func(name: String, error: String) -> void: downloads.append([name, error]))
 	tree.change_scene_to_file(ONLINE_SCENE)
 	await _wait(func() -> bool: return _scene_is(ONLINE_SCENE), 5.0)
 	await tree.process_frame
@@ -138,6 +159,25 @@ func _run() -> void:
 
 	# --- The host's running stage ---
 	check(await _wait(func() -> bool: return _scene_is("res://scenes/game.tscn"), 20.0), "joined: straight into the host's stage")
+
+	# --- The host's map set: this computer lacks it, so it's offered ---
+	check(await _wait(func() -> bool: return tree.root.get_node_or_null("NetMapPrompt") != null, 10.0),
+		"the host's map set isn't here: I'm asked")
+	var prompt = tree.root.get_node_or_null("NetMapPrompt")
+	var asked := ""
+	if prompt:
+		asked = prompt._text.text
+		check(asked.contains(HOST_MAP) and asked.contains("381 KB") and Net.map_prompt_open, "about it: %s" % asked)
+		prompt._download_button.pressed.emit()
+	check(await _wait(func() -> bool: return not downloads.is_empty(), 15.0) and downloads[0] == [HOST_MAP, ""],
+		"DOWNLOAD: it came, and was kept as %s" % str(downloads))
+	check(progress.size() >= 10 and progress[-1] == 390000 and progress == progress.duplicate().slice(0, progress.size()),
+		"in pieces, as far as it had got each time: %d pieces" % progress.size())
+	var kept := LevelData.pool_with_hash(Net.host_map.get("hash", "-"))
+	check(kept != null and kept.id == "user:" + HOST_MAP and kept.path == map_dir + HOST_MAP + ".dat",
+		"with my maps now, the very same map: %s" % (kept.path if kept else "none"))
+	check(await _wait(func() -> bool: return not Net.map_prompt_open and tree.root.get_node_or_null("NetMapPrompt") == null, 3.0),
+		"the question gone, my players free")
 	check(await _wait(func() -> bool: return _world() != null and _world().is_started(), 10.0), "showing it")
 	check(tree.current_scene.get_phase() == "mirror", "running none of it")
 	check(await _wait(func() -> bool: return _tanks(0).size() == 1, 12.0) and _tanks(1).is_empty(),
@@ -201,6 +241,14 @@ func _run() -> void:
 	check(await _wait(func() -> bool: return _scene_is("res://scenes/join_screen.tscn"), 30.0), "game over: the host's lobby")
 	var lobby := tree.current_scene
 	check(lobby.get_node("Subtitle").text == "HOSTED BY SEAN", "hosted by the host: %s" % lobby.get_node("Subtitle").text)
+	check(await _wait(func() -> bool: return tree.root.get_node_or_null("NetMapPrompt") != null, 10.0),
+		"the host's next game is on another map set I lack: asked about that one")
+	var again = tree.root.get_node_or_null("NetMapPrompt")
+	if again:
+		check(again._text.text.contains(HOST_MAP_B), "about it: %s" % again._text.text)
+		again._not_now_button.pressed.emit()
+	check(await _wait(func() -> bool: return tree.root.get_node_or_null("NetMapPrompt") == null and not Net.map_prompt_open, 3.0)
+		and downloads.size() == 1 and LevelData.find_pool("user:" + HOST_MAP_B) == null, "NOT NOW: nothing fetched, nothing kept")
 	check(not lobby._start_button.visible, "no START on a client: the host starts")
 	check(await _wait(func() -> bool: return bool(Net.lobby["active"][0]), 20.0), "the host took tank 1")
 	check(lobby._driver_labels[0].text == "SEAN", "its card says who: %s" % lobby._driver_labels[0].text)
@@ -222,6 +270,7 @@ func _run() -> void:
 			and shown[-1].begins_with("JOINED " + Time.get_date_string_from_system()),
 			"its connection says when it last got in: %s" % str(shown))
 	check(not Net.is_online(), "offline again")
+	_clear_maps(map_dir)
 	_done = true
 	_finish()
 

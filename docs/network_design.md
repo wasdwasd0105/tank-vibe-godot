@@ -127,8 +127,15 @@ Rumbles go straight to the peer they're for, outside the snapshots.
 - Tanks, shells, items, mines and fires are built from the same scenes and scripts, with no collision. They draw themselves from the replicated state (`net_setup`, `net_apply`), so the same code draws them on every machine.
 - The stage overlay follows the host's screen and clock.
 - The HUD reads the replicated game state.
-- The map is built from the host's tile data, so an imported map plays even if the client doesn't have it.
+- The map is built from the host's tile data, so an imported map plays even if the client doesn't have it. The client can still keep a copy of the map set (next part).
 - A client's game plays only the host's sounds; its menus click as ever.
+
+**The host's map set** (Sean, 2026-10-03, like Counter-Strike 1.6 keeping a server's maps):
+- A map set is known by the SHA-256 of its .dat file (`LevelData.pool_hash`), whatever it's called. The host's session info carries its set's name, hash and size (the set in play: the game's MAP pick, else the one loaded). It goes out again whenever the host enters its lobby or a game, in case the set changed.
+- A client whose maps have nothing of that hash is asked once a session, by a window over whatever screen it's on (`NetMapPrompt`). The window gives the name and size and offers DOWNLOAD or NOT NOW. Its players hold still while the window is open, and the keys don't reach the screen under it.
+- DOWNLOAD asks the host for it (`_c_map_request`). The host sends it in 32 KB pieces, one a frame while that connection has less than 128 KB waiting, so the snapshots keep flowing (`_h_map_piece`). The window shows how far it has got.
+- The whole file must match the hash it was announced with, and be a map file, before it's kept. It's saved with the imported maps, under the host's name (name_2 beside a different map of that name), so it's on the MAP setting for later games. The screen then says it's saved, or why not.
+- NOT NOW: the game goes on all the same; it isn't asked again until the next session. Map files over 8 MB aren't offered.
 
 ## 6. Inputs (clients → host)
 
@@ -175,7 +182,9 @@ Changed:
 - **game.gd:** host mode (a NetHostWorld, seats, tanks without drivers sit out), opening and closing a running game to others (`hosting_started`, `session_ended`), and mirror mode.
 - **Screens:** title (ONLINE BATTLE), join screen (the lobby), pause menu (SETTINGS' ONLINE tab, the HOST page, the client's MENU).
 - **SoundManager:** sounds to clients; a client plays only the host's.
-- **InputSettings:** `[online]` the host's `port`, `host_password` and `max_players`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file.
+- **InputSettings:** `[online]` the host's `port`, `host_password` and `max_players`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file (and, through LevelData.user_map_dir, its own maps folder).
+- **LevelData:** `pool_hash`, `bytes_hash`, `pool_with_hash`, `find_pool`, and `save_map_bytes` for a map set that came from a host.
+- `scripts/net/net_map_prompt.gd` (`NetMapPrompt`): the question about the host's map set.
 - **SaveManager:** player 1 never loads as sitting out.
 
 ## 10. Testing
@@ -197,6 +206,10 @@ Changed:
 
 It prints the client's checks with its own and fails if either side does.
 
+The client half starts with an empty maps folder of its own while the host plays a map set of its own. The client is asked about it, DOWNLOADs it (in pieces, checked), keeps it with its maps, and isn't asked again later.
+
+`scenes/test/map_download_test.tscn` covers a map set's hash, keeping one that came from a host (names, refusals), when a client is asked (not for a map it has or nonsense, once), and the question by keys and mouse.
+
 `scenes/test/online_screen_test.tscn` covers ONLINE BATTLE on its own:
 - the address parser and the password's proof;
 - the empty list, and the connection window typed in by keys (Enter, Tab, Esc; the mouse doesn't take the keys while typing);
@@ -217,6 +230,11 @@ It prints the client's checks with its own and fails if either side does.
 
 - **ONLINE BATTLE** replaces ONLINE on the title: a list of saved connections, like the saved games' list, with CREATE, EDIT, DELETE and CONNECT. CREATE's window takes a username, the remote address (ip:port), an optional password, and JOIN (section 3).
 - **No host screen for now:** its design comes later.
+
+## 14. Sean's calls (2026-10-03)
+
+- **Downloading the host's map set:** a client without it (checked by hash) is asked whether to download it, and it's saved with their maps, like Counter-Strike 1.6.
+- My choices: the question comes over the host's screen, not before entering it, since the game itself doesn't need the file; NOT NOW holds for the session; downloaded sets go with the imported maps under the host's name.
 
 ## 13. Sean's calls (2026-10-02)
 

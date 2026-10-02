@@ -25,6 +25,10 @@ const CLIENT_SCENE := "res://scenes/test/online_client_test.tscn"
 const CLIENT_RESULTS := "user://test_online_client.txt"
 const HOST_DUMP := "user://test_online_world.txt"
 const CLIENT_VERDICT := "user://test_online_client_compared.txt"
+## The map set the host plays on: one the client doesn't have (online_client_test).
+const HOST_MAP := "Online_Test_Map"
+## The next game's map set, which the client turns down.
+const HOST_MAP_B := "Online_Test_Map_B"
 ## The game's password (online_client_test knows it too).
 const PASSWORD := "Tank 1.22"
 
@@ -90,7 +94,8 @@ func _run() -> void:
 	print("-- a session")
 	await _test_session()
 	await _collect_client()
-	for path in [CLIENT_RESULTS, HOST_DUMP, CLIENT_VERDICT]:
+	for path in [CLIENT_RESULTS, HOST_DUMP, CLIENT_VERDICT, LevelData.user_map_dir() + HOST_MAP + ".dat",
+			LevelData.user_map_dir() + HOST_MAP_B + ".dat"]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	Net.leave()
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
@@ -184,6 +189,16 @@ func _test_session() -> void:
 	var used: Array[Dictionary] = [{"name": "SEAN", "address": "10.0.0.9", "password": "", "used": 1.0, "joined": ""}]
 	InputSettings.save_online_connections(used)
 
+	# The game is on a map set of the host's own: the built-in one, a tile changed.
+	for old in [HOST_MAP, HOST_MAP_B]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(LevelData.user_map_dir() + old + ".dat"))
+	var own_map := FileAccess.get_file_as_bytes(LevelData.MAP_DIR + "v1_2_2.dat")
+	var at := LevelData.DAT_STAGE_SIZE + LevelData.DAT_FG_OFFSET + 5 * LevelData.DAT_COL_STRIDE + 10 * 2
+	own_map[at] = (own_map[at] + 7) % 256
+	var made := LevelData.save_map_bytes(HOST_MAP, own_map)
+	check(made.get("name", "") == HOST_MAP, "a map set of my own: %s" % str(made))
+	GameManager.set_map_pool("user:" + HOST_MAP)
+
 	# --- An offline game, opened to others from its pause menu ---
 	GameManager.start_game()
 	check(await _wait(func() -> bool: return _scene_is("res://scenes/join_screen.tscn"), 5.0), "NEW GAME: the join screen")
@@ -200,6 +215,8 @@ func _test_session() -> void:
 	check(Net.is_host() and Net.port == _port and Net.has_password() and Net.max_clients == 3 and Net.local_name == "SEAN",
 		"ALLOW REMOTE PLAYERS: open on %d, with a password, as SEAN" % _port)
 	check(Net.host_screen == Net.SCREEN_GAME and game.has_node("NetHostWorld"), "the clients told: the game")
+	check(Net._host_map_info() == {"name": HOST_MAP, "hash": LevelData.bytes_hash(own_map), "size": own_map.size()},
+		"and the map set it's on, by name, hash and size")
 	check(PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.NO_SEAT], "my tank stays mine; tank 2 is free")
 	# A newcomer past its handshake whose connection hasn't opened yet: the world
 	# waits for it (sent then, its whole world would be lost).
@@ -305,7 +322,11 @@ func _test_session() -> void:
 	check(await _wait(func() -> bool: return _tanks(1).size() == 1, 3.0), "its tank is back out")
 	await tree.create_timer(1.5).timeout
 
-	# --- Game over: everyone to the lobby, and another game ---
+	# --- Game over: everyone to the lobby, and another game, on another map set ---
+	var map_b := own_map.duplicate()
+	map_b[at] = (map_b[at] + 9) % 256
+	check(LevelData.save_map_bytes(HOST_MAP_B, map_b).get("name", "") == HOST_MAP_B, "another map set of mine")
+	GameManager.set_map_pool("user:" + HOST_MAP_B)
 	tree.current_scene._on_game_over_finished()
 	check(await _wait(func() -> bool: return _scene_is("res://scenes/join_screen.tscn"), 5.0) and Net.is_host() \
 			and Net.host_screen == Net.SCREEN_LOBBY, "game over: the online lobby, the client still here")

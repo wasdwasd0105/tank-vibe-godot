@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/map_download_test.gd" id="1_map_download_test"]
+
+[node name="MapDownloadTest" type="Node"]
+script = ExtResource("1_map_download_test")

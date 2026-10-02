@@ -22,6 +22,14 @@ signal notice_posted(text: String)
 signal seat_vacated(tank: int)
 ## This machine began hosting (host): a running game sets up its side of it.
 signal hosting_started
+## Client: the host plays on a map set this computer doesn't have, [param map]
+## {"name", "hash", "size"}. A NetMapPrompt asks whether to download it.
+signal map_offered(map: Dictionary)
+## Client: a map download has [param received] of [param total] bytes.
+signal map_progress(received: int, total: int)
+## Client: a map download ended, saved as pool [param name], or failed ("") and
+## [param error] says why.
+signal map_download_finished(name: String, error: String)
 
 enum Role { OFFLINE, HOST, CLIENT }
 
@@ -44,6 +52,12 @@ const PARTING_DELAY := 0.5
 const BUFFER_SIZE := 1 << 20
 ## The random challenge a host with a password sends each newcomer, in bytes.
 const NONCE_SIZE := 32
+## A map set goes to a client that asks for it in pieces this big, one a frame
+## while its connection has less than MAP_SEND_BACKLOG waiting, so the game's
+## snapshots keep flowing. Bigger map files aren't sent at all.
+const MAP_CHUNK := 32 * 1024
+const MAP_SEND_BACKLOG := 128 * 1024
+const MAX_MAP_SIZE := 8 * 1024 * 1024
 
 const SCREEN_NONE := ""
 const SCREEN_LOBBY := "lobby"
@@ -122,6 +136,18 @@ var _sent_input := PackedByteArray()
 var _latest_snapshot := -1
 ## Client: while its own menu is open, it sends its players as idle.
 var input_blocked := false
+## Client: the same while the map question is on the screen (NetMapPrompt).
+var map_prompt_open := false
+
+## The map set the game is played on, as the host announced it: {"name",
+## "hash", "size"}, or {} (none told).
+var host_map: Dictionary = {}
+## Client: map sets already asked about this session, by hash.
+var _maps_asked: Dictionary = {}
+## Client: the map set coming: {"name", "hash", "size", "bytes"}, or {}.
+var _map_download: Dictionary = {}
+## Host: map sets on their way: peer id -> {"hash", "bytes", "offset"}.
+var _map_sends: Dictionary = {}
 
 
 func _ready() -> void:
@@ -374,12 +400,14 @@ func _drop_peer(peer: int) -> void:
 	_on_peer_disconnected(peer)
 
 
-## The host moved to [param screen]: every client follows.
+## The host moved to [param screen]: every client follows. (The game there may
+## be on another map set: the session goes out again, with its map.)
 func set_host_screen(screen: String) -> void:
 	if role != Role.HOST:
 		return
 	host_screen = screen
 	_h_screen.rpc(screen)
+	_session_dirty = true
 
 
 ## The lobby's state for the clients' copy of it.
@@ -574,6 +602,10 @@ func _end(reason: String) -> void:
 	host_name = ""
 	_joined = false
 	input_blocked = false
+	host_map = {}
+	_maps_asked.clear()
+	_map_download = {}
+	_map_sends.clear()
 	_world_packets.clear()
 	world_sink = Callable()
 	PlayerInput.reset_to_local()
@@ -632,6 +664,9 @@ func _process(delta: float) -> void:
 		_session_dirty = false
 		_h_session.rpc(_session_info())
 		session_changed.emit()
+		_last_sent = now
+	if not _map_sends.is_empty():
+		_send_map_pieces()
 		_last_sent = now
 	# Keepalive both ways, and give up on the silent.
 	if now - _last_sent > int(KEEPALIVE * 1000.0) and _mp != null and not _mp.get_peers().is_empty():
@@ -864,7 +899,109 @@ func _session_info() -> Dictionary:
 	var list: Array = []
 	for peer: int in peers:
 		list.append([peer, peers[peer]["name"], peers[peer]["allow"][0], peers[peer]["allow"][1]])
-	return {"peers": list, "seats": PlayerInput.seats.duplicate(), "lock": lock_new, "lobby": lobby}
+	return {"peers": list, "seats": PlayerInput.seats.duplicate(), "lock": lock_new, "lobby": lobby,
+			"map": _host_map_info()}
+
+
+# --- The map set (like Counter-Strike 1.6's, a client can fetch the host's) ---
+
+## Host: the map set this game plays on, for each client to check theirs
+## against: {"name", "hash", "size"}, or {} when its file can't be read.
+func _host_map_info() -> Dictionary:
+	var pool := _host_map_pool()
+	if pool == null:
+		return {}
+	var digest := LevelData.pool_hash(pool)
+	var file := FileAccess.open(pool.path, FileAccess.READ)
+	if digest.is_empty() or file == null:
+		return {}
+	return {"name": pool.display_name, "hash": digest, "size": file.get_length()}
+
+
+## Host: the map set in play: the game's pick, else the one loaded.
+func _host_map_pool() -> LevelData.MapPool:
+	var pool_id := GameManager.current_map_pool_id
+	if pool_id.is_empty():
+		pool_id = LevelData._current_pool_id
+	return LevelData.find_pool(pool_id)
+
+
+## Client: the host's map set, from its session. One this computer doesn't
+## have (no map of the same hash) is offered once a session; the game itself
+## doesn't need it, as the host sends every stage's map with its world.
+func _take_host_map(map: Dictionary) -> void:
+	var digest := str(map.get("hash", ""))
+	var size := int(map.get("size", 0))
+	if not is_map_hash(digest) or size <= 0 or size > MAX_MAP_SIZE or size % LevelData.DAT_STAGE_SIZE != 0:
+		host_map = {}
+		return
+	var name := LevelData._sanitize_pool_name(str(map.get("name", "")))
+	host_map = {"name": name, "hash": digest, "size": size}
+	if _maps_asked.has(digest) or LevelData.pool_with_hash(digest) != null:
+		return
+	_maps_asked[digest] = true
+	map_offered.emit(host_map)
+	get_tree().root.add_child.call_deferred(NetMapPrompt.new(host_map))
+
+
+## A SHA-256 in hex, as LevelData.pool_hash writes them.
+static func is_map_hash(text: String) -> bool:
+	if text.length() != 64:
+		return false
+	for i in text.length():
+		if "0123456789abcdef".find(text[i]) < 0:
+			return false
+	return true
+
+
+## "390 KB", for the map question.
+static func map_size_text(size: int) -> String:
+	return "%d KB" % ceili(size / 1024.0)
+
+
+## Client: fetches the host's map set (the map question's DOWNLOAD).
+## map_progress follows, then map_download_finished. False when there's
+## nothing to fetch it from (not in a game, or one already coming).
+func download_map() -> bool:
+	if role != Role.CLIENT or not _joined or host_map.is_empty() or not _map_download.is_empty():
+		return false
+	_map_download = host_map.duplicate()
+	_map_download["bytes"] = PackedByteArray()
+	_c_map_request.rpc_id(1, host_map["hash"])
+	return true
+
+
+func is_downloading_map() -> bool:
+	return not _map_download.is_empty()
+
+
+## Host: the next piece of each map set on its way.
+func _send_map_pieces() -> void:
+	for peer: int in _map_sends.keys():
+		if _mp == null or not _mp.get_peers().has(peer):
+			_map_sends.erase(peer)
+			continue
+		if pending_bytes(peer) > MAP_SEND_BACKLOG:
+			continue  # let what's waiting go out first
+		var send: Dictionary = _map_sends[peer]
+		var bytes: PackedByteArray = send["bytes"]
+		var offset: int = send["offset"]
+		var piece := bytes.slice(offset, offset + MAP_CHUNK)
+		_h_map_piece.rpc_id(peer, send["hash"], offset, bytes.size(), piece)
+		send["offset"] = offset + piece.size()
+		if send["offset"] >= bytes.size():
+			_map_sends.erase(peer)
+
+
+## Client: a map download is over: saved as pool [param name], or not and
+## [param error] says why. Said over the screen too.
+func _finish_map_download(name: String, error: String) -> void:
+	_map_download = {}
+	if name.is_empty():
+		notice_posted.emit(tr("The host's map didn't come through: %s") % error)
+	else:
+		notice_posted.emit(tr("Saved the map %s with your maps.") % name)
+	map_download_finished.emit(name, error)
 
 
 # --- The world ---
@@ -897,10 +1034,23 @@ func take_world_packets() -> Array[PackedByteArray]:
 ## Samples both local players and sends them, with the newest snapshot seen,
 ## whenever either changed (a press always does).
 func _send_input() -> void:
+	var bytes := _input_message()
+	if bytes == _sent_input:
+		return
+	_sent_input = bytes
+	_c_input.rpc_id(1, bytes)
+	_last_sent = Time.get_ticks_msec()
+
+
+## The input message: the newest snapshot, then per local player the direction,
+## both fire buttons held and a press counter each. Idle while this machine's
+## menu or the map question has the keys.
+func _input_message() -> PackedByteArray:
+	var blocked := input_blocked or map_prompt_open
 	for slot in 2:
 		var prefix := PlayerInput.action_prefix(slot)
 		for b in 2:
-			if not input_blocked and Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[b]):
+			if not blocked and Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[b]):
 				_presses[slot][b] = (int(_presses[slot][b]) + 1) & 0xff
 	var ack := _latest_snapshot
 	var bytes := PackedByteArray()
@@ -908,9 +1058,9 @@ func _send_input() -> void:
 	bytes.encode_s32(0, ack)
 	for slot in 2:
 		var at := 4 + slot * 4
-		var direction := -1 if input_blocked else PlayerInput.local_direction_index(slot)
+		var direction := -1 if blocked else PlayerInput.local_direction_index(slot)
 		var held := 0
-		if not input_blocked:
+		if not blocked:
 			for b in 2:
 				if Input.is_action_pressed(PlayerInput.action_prefix(slot) + PlayerInput.BUTTONS[b]):
 					held |= 1 << b
@@ -918,11 +1068,7 @@ func _send_input() -> void:
 		bytes[at + 1] = held
 		bytes[at + 2] = _presses[slot][0]
 		bytes[at + 3] = _presses[slot][1]
-	if bytes == _sent_input:
-		return
-	_sent_input = bytes
-	_c_input.rpc_id(1, bytes)
-	_last_sent = Time.get_ticks_msec()
+	return bytes
 
 
 # =====================================================================
@@ -962,6 +1108,22 @@ func _c_alive() -> void:
 		_heard(sender)
 
 
+## A client asks for the map set [param digest]: the game's own, if it still is.
+@rpc("any_peer", "call_remote", "reliable")
+func _c_map_request(digest: String) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role != Role.HOST or not peers.has(sender) or _map_sends.has(sender):
+		return
+	_heard(sender)
+	var map := _host_map_info()
+	var pool := _host_map_pool()
+	var bytes := FileAccess.get_file_as_bytes(pool.path) if pool != null else PackedByteArray()
+	if map.get("hash", "") != digest or bytes.is_empty() or bytes.size() > MAX_MAP_SIZE:
+		_h_map_piece.rpc_id(sender, digest, 0, 0, PackedByteArray())  # nothing to send
+		return
+	_map_sends[sender] = {"hash": digest, "bytes": bytes, "offset": 0}
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func _c_bye() -> void:
 	var sender := multiplayer.get_remote_sender_id()
@@ -990,6 +1152,8 @@ func _h_session(info: Dictionary) -> void:
 	var got_lobby: Variant = info.get("lobby", {})
 	if got_lobby is Dictionary:
 		lobby = got_lobby
+	var got_map: Variant = info.get("map", {})
+	_take_host_map(got_map if got_map is Dictionary else {})
 	session_changed.emit()
 
 
@@ -1021,6 +1185,43 @@ func _h_notice(kind: String, name: String) -> void:
 func _h_rumble(slot: int, weak: float, strong: float, duration: float) -> void:
 	if role == Role.CLIENT and slot >= 0 and slot < 2:
 		InputSettings.rumble(slot, clampf(weak, 0.0, 1.0), clampf(strong, 0.0, 1.0), clampf(duration, 0.0, 2.0))
+
+
+## A piece of the map set [param digest] the client asked for: [param bytes]
+## from [param offset], of [param total] (0: the host can't send it). The whole
+## is checked against its hash before it's kept.
+@rpc("authority", "call_remote", "reliable")
+func _h_map_piece(digest: String, offset: int, total: int, bytes: PackedByteArray) -> void:
+	if role != Role.CLIENT:
+		return
+	_heard(1)
+	_take_map_piece(digest, offset, total, bytes)
+
+
+## Client: a piece of the map set coming (see _h_map_piece).
+func _take_map_piece(digest: String, offset: int, total: int, bytes: PackedByteArray) -> void:
+	if _map_download.is_empty() or digest != _map_download["hash"]:
+		return
+	if total == 0:
+		_finish_map_download("", tr("the host no longer plays on it"))
+		return
+	var got: PackedByteArray = _map_download["bytes"]
+	if total != int(_map_download["size"]) or offset != got.size() or got.size() + bytes.size() > total:
+		_finish_map_download("", tr("it came in out of order"))
+		return
+	got.append_array(bytes)
+	_map_download["bytes"] = got
+	map_progress.emit(got.size(), total)
+	if got.size() < total:
+		return
+	if LevelData.bytes_hash(got) != digest:
+		_finish_map_download("", tr("it isn't the map the host named"))
+		return
+	var result := LevelData.save_map_bytes(_map_download["name"], got)
+	if result.get("ok", false):
+		_finish_map_download(result["name"], "")
+	else:
+		_finish_map_download("", str(result.get("error", "")))
 
 
 @rpc("authority", "call_remote", "reliable")

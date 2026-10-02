@@ -392,9 +392,13 @@ static func import_map_file(source_path: String) -> Dictionary:
 	scan_map_pools()
 	return {"ok": true, "pool_id": USER_POOL_PREFIX + pool_name, "name": pool_name, "stage_count": stages.size()}
 
-## Where imported maps are kept: the player's folder, or a test run's own.
+## Where imported maps are kept: the player's folder, or a test run's own (one
+## per --test-profile, so an online test's two processes keep theirs apart).
 static func user_map_dir() -> String:
-	return TEST_MAP_DIR if _SETTINGS_SCRIPT.is_test_run() else USER_MAP_DIR
+	if not _SETTINGS_SCRIPT.is_test_run():
+		return USER_MAP_DIR
+	var profile: String = _SETTINGS_SCRIPT.test_profile()
+	return TEST_MAP_DIR if profile.is_empty() else "user://test_maps_%s/" % profile
 
 ## Keep only letters, digits, "_" and "-" so the name is safe as a file name.
 static func _sanitize_pool_name(name: String) -> String:
@@ -409,6 +413,69 @@ static func _unique_pool_name(base: String, taken: Callable) -> String:
 		candidate = "%s_%d" % [base, suffix]
 		suffix += 1
 	return candidate
+
+## Keeps a map set that came as [param bytes] (an online game's host sent it)
+## in the user's maps folder as [param name], or name_2... beside a different
+## map of that name, so it shows up as a pool like an imported one. Returns
+## {"ok": true, "pool_id": ..., "name": ...} or {"ok": false, "error": ...}.
+static func save_map_bytes(name: String, bytes: PackedByteArray) -> Dictionary:
+	if bytes.is_empty() or bytes.size() % DAT_STAGE_SIZE != 0:
+		return {"ok": false, "error": TranslationServer.translate("not a Tank.exe map file")}
+	var dir := user_map_dir()
+	DirAccess.make_dir_recursive_absolute(dir)
+	var pool_name := _unique_pool_name(_sanitize_pool_name(name), func(n: String) -> bool: return FileAccess.file_exists(dir + n + ".dat"))
+	var path := dir + pool_name + ".dat"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if not file:
+		return {"ok": false, "error": TranslationServer.translate("could not write %s") % path}
+	file.store_buffer(bytes)
+	file.close()
+	if load_stages_from_dat(path).is_empty():
+		DirAccess.remove_absolute(path)
+		return {"ok": false, "error": TranslationServer.translate("not a Tank.exe map file")}
+	scan_map_pools()
+	return {"ok": true, "pool_id": USER_POOL_PREFIX + pool_name, "name": pool_name}
+
+# =====================================================================
+# A map set's identity, for online games
+# =====================================================================
+
+## path -> [modified time, hash]: each file is hashed once while it's unchanged.
+static var _hash_cache: Dictionary = {}
+
+## What a map set is, whatever it's called: the SHA-256 of its file, in hex.
+## Two copies of one map hash the same. "" if the file can't be read.
+static func pool_hash(pool: MapPool) -> String:
+	var modified := FileAccess.get_modified_time(pool.path)
+	var cached: Array = _hash_cache.get(pool.path, [])
+	if cached.size() == 2 and cached[0] == modified:
+		return cached[1]
+	var bytes := FileAccess.get_file_as_bytes(pool.path)
+	if bytes.is_empty():
+		return ""
+	var digest := bytes_hash(bytes)
+	_hash_cache[pool.path] = [modified, digest]
+	return digest
+
+static func bytes_hash(bytes: PackedByteArray) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(bytes)
+	return context.finish().hex_encode()
+
+## The pool here whose map set is [param digest], or null: this computer has it.
+static func pool_with_hash(digest: String) -> MapPool:
+	for pool: MapPool in get_available_pools():
+		if pool_hash(pool) == digest:
+			return pool
+	return null
+
+## The pool called [param pool_id], or null.
+static func find_pool(pool_id: String) -> MapPool:
+	for pool: MapPool in get_available_pools():
+		if pool.id == pool_id:
+			return pool
+	return null
 
 ## Get available pools (lazy-scan on first call)
 static func get_available_pools() -> Array:

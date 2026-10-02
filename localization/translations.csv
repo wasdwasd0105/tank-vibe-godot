@@ -196,6 +196,17 @@ Press CONFIRM? again to delete this connection. Moving away cancels.,再按一�
 "ADDRESS: the host's IP address or name, with :PORT if its port isn't %d",地址：主机的 IP 地址或名称；端口不是 %d 时在后面加上「:端口」
 This game needs a password.,这局游戏需要密码。
 Wrong password.,密码不对。
+THE HOST'S MAP,主机的地图
+"The host plays on the map set {name} ({size}), which this computer doesn't have. Download it and keep it with your maps?",主机用的地图「{name}」（{size}）这台电脑上没有。要下载并保存到你的地图里吗？
+DOWNLOAD,下载
+NOT NOW,暂不
+Downloading {name}...  {percent}%,正在下载「{name}」……  {percent}%
+Saved the map %s with your maps.,地图「%s」已保存到你的地图里。
+The host's map didn't come through: %s,主机的地图没有传送成功：%s
+the host no longer plays on it,主机已经不用这个地图了
+it came in out of order,传送的顺序出错了
+it isn't the map the host named,收到的不是主机说的那个地图
+not a Tank.exe map file,不是 Tank.exe 地图文件
 The host has ended the game.,游戏主机已经结束了游戏。
 The host removed you from the game.,游戏主机结束了您的游戏。
 The connection to the host was lost.,跟游戏主机失去联系。

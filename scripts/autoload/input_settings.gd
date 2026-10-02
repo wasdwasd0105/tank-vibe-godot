@@ -169,12 +169,16 @@ static func is_test_run() -> bool:
 ## (user://test_settings_NAME.cfg), so two processes of one test (an online host
 ## and its client) never share one.
 static func test_save_path() -> String:
+	var profile := test_profile()
+	return TEST_SAVE_PATH if profile.is_empty() else "user://test_settings_%s.cfg" % profile
+
+## The --test-profile=NAME a test process was started with, made safe for a
+## file name, or "".
+static func test_profile() -> String:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--test-profile="):
-			var profile := arg.get_slice("=", 1).validate_filename()
-			if not profile.is_empty():
-				return "user://test_settings_%s.cfg" % profile
-	return TEST_SAVE_PATH
+			return arg.get_slice("=", 1).validate_filename()
+	return ""
 
 ## The settings file in use: the player's, or a test run's own.
 func get_save_path() -> String:
