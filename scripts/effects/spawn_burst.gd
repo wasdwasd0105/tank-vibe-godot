@@ -22,6 +22,7 @@ static func spawn_at(tree: SceneTree, world_pos: Vector2) -> void:
 	var container: Node = tree.get_first_node_in_group("effects_container")
 	if container == null:
 		return
+	NetHostWorld.record(NetWorld.EV_SPAWN_BURST, [world_pos.x, world_pos.y])
 	var fx := SpawnBurst.new()
 	container.add_child(fx)
 	fx.global_position = world_pos

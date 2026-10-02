@@ -93,7 +93,6 @@ func _run() -> void:
 		return
 	GameManager.current_stage = 1
 	GameManager.difficulty = 1  # EASY, where stage 1's limit always works out to 4
-	GameManager.credits = 3
 	GameManager.player_active = [true, true]
 	GameManager.player_disabled = [false, false]
 	GameManager.player_lives = [2, 4]
@@ -149,7 +148,7 @@ func _run() -> void:
 	await _frames(4)
 	Input.action_release("p2_shoot")
 	await _frames()
-	check(_tank(1) == null and GameManager.credits == 3, "player 2's fire doesn't bring them back (or spend a credit)")
+	check(_tank(1) == null, "player 2's fire doesn't bring them back")
 	var data: Dictionary = SaveManager._build_save_data()
 	var saved = data["players"]["player2"]
 	check(saved is Dictionary and saved["lives"] == 4 and saved["score"] == 8700 and saved["hp"] == 5
@@ -243,13 +242,12 @@ func _run() -> void:
 	await _frames()
 	check(GameManager.player_lives[1] < 0 and _game.get_game_over_countdown() > 0,
 		"its lives go with everyone's, and the countdown runs")
-	var credits_left := GameManager.credits
 	Input.action_press("p2_shoot")
 	await _frames(4)
 	Input.action_release("p2_shoot")
 	await _frames()
-	check(GameManager.credits == credits_left and GameManager.player_lives[1] < 0 and _tank(1) == null,
-		"sitting out, player 2's fire doesn't rejoin them either (no credit spent)")
+	check(GameManager.player_lives[1] < 0 and _tank(1) == null,
+		"sitting out, player 2's fire doesn't rejoin them either")
 	_game.set_player_enabled(1, true)
 	await _frames()
 	check(_tank(1) == null and _game.get_game_over_countdown() > 0,

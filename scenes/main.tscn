@@ -72,6 +72,12 @@ layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "NEW GAME"
 
+[node name="OnlineButton" type="Button" parent="MainAnchor/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "ONLINE BATTLE"
+
 [node name="SettingsButton" type="Button" parent="MainAnchor/MainPanel/Items"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -113,6 +119,11 @@ text = "SETTINGS"
 horizontal_alignment = 1
 
 [node name="SettingsRows" type="VBoxContainer" parent="PanelAnchor/SettingsPanel/Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="GameRows" type="VBoxContainer" parent="PanelAnchor/SettingsPanel/Layout"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 3

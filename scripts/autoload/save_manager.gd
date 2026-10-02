@@ -236,8 +236,6 @@ func _build_save_data() -> Dictionary:
 			"saved_iso": Time.get_datetime_string_from_system(false, true),
 			"start_difficulty": gm.start_difficulty,
 			"difficulty": gm.difficulty,
-			"max_credits": gm.max_credits,
-			"credit": gm.credits,
 			"current_stage": gm.current_stage,
 			"counter": gm.save_counter,
 			"map_pool": gm.current_map_pool_id,
@@ -300,8 +298,6 @@ func _restore_from_data(data: Dictionary) -> void:
 	gm.current_stage = header.get("current_stage", 1)
 	gm.difficulty = header.get("difficulty", 1)
 	gm.start_difficulty = header.get("start_difficulty", 1)
-	gm.max_credits = header.get("max_credits", 3)
-	gm.credits = header.get("credit", 3)
 	gm.save_counter = header.get("counter", 0)
 	gm.save_created_iso = header.get("created_iso", "")
 
@@ -325,6 +321,10 @@ func _restore_from_data(data: Dictionary) -> void:
 	if p1_data != null and p1_data is Dictionary:
 		gm.player_active[0] = true
 		_restore_player(0, p1_data)
+		# Only player 2 sits out offline (the pause menu's PLAYER 2). An online
+		# game saves whoever had no driver as sitting out, player 1 too; opened
+		# online again, the seats decide.
+		gm.player_disabled[0] = false
 	else:
 		gm.player_active[0] = false
 		_reset_player_defaults(0)

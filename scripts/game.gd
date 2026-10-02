@@ -23,6 +23,14 @@ var show_intro: bool = true
 
 var debug_freeze: DebugFreeze
 
+## Online, on a client: this scene shows the host's game through a
+## NetClientWorld and runs none of it. The host's lose countdown and the
+## players' dead timers come with its snapshots.
+var _mirror := false
+var net_countdown: float = -1.0
+var net_dead_timers: Array = [0.0, 0.0]
+var _host_paused_banner: Label = null
+
 ## Where the stage is: its intro, play, then the original's closing screens.
 enum Phase { INTRO, PLAY, MISSION, RESULTS, GAME_OVER }
 var _phase: Phase = Phase.INTRO
@@ -51,6 +59,10 @@ func _ready() -> void:
 	bullets_container.add_to_group("bullets_container")
 	powerups_container.add_to_group("powerups_container")
 	effects_container.add_to_group("effects_container")
+
+	if Net.is_client():
+		_ready_as_mirror()
+		return
 
 	# Connect signals
 	Events.all_enemies_defeated.connect(_on_all_enemies_defeated)
@@ -93,7 +105,120 @@ func _ready() -> void:
 	# Snapshot state at stage start (for restart)
 	GameManager.save_stage_start_snapshot()
 
+	if Net.is_host():
+		_ready_as_host()
+	Net.hosting_started.connect(_on_hosting_started)
+	Net.session_ended.connect(_on_session_ended)
 	_start_stage()
+
+
+## Hosting: the clients see this stage through a NetHostWorld. A tank nobody
+## has taken sits out until someone does, and one whose driver leaves sits out
+## again.
+func _ready_as_host() -> void:
+	_add_host_world()
+	for pid in 2:
+		if GameManager.player_active[pid]:
+			GameManager.player_disabled[pid] = PlayerInput.seats[pid] == PlayerInput.NO_SEAT
+	Net.set_host_screen(Net.SCREEN_GAME)
+
+
+## This game was opened to others in the middle of it (the pause menu's ONLINE
+## tab): the players on the field keep their tanks, and any other tank is free
+## for whoever presses fire first, here or there.
+func _on_hosting_started() -> void:
+	for pid in 2:
+		if GameManager.player_active[pid] and not GameManager.player_disabled[pid]:
+			PlayerInput.set_seat(pid, [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2][pid])
+	_add_host_world()
+	Net.set_host_screen(Net.SCREEN_GAME)
+
+
+func _add_host_world() -> void:
+	if has_node("NetHostWorld"):
+		return
+	var world := NetHostWorld.new()
+	world.setup(self, level_manager, stage_overlay)
+	add_child(world)
+	if not Net.seat_vacated.is_connected(_on_seat_vacated):
+		Net.seat_vacated.connect(_on_seat_vacated)
+
+
+## The game closed to others with nobody left on it: play goes on offline,
+## where only player 2 can sit out.
+func _on_session_ended(_reason: String) -> void:
+	var world := get_node_or_null("NetHostWorld")
+	if world:
+		remove_child(world)
+		world.queue_free()
+	if GameManager.player_disabled[0] and GameManager.player_active[0]:
+		if _phase == Phase.PLAY:
+			set_player_enabled(0, true)
+		else:
+			GameManager.player_disabled[0] = false  # it drives out with the next stage
+	_update_hud()
+
+
+## On a client: the map, tanks, screens and scores are the host's. Only the
+## menu (which doesn't pause the game here) and leaving are this machine's.
+func _ready_as_mirror() -> void:
+	_mirror = true
+	level_manager.net_mirror = true
+	stage_overlay.net_follow = true
+	if pause_menu:
+		pause_menu.set_online_client(true)
+		pause_menu.main_menu_requested.connect(_on_pause_main_menu)
+		pause_menu.exit_requested.connect(_on_pause_exit)
+	WindowManager.enter_game()
+	var world := NetClientWorld.new()
+	world.setup(self, level_manager, stage_overlay, {
+		"players": players_container, "enemies": enemies_container,
+		"bullets": bullets_container, "powerups": powerups_container,
+		"terrain": level_manager.terrain_node,
+	}, effects_container)
+	add_child(world)
+	_host_paused_banner = _make_host_paused_banner()
+
+
+## "PAUSED BY THE HOST" over the field while the host's menu is open.
+func _make_host_paused_banner() -> Label:
+	var layer := CanvasLayer.new()
+	layer.layer = 60
+	add_child(layer)
+	var banner := Label.new()
+	banner.theme = preload("res://assets/ui/menu_theme.tres")
+	banner.theme_type_variation = &"RowNameLabel"
+	banner.text = "PAUSED BY THE HOST"
+	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	banner.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	banner.position = Vector2(160, 440)
+	banner.size = Vector2(1280, 80)
+	var backing := StyleBoxFlat.new()
+	backing.bg_color = Color(0, 0, 0, 0.6)
+	banner.add_theme_stylebox_override(&"normal", backing)
+	banner.visible = false
+	layer.add_child(banner)
+	return banner
+
+
+## The host paused or went on: a client's world holds still meanwhile.
+func net_set_host_paused(paused: bool) -> void:
+	if not _mirror:
+		return
+	get_tree().paused = paused
+	if _host_paused_banner:
+		_host_paused_banner.visible = paused
+
+
+## Online: [param tank]'s driver left or lost the right to drive it. Their
+## tank sits out, keeping all it has, until someone takes it (_on_fire_press).
+func _on_seat_vacated(tank: int) -> void:
+	if not GameManager.is_player_in_play(tank):
+		return
+	if _phase == Phase.PLAY:
+		set_player_enabled(tank, false, true)
+	else:
+		GameManager.player_disabled[tank] = true
 
 ## Builds the map and plays the intro over it; the tanks come when it's done.
 func _start_stage() -> void:
@@ -162,9 +287,13 @@ func get_level_manager() -> LevelManager:
 ## Which part of the stage is on: "intro", "play", "mission", "results" or
 ## "game_over".
 func get_phase() -> String:
+	if _mirror:
+		return "mirror"
 	return ["intro", "play", "mission", "results", "game_over"][_phase]
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if _mirror:
+		return  # the debug keys are the host's
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_QUOTELEFT:  # ` backtick
 			Events.bomb_all_enemies.emit(-1)
@@ -172,6 +301,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			debug_freeze.toggle()
 
 func _process(delta: float) -> void:
+	if _mirror:
+		# A client's menu opens any time: it never pauses the host's game.
+		if pause_menu:
+			pause_menu.set_can_open(true)
+		return
 	# The pause menu opens during play, never over the stage screens.
 	if pause_menu:
 		pause_menu.set_can_open(_phase == Phase.PLAY)
@@ -179,22 +313,10 @@ func _process(delta: float) -> void:
 	if _phase != Phase.PLAY:
 		return
 
-	# Mid-game join: inactive or dead player can join by pressing fire (not one
-	# sitting out: they come back from the pause menu)
-	for pid in range(2):
-		if GameManager.player_disabled[pid]:
-			continue
-		if not GameManager.player_active[pid] or GameManager.player_lives[pid] < 0:
-			var prefix: String = "p1_" if pid == 0 else "p2_"
-			if Input.is_action_just_pressed(prefix + "shoot") or Input.is_action_just_pressed(prefix + "shoot2"):
-				if GameManager.rejoin_player(pid):
-					GameManager.player_active[pid] = true
-					_player_dead_timers[pid] = 0.0
-					_spawn_player(pid)
-					# Restore base if it was destroyed
-					if _base_destroyed:
-						_restore_base()
-					_cancel_lose_countdown()
+	# Mid-game join: a player out of the game, or out of lives, comes in with
+	# fire; online, so does anyone without a tank (see _on_fire_press).
+	for press: Dictionary in PlayerInput.fire_presses():
+		_on_fire_press(press["key"], press["seat"])
 
 	# Track per-player dead timers
 	for pid in range(2):
@@ -218,6 +340,40 @@ func _process(delta: float) -> void:
 		_clear_wait += delta
 		if _items_on_field() - floori(_clear_wait / ITEM_WAIT) <= 0:
 			_start_mission(true)
+
+## Fire from controller [param key], which drives tank [param seat] (or
+## PlayerInput.NO_SEAT). A player out of the game or out of lives comes back in
+## beside the base, as often as they like (credits are unlimited); one sitting
+## out offline comes back from the pause menu instead. Online, a player without
+## a tank takes a free one they may drive: a tank waiting for a driver keeps all
+## it had, otherwise they join as that tank's player.
+func _on_fire_press(key: int, seat: int) -> void:
+	var pid := seat
+	if pid < 0:
+		if not Net.is_host():
+			return
+		pid = Net.free_seat_for(key)
+		if pid < 0:
+			return
+		if GameManager.player_active[pid] and GameManager.player_lives[pid] >= 0:
+			PlayerInput.set_seat(pid, key)
+			set_player_enabled(pid, true)
+			return
+	elif GameManager.player_disabled[pid]:
+		return
+	if GameManager.player_active[pid] and GameManager.player_lives[pid] >= 0:
+		return  # already playing
+	GameManager.rejoin_player(pid)
+	if seat < 0:
+		PlayerInput.set_seat(pid, key)
+	GameManager.player_disabled[pid] = false
+	GameManager.player_active[pid] = true
+	_player_dead_timers[pid] = 0.0
+	_spawn_player(pid)
+	# Restore base if it was destroyed
+	if _base_destroyed:
+		_restore_base()
+	_cancel_lose_countdown()
 
 ## Bonus items still lying on the field.
 func _items_on_field() -> int:
@@ -263,6 +419,7 @@ func _on_base_destroyed() -> void:
 	explosion.global_position = eagle.global_position
 	explosion.scale = Vector2(5, 5)
 	effects_container.add_child(explosion)
+	NetHostWorld.record(NetWorld.EV_EXPLOSION, [eagle.global_position.x, eagle.global_position.y, 5.0])
 	# Wipe all active players' lives so they can't respawn
 	for pid in range(2):
 		if GameManager.player_active[pid]:
@@ -281,13 +438,10 @@ func _on_base_destroyed() -> void:
 			tank.queue_free()
 	_start_lose_countdown()
 
-## Everyone is out. With credits left there's a while to rejoin, and the enemies
-## hold back their reinforcements meanwhile; without, the stage is lost at once.
+## Everyone is out: there's a while to rejoin (credits are unlimited), and the
+## enemies hold back their reinforcements meanwhile; then the stage is lost.
 func _start_lose_countdown() -> void:
 	if _game_over_countdown >= 0 or _phase != Phase.PLAY:
-		return
-	if GameManager.credits <= 0:
-		GameManager.trigger_game_over()
 		return
 	_game_over_countdown = GAME_OVER_COUNTDOWN_DURATION
 	enemy_spawner.hold(true)
@@ -304,7 +458,7 @@ func _cancel_lose_countdown() -> void:
 ## costs nothing: their tank leaves the field with its HP and add-ons kept, and
 ## lives, score, levels and weapon wait untouched, in the save too. Back in, they
 ## drive out beside the base with all of it, if they have a life left.
-func set_player_enabled(player_id: int, enabled: bool) -> void:
+func set_player_enabled(player_id: int, enabled: bool, vacated: bool = false) -> void:
 	var disabled := not enabled
 	if GameManager.player_disabled[player_id] == disabled:
 		return  # already so
@@ -321,8 +475,9 @@ func set_player_enabled(player_id: int, enabled: bool) -> void:
 			GameManager.save_player_state(tank)
 			SpawnBurst.spawn_at(get_tree(), tank.global_position)
 			tank.queue_free()
-	# The one left may have been out of lives already.
-	if GameManager.all_active_players_dead():
+	# The one left may have been out of lives already. (Online, a tank left
+	# without a driver doesn't start it: the stage waits for one.)
+	if GameManager.all_active_players_dead() and not vacated:
 		_start_lose_countdown()
 
 func _on_game_over() -> void:
@@ -393,10 +548,15 @@ func _on_results_finished() -> void:
 	stage_overlay.play_game_over()
 
 func _on_game_over_finished() -> void:
+	if Net.is_host():
+		# Online, everyone goes back to the lobby for another game.
+		GameManager.start_game()
+		return
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 func _on_bomb_all_enemies(player_id: int) -> void:
 	enemy_spawner.destroy_all_enemies(player_id)
+	level_manager.set_off_all_mines()  # every mine too, the players spared
 
 func _on_freeze_enemies(duration: float) -> void:
 	GameManager.freeze_all_enemies(duration)
@@ -432,10 +592,10 @@ func _restore_base() -> void:
 	level_manager.fortify_base(30.0)
 
 func get_game_over_countdown() -> float:
-	return _game_over_countdown
+	return net_countdown if _mirror else _game_over_countdown
 
 func get_player_dead_timer(pid: int) -> float:
-	return _player_dead_timers[pid]
+	return float(net_dead_timers[pid]) if _mirror else _player_dead_timers[pid]
 
 func _update_hud() -> void:
 	if hud and hud.has_method("update_display"):
@@ -447,7 +607,15 @@ func _on_pause_restart() -> void:
 	GameManager.restart_current_stage()
 
 func _on_pause_main_menu() -> void:
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
+	# Online, this leaves the game: a host ends it for everyone, and a client
+	# goes back to the ONLINE screen, to join again or another.
+	var tree := get_tree()
+	var was_client := Net.is_client()
+	if Net.is_online():
+		Net.leave()
+		tree.paused = false
+	tree.change_scene_to_file("res://scenes/online_screen.tscn" if was_client else "res://scenes/main.tscn")
 
 func _on_pause_exit() -> void:
+	Net.leave()  # online, the others hear why first
 	get_tree().quit()

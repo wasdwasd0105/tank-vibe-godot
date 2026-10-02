@@ -6,7 +6,6 @@ extends Control
 @onready var p1_score_label: Label = $LeftPanel/P1Score
 
 @onready var enemy_count_label: Label = $RightPanel/EnemyCount
-@onready var credit_label: Label = $RightPanel/CreditLabel
 @onready var p2_header: Label = $RightPanel/P2Header
 @onready var p2_lives_label: Label = $RightPanel/P2Lives
 @onready var p2_score_label: Label = $RightPanel/P2Score
@@ -199,8 +198,6 @@ func update_display() -> void:
 		stages_played_label.text = "Played: " + str(GameManager.save_counter)
 	if enemy_count_label:
 		enemy_count_label.text = str(GameManager.enemies_remaining)
-	if credit_label:
-		credit_label.text = "Credit: " + str(maxi(GameManager.credits, 0))
 
 	# Player 1 info (left panel)
 	var p1_hidden := _is_player_hud_hidden(0)

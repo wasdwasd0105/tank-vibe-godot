@@ -113,6 +113,13 @@ P = f4 AI steps for odd types, 1.5 × f4 for even types (0x494d38):
 - The loop's difficulty step stops at 5 (`GameManager.advance_stage`).
 - Test: scenes/test/difficulty_count_test.tscn.
 
+**Changing it mid-game (Sean, 2026-10-02):** the original fixed the difficulty when a game began. In the remake, the settings' GAME tab changes it any time, the pause menu's too (`GameManager.set_difficulty`, which also makes it new games' difficulty). A stage in play takes it up at once (`EnemySpawner.apply_difficulty`):
+- Of each type, as many come in all as the new level sends, less those already sent. Reinforcements an enemy won with "+1 UP" stay on top.
+- The limit on the field is worked out again at the new level.
+- New enemies come with the new level's gun levels. The tanks already on the field keep theirs, and a hit takes back only what items gave them (`EnemyTank._base_weapon_level`), so lowering it shakes no Power Up loose.
+- The stage-end reward goes by the difficulty at the stage's end.
+- Test: scenes/test/game_tab_test.tscn.
+
 On the bundled map, stage 1 (4, 2, 4, 2 = 12 tanks, 4 at once) now sends 8–10 tanks on EASY, 12 on NORMAL and 20–22 on INSANE. The limit is 4 at once up to NORMAL, 4–5 on HARD, 5–6 on EXPERT and 6 on INSANE.
 
 **Not ported (Sean's call, 2026-09-25):** every other field. The remake keeps its own enemy AI, so difficulty still doesn't change these:

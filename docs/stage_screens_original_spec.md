@@ -187,6 +187,8 @@ The three fonts: **Text3** (gold, 18×36 cells, `tank_font`), **Text** (white, 1
   - The last chain of a stage counts toward that stage's MaxHits/MaxCombos. The original's slip into the next stage is a bug.
   - Hits and combos are shown but don't change the score. The remake keeps its own per-type points and its 20k extra-life rule.
   - The Reware sound plays for any winner's reward. The original compares the amount with 3000, which only matches at the default difficulty.
-  - The rejoin window is 5 s (Sean's choice; the original's is 5.25 s), shown as a countdown. Enemies hold their reinforcements during it, and with no credits the stage is lost at once, as in the original.
+  - The rejoin window is 5 s (Sean's choice; the original's is 5.25 s), shown as a countdown. Enemies hold their reinforcements during it.
+  - **Credits are unlimited** (Sean, 2026-10-02): every loss of the last life, and of the base, opens the rejoin window, and fire always rejoins (`GameManager.rejoin_player`). The stage is lost only when the window runs out with nobody back in. The CREDITS setting, the join screen's credits line and the HUD's Credit line are gone.
+  - **BASE INVINCIBLE** (Sean, 2026-10-03), in the settings' GAME tab: while it's on, a shell that reaches the base just stops (`Bullet._hit_base`), so the base never falls, and the flag shows its guard row the whole time (`LevelManager._set_flag_invincible`). It's off out of the box and switches at once mid-stage.
   - The stage number advances when the next stage starts rather than during the results. The HUD's lives line reads "GAME OVER" for a player who is out.
   - There's no hiscore name entry and no "Continue" prompt on the title; saves cover continuing.

@@ -67,6 +67,9 @@ const CATALOG: Dictionary = {
 	&"stage_lose":      ["stage_lose"],
 }
 
+## The menus' click: always this machine's own, never sent to or taken from a host.
+const UI_KEY: StringName = &"ui_select"
+
 ## Logical names routed to the music bus instead of the sfx bus.
 const MUSIC_KEYS: Array[StringName] = [&"stage_win", &"stage_lose"]
 
@@ -112,10 +115,28 @@ func _connect_events() -> void:
 # =====================================================================
 
 ## Plays a sound effect by logical name. Unknown or missing sounds do nothing.
+## Online, a host's game sounds go to its clients too; a client's game plays
+## only the host's (play_from_host), and its own menu clicks.
 func play(key: StringName) -> void:
 	if key in MUSIC_KEYS:
 		play_music(key)
 		return
+	if key != UI_KEY:
+		if Net.is_client():
+			return
+		NetHostWorld.record(NetWorld.EV_SOUND, [String(key)])
+	_play_sfx(key)
+
+
+## A client plays a sound the host's game played.
+func play_from_host(key: StringName) -> void:
+	if key in MUSIC_KEYS:
+		play_music_from_host(key)
+	elif CATALOG.has(key):
+		_play_sfx(key)
+
+
+func _play_sfx(key: StringName) -> void:
 	var stream := _pick_stream(key)
 	if stream == null:
 		return
@@ -131,6 +152,16 @@ func play(key: StringName) -> void:
 
 ## Plays a long track on the music bus, replacing whatever was playing.
 func play_music(key: StringName) -> void:
+	if Net.is_client():
+		return
+	NetHostWorld.record(NetWorld.EV_MUSIC, [String(key)])
+	play_music_from_host(key)
+
+
+## A client plays a track the host's game played.
+func play_music_from_host(key: StringName) -> void:
+	if not CATALOG.has(key):
+		return
 	var stream := _pick_stream(key)
 	if stream == null:
 		return
@@ -140,6 +171,7 @@ func play_music(key: StringName) -> void:
 
 
 func stop_music() -> void:
+	NetHostWorld.record(NetWorld.EV_STOP_MUSIC)
 	if _music_player:
 		_music_player.stop()
 
@@ -163,7 +195,7 @@ func _all_buttons(node: Node) -> Array[Node]:
 
 
 func _play_ui_select() -> void:
-	play(&"ui_select")
+	play(UI_KEY)
 
 
 ## True when the current theme (or the default set) can actually play this name.

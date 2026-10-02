@@ -179,8 +179,6 @@ static func to_tsave(decoded: Dictionary, save_name: String, source_name: String
 			"saved_iso": saved_iso,
 			"start_difficulty": maxi(1, header["start_difficulty"]),
 			"difficulty": maxi(1, header["difficulty"]),
-			"max_credits": maxi(1, header["max_credits"]),
-			"credit": header["credit"],
 			"current_stage": maxi(1, header["current_stage"]),
 			"counter": header["counter"],
 		},

@@ -55,7 +55,7 @@ func _save_data(save_name: String, saved_iso: String, stage: int, score: int) ->
 	return {
 		"meta": {"save_name": save_name},
 		"header": {"saved_iso": saved_iso, "created_iso": saved_iso, "current_stage": stage,
-			"counter": stage - 1, "difficulty": 2, "map_pool": "v1_2_2", "credit": 3, "max_credits": 3},
+			"counter": stage - 1, "difficulty": 2, "map_pool": "v1_2_2"},
 		"players": {"player1": {"score": score, "lives": 3, "hp": 4}, "player2": null},
 	}
 
@@ -110,7 +110,7 @@ func _run() -> void:
 	var order: Array = []
 	for button: Button in _screen._page_items(_screen.Page.MAIN):
 		order.append(button.text)
-	check(order == ["LOAD GAME", "NEW GAME", "SETTINGS", "QUIT"], "keyboard order: %s" % str(order))
+	check(order == ["LOAD GAME", "NEW GAME", "ONLINE BATTLE", "SETTINGS", "QUIT"], "keyboard order: %s" % str(order))
 	var shown: Array = []
 	for child in _screen._load_game_button.get_parent().get_children():
 		shown.append(child.text)

@@ -28,6 +28,7 @@ var from_player: bool = true
 var neutral: bool = false  # neutral blast (e.g. a mine-fly landing) hurts BOTH sides
 var exclude_tank: Node = null  # a directly-hit tank already took the direct hit; skip it
 var owner_id: int = -1  # the player whose shell or mine this is (-1: an enemy's, or nobody's)
+var spare_players: bool = false  # a mine a player's bomb set off: no player tank takes its spray
 var _level_manager: LevelManager = null
 
 var _t: float = 0.0
@@ -38,8 +39,9 @@ var _max_step: int = 0
 static var _frames: Array[Texture2D] = []
 
 
-func setup(p_level: int, p_from_player: bool, p_level_manager: LevelManager, p_neutral: bool = false, p_exclude: Node = null, p_owner: int = -1) -> void:
+func setup(p_level: int, p_from_player: bool, p_level_manager: LevelManager, p_neutral: bool = false, p_exclude: Node = null, p_owner: int = -1, p_spare_players: bool = false) -> void:
 	level = clampi(p_level, 0, 3)
+	spare_players = p_spare_players
 	owner_id = p_owner
 	from_player = p_from_player
 	neutral = p_neutral
@@ -51,6 +53,9 @@ func _ready() -> void:
 	z_index = 20  # explosions draw in front of everything
 	_load_frames()
 	_build_tiles()
+	if Net.is_client():
+		_terrain_done = true  # a client's blast is only its picture: the host's did the rest
+		return
 	_apply_tank_damage()
 	_set_off_mines()
 
@@ -136,6 +141,8 @@ func _apply_tank_damage() -> void:
 		if tank.is_flying:
 			continue  # thrown by a mine: out of reach until it lands
 		var is_player: bool = tank.is_in_group("players")
+		if is_player and spare_players:
+			continue  # set off by a player's bomb: the players come to no harm
 		if not neutral and from_player == is_player:
 			continue  # a normal blast never hurts its own side; a neutral one hits everyone
 		var dist_tiles: float = global_position.distance_to(tank.global_position) / TILE_SIZE

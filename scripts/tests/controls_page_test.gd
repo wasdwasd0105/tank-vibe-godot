@@ -239,10 +239,12 @@ func _run() -> void:
 	await tree.process_frame
 	_screen._settings_button.grab_focus()
 	await _key(KEY_ENTER)
+	check(_screen._tabs.current == _screen.SettingsTab.GENERAL and _focus() == _screen._common.sfx_row,
+		"the settings open on their GENERAL tab, on SFX VOLUME")
 	var common_rows: Array = _screen._common.rows().map(_row_name)
-	check(common_rows == ["SFX VOLUME", "MUSIC VOLUME", "ALWAYS FULLSCREEN", "GAME SPEED", "LANGUAGE", "P1 CONTROLS",
-		"P2 CONTROLS"],
-		"the settings page has no VIBRATION row: it is on each player's controls page (%s)" % str(common_rows))
+	check(common_rows == ["SFX VOLUME", "MUSIC VOLUME", "ALWAYS FULLSCREEN", "LANGUAGE", "P1 CONTROLS", "P2 CONTROLS"],
+		"no VIBRATION row (it is on each player's controls page), nor GAME SPEED (the GAME tab's) (%s)"
+		% str(common_rows))
 	_screen._common.p1_row.grab_focus()
 	check(MenuRows.layout_of(_screen._common.p1_row).get_node("Name").text == "P1 CONTROLS", "the settings row is P1 CONTROLS")
 	await _key(KEY_ENTER)

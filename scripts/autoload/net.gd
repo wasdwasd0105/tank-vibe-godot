@@ -1,0 +1,1035 @@
+extends Node
+## Online play (docs/network_design.md): one machine hosts and runs the game, and
+## up to three clients join it, everything over one TCP port. Godot's high-level
+## multiplayer carries it: SceneMultiplayer over a WebSocketMultiplayerPeer. The
+## handshake is SceneMultiplayer's authentication, control messages are RPCs on
+## this node (the same path, /root/Net, on every machine) and the world's
+## snapshots go as raw packets.
+##
+## The host keeps the session: who is connected, their names, which tank each
+## may drive, and the seats (PlayerInput). A client sends its two local players'
+## inputs and gets the host's screen, its world (for NetClientWorld) and its
+## rumbles.
+
+signal session_changed
+## The session is over: [param reason] is one of the END_* codes.
+signal session_ended(reason: String)
+signal join_succeeded
+signal join_failed(reason: String)
+## Someone joined or left: shown as a line over the screen.
+signal notice_posted(text: String)
+## Host: [param tank]'s driver left, was kicked or lost the right to drive it.
+signal seat_vacated(tank: int)
+## This machine began hosting (host): a running game sets up its side of it.
+signal hosting_started
+
+enum Role { OFFLINE, HOST, CLIENT }
+
+## Bump when the messages change: a host only lets in its own protocol.
+const PROTOCOL := 2
+const DEFAULT_PORT := 24680
+## The most remote players a host lets in: four players in all.
+const MAX_CLIENTS := 3
+const NAME_MAX := 14
+const DEFAULT_NAME := "PLAYER"
+const CONNECT_TIMEOUT := 8.0
+const AUTH_TIMEOUT := 5.0
+## Each side says something at least this often, and gives up on the other
+## after SILENCE_LIMIT of nothing.
+const KEEPALIVE := 1.0
+const SILENCE_LIMIT := 10.0
+## A rejected or kicked client gets this long to read why before it's cut off.
+const PARTING_DELAY := 0.5
+## Big enough for a whole world (the map and every entity) in one go.
+const BUFFER_SIZE := 1 << 20
+## The random challenge a host with a password sends each newcomer, in bytes.
+const NONCE_SIZE := 32
+
+const SCREEN_NONE := ""
+const SCREEN_LOBBY := "lobby"
+const SCREEN_GAME := "game"
+const LOBBY_SCENE := "res://scenes/join_screen.tscn"
+const GAME_SCENE := "res://scenes/game.tscn"
+const ONLINE_SCENE := "res://scenes/online_screen.tscn"
+
+## Why a session ended, or a join was refused. The screens show end_text().
+const END_LEFT := "left"            # we left
+const END_HOST_LEFT := "host_left"  # the host ended the game
+const END_KICKED := "kicked"
+const END_LOST := "lost"            # the connection dropped or went silent
+const END_NO_HOST := "no_host"      # nothing answered at that address
+const END_VERSION := "version"
+const END_FULL := "full"
+const END_LOCKED := "locked"
+const END_BAD_NAME := "bad_name"
+const END_NEED_PASSWORD := "need_password"    # the game has one, and we gave none
+const END_WRONG_PASSWORD := "wrong_password"
+const END_PORT := "port"            # hosting: the port is taken
+
+const NOTICE_JOINED := "joined"
+const NOTICE_LEFT := "left"
+
+var role: Role = Role.OFFLINE
+## This machine's player name, and the host's once joined.
+var local_name := DEFAULT_NAME
+var host_name := ""
+var port := DEFAULT_PORT
+
+## Everyone in the session, the host (peer 1) first:
+## peer id -> {"name": String, "allow": [may drive P1, may drive P2]}.
+var peers: Dictionary = {}
+## Host: newcomers are turned away.
+var lock_new := false
+## Host: how many remote players it lets in, 1 to MAX_CLIENTS.
+var max_clients := MAX_CLIENTS
+## Host: the password newcomers must know ("" for none). It never goes over the
+## wire: a newcomer answers a random challenge with it (_check_proof).
+var _password := ""
+## Host: newcomers that were sent a challenge and haven't answered yet:
+## peer id -> {"name": String, "nonce": PackedByteArray}.
+var _knocking: Dictionary = {}
+## Client: the password of the game being joined, to answer its challenge with.
+var _join_password := ""
+## Where the host is: SCREEN_LOBBY or SCREEN_GAME (SCREEN_NONE before either).
+var host_screen := SCREEN_NONE
+## The lobby's lines the clients show: who has joined, loaded game.
+var lobby := {"active": [false, false], "loaded": false}
+## Why the last session ended, for the ONLINE screen (take_end_reason).
+var _last_end_reason := ""
+
+## Client: the host's snapshots waiting for the game view to take them.
+var _world_packets: Array[PackedByteArray] = []
+## Client: the game view that takes snapshots as they come (NetClientWorld).
+var world_sink: Callable = Callable()
+## Host: acks each client sent with its inputs, the latest snapshot it has.
+var acks: Dictionary = {}
+
+var _peer: WebSocketMultiplayerPeer = null
+var _mp: SceneMultiplayer = null
+var _ending := false
+var _end_reason := ""
+var _connect_timer := 0.0
+var _joined := false
+var _last_heard: Dictionary = {}   # peer id -> Time.get_ticks_msec() of its last message
+var _last_sent := 0                # msec we last said anything
+var _session_dirty := false
+
+# Client: the two local players' press counters, and what was last sent.
+var _presses: Array = [[0, 0], [0, 0]]
+var _sent_input := PackedByteArray()
+## Client: the newest snapshot received, acknowledged with the next input
+## message.
+var _latest_snapshot := -1
+## Client: while its own menu is open, it sends its players as idle.
+var input_blocked := false
+
+
+func _ready() -> void:
+	# Messages, keepalives and the host's paused game all go on through a pause.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	local_name = InputSettings.get_online_name()
+	port = InputSettings.get_online_port()
+	PlayerInput.seats_changed.connect(func() -> void:
+		if role == Role.HOST:
+			_session_dirty = true)
+	var toasts := NetToasts.new()
+	add_child(toasts)
+	notice_posted.connect(toasts.show_notice)
+
+
+func _notification(what: int) -> void:
+	# Closing the window: tell the others first, so they read why.
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and role != Role.OFFLINE:
+		_say_goodbye(END_HOST_LEFT if role == Role.HOST else END_LEFT)
+		_flush(0.2)
+
+
+# =====================================================================
+# State
+# =====================================================================
+
+func is_online() -> bool:
+	return role != Role.OFFLINE
+
+
+func is_host() -> bool:
+	return role == Role.HOST
+
+
+## True on a client: this machine shows the host's game and runs none of it.
+func is_client() -> bool:
+	return role == Role.CLIENT
+
+
+## This machine's peer id: 1 for the host (and offline).
+func my_id() -> int:
+	return _mp.get_unique_id() if _mp != null and role == Role.CLIENT else 1
+
+
+func peer_name(peer: int) -> String:
+	return peers.get(peer, {}).get("name", "")
+
+
+## True if [param peer] may drive tank [param tank].
+func may_drive_peer(peer: int, tank: int) -> bool:
+	var allow: Array = peers.get(peer, {}).get("allow", [false, false])
+	return bool(allow[tank])
+
+
+## PlayerInput.free_seat_for's rule: controller [param key] may take tank
+## [param tank]. Offline anyone may.
+func may_drive(key: int, tank: int) -> bool:
+	if role == Role.OFFLINE:
+		return true
+	return may_drive_peer(PlayerInput.controller_peer(key), tank)
+
+
+## The tank controller [param key] takes if it presses fire now (see
+## PlayerInput.free_seat_for), or -1.
+func free_seat_for(key: int) -> int:
+	return PlayerInput.free_seat_for(key, may_drive)
+
+
+## Who drives tank [param tank], for the screens: their name, "" for nobody.
+## A machine's second local player shows as "NAME (2)".
+func seat_label(tank: int) -> String:
+	var key: int = PlayerInput.seats[tank]
+	if key == PlayerInput.NO_SEAT:
+		return ""
+	var peer := PlayerInput.controller_peer(key)
+	var name := peer_name(peer)
+	if PlayerInput.controller_slot(key) == 1:
+		name += " (2)"
+	return name
+
+
+## The seat [param tank] is driven from this machine.
+func is_my_seat(tank: int) -> bool:
+	var key: int = PlayerInput.seats[tank]
+	return key != PlayerInput.NO_SEAT and PlayerInput.controller_peer(key) == my_id()
+
+
+## This machine's IPv4 addresses on its networks, the private ones (a LAN's)
+## first: what a host tells the others to type. Loopback and link-local are left
+## out.
+static func local_addresses() -> PackedStringArray:
+	var private := PackedStringArray()
+	var others := PackedStringArray()
+	for address: String in IP.get_local_addresses():
+		if address.contains(":") or address.begins_with("127.") or address.begins_with("169.254."):
+			continue
+		var parts := address.split(".")
+		var second := int(parts[1]) if parts.size() == 4 else -1
+		if address.begins_with("192.168.") or address.begins_with("10.") \
+				or (address.begins_with("172.") and second >= 16 and second <= 31):
+			private.append(address)
+		else:
+			others.append(address)
+	private.append_array(others)
+	return private
+
+
+## "ADDRESS : PORT" for the host to share, as the join screen takes it.
+func share_address() -> String:
+	var addresses := local_addresses()
+	return "%s : %d" % [addresses[0] if not addresses.is_empty() else "127.0.0.1", port]
+
+
+## The text a screen shows for an END_* reason.
+static func end_text(reason: String) -> String:
+	match reason:
+		END_HOST_LEFT:
+			return "The host has ended the game."
+		END_KICKED:
+			return "The host removed you from the game."
+		END_LOST:
+			return "The connection to the host was lost."
+		END_NO_HOST:
+			return "No game answered at that address."
+		END_VERSION:
+			return "The host is running a different version."
+		END_FULL:
+			return "That game is full."
+		END_LOCKED:
+			return "The host isn't letting new players in."
+		END_BAD_NAME:
+			return "Enter a name first."
+		END_NEED_PASSWORD:
+			return "This game needs a password."
+		END_WRONG_PASSWORD:
+			return "Wrong password."
+		END_PORT:
+			return "That port is in use. Try another."
+	return ""
+
+
+## An address as a player types it: "HOST", "HOST:PORT", "[IPV6]:PORT" or a
+## bare IPv6 address, where HOST is an IP or a name. Returns [host, port]:
+## DEFAULT_PORT when it gives none, 0 when the one it gives isn't a port.
+static func split_address(text: String) -> Array:
+	var address := text.strip_edges()
+	var address_port := DEFAULT_PORT
+	if address.begins_with("[") and address.contains("]"):
+		var rest := address.get_slice("]", 1)
+		address = address.get_slice("]", 0).trim_prefix("[")
+		if not rest.is_empty():
+			address_port = _port_in(rest.trim_prefix(":")) if rest.begins_with(":") else 0
+	elif address.count(":") == 1:
+		address_port = _port_in(address.get_slice(":", 1))
+		address = address.get_slice(":", 0)
+	return [address, address_port]
+
+
+static func _port_in(text: String) -> int:
+	var value := text.strip_edges()
+	return int(value) if value.is_valid_int() and int(value) >= 1 and int(value) <= 65535 else 0
+
+
+# =====================================================================
+# Hosting
+# =====================================================================
+
+## Opens this machine's game to others on [param p_port] as [param p_name]: up
+## to [param p_max_clients] remote players, and with a [param password] only
+## those who know it. Returns OK, or an error when the port can't be listened
+## on. Every tank starts without a driver; a running game seats its players
+## again on hosting_started (game.gd).
+func host(p_port: int, p_name: String, password: String = "", p_max_clients: int = MAX_CLIENTS) -> Error:
+	leave()
+	var peer := WebSocketMultiplayerPeer.new()
+	_configure(peer)
+	var err := peer.create_server(p_port)
+	if err != OK:
+		return err
+	port = p_port
+	local_name = clean_name(p_name)
+	host_name = local_name
+	_start(peer)
+	role = Role.HOST
+	lock_new = false
+	max_clients = clampi(p_max_clients, 1, MAX_CLIENTS)
+	_password = password
+	peers = {1: {"name": local_name, "allow": [true, true]}}
+	host_screen = SCREEN_NONE
+	PlayerInput.reset_to_empty()
+	hosting_started.emit()
+	session_changed.emit()
+	return OK
+
+
+## Turns newcomers away, or lets them in again.
+func set_lock_new(on: bool) -> void:
+	lock_new = on
+	_session_dirty = true
+	session_changed.emit()
+
+
+## Host: the password newcomers need from now on ("" for none). Those already
+## in stay.
+func set_password(password: String) -> void:
+	_password = password
+
+
+func has_password() -> bool:
+	return not _password.is_empty()
+
+
+## Host: lets in up to [param count] remote players from now on. Those already
+## in stay, even past it.
+func set_max_clients(count: int) -> void:
+	max_clients = clampi(count, 1, MAX_CLIENTS)
+	session_changed.emit()
+
+
+## Lets [param peer] drive tank [param tank], or not. Taking it away frees the
+## seat if they hold it.
+func set_allow(peer: int, tank: int, on: bool) -> void:
+	if not peers.has(peer):
+		return
+	peers[peer]["allow"][tank] = on
+	if not on:
+		var key: int = PlayerInput.seats[tank]
+		if key != PlayerInput.NO_SEAT and PlayerInput.controller_peer(key) == peer:
+			PlayerInput.clear_seat(tank)
+			seat_vacated.emit(tank)
+	_session_dirty = true
+
+
+## Removes a client from the game.
+func kick(peer: int) -> void:
+	if role != Role.HOST or peer == 1 or not peers.has(peer):
+		return
+	_h_bye.rpc_id(peer, END_KICKED)
+	get_tree().create_timer(PARTING_DELAY, true, false, true).timeout.connect(_drop_peer.bind(peer))
+
+
+## Host: cuts [param peer] off and lets them go as if they had left.
+## (SceneMultiplayer.disconnect_peer forgets a peer without emitting
+## peer_disconnected, so the leaving is done here.)
+func _drop_peer(peer: int) -> void:
+	if _mp == null or role != Role.HOST:
+		return
+	if _mp.get_peers().has(peer) or _mp.get_authenticating_peers().has(peer):
+		_mp.disconnect_peer(peer)
+	_on_peer_disconnected(peer)
+
+
+## The host moved to [param screen]: every client follows.
+func set_host_screen(screen: String) -> void:
+	if role != Role.HOST:
+		return
+	host_screen = screen
+	_h_screen.rpc(screen)
+
+
+## The lobby's state for the clients' copy of it.
+func set_lobby(active: Array, loaded: bool) -> void:
+	var next := {"active": [bool(active[0]), bool(active[1])], "loaded": loaded}
+	if next == lobby:
+		return
+	lobby = next
+	_session_dirty = true
+
+
+## Host: a world snapshot for client [param peer].
+func send_world(peer: int, bytes: PackedByteArray) -> void:
+	if _mp != null and _mp.get_peers().has(peer):
+		_mp.send_bytes(bytes, peer, MultiplayerPeer.TRANSFER_MODE_RELIABLE)
+		_last_sent = Time.get_ticks_msec()
+
+
+## Host: how many bytes wait to go out to [param peer]: a slow link backs up here.
+func pending_bytes(peer: int) -> int:
+	if _peer == null or not _mp.get_peers().has(peer):
+		return 0
+	var ws := _peer.get_peer(peer)
+	return ws.get_current_outbound_buffered_amount() if ws else 0
+
+
+## Host: the clients, newcomers through the handshake included.
+func client_ids() -> Array[int]:
+	var ids: Array[int] = []
+	if role == Role.HOST:
+		for peer: int in peers:
+			if peer != 1:
+				ids.append(peer)
+	return ids
+
+
+## Host: the clients whose connection is open, the ones the host's world sends
+## to. A newcomer is in [member peers] from the end of its handshake, a moment
+## before its connection opens; a world sent it then would be lost, and with it
+## the whole world every later snapshot only adds to.
+func connected_client_ids() -> Array[int]:
+	var ids: Array[int] = []
+	if _mp == null:
+		return ids
+	var open := _mp.get_peers()
+	for peer in client_ids():
+		if open.has(peer):
+			ids.append(peer)
+	return ids
+
+
+## A client asks for tank [param tank] (a click on its lobby card), as its P1
+## controls' fire would ask for a free one.
+func request_seat(tank: int) -> void:
+	if role == Role.CLIENT and _joined:
+		_c_claim.rpc_id(1, tank)
+
+
+## Rumbles tank [param tank]'s driver's controller: this machine's own, or
+## theirs on a client.
+func rumble_tank(tank: int, weak: float, strong: float, duration: float) -> void:
+	if role == Role.CLIENT:
+		return  # the host decides
+	var key: int = PlayerInput.seats[tank]
+	if key == PlayerInput.NO_SEAT:
+		return
+	var slot := PlayerInput.controller_slot(key)
+	var peer := PlayerInput.controller_peer(key)
+	if peer == 1:
+		InputSettings.rumble(slot, weak, strong, duration)
+	elif _mp != null and _mp.get_peers().has(peer):
+		_h_rumble.rpc_id(peer, slot, weak, strong, duration)
+
+
+# =====================================================================
+# Joining
+# =====================================================================
+
+## Connects to the game at [param address] (a name or IP, IPv6 too) on
+## [param p_port] as [param p_name], with the game's [param password] if it has
+## one. join_succeeded or join_failed follows.
+func join(address: String, p_port: int, p_name: String, password: String = "") -> Error:
+	leave()
+	local_name = clean_name(p_name)
+	if local_name.is_empty():
+		return ERR_INVALID_PARAMETER
+	var host_part := address.strip_edges()
+	if host_part.contains(":") and not host_part.begins_with("["):
+		host_part = "[%s]" % host_part  # an IPv6 address
+	var peer := WebSocketMultiplayerPeer.new()
+	_configure(peer)
+	var err := peer.create_client("ws://%s:%d" % [host_part, p_port])
+	if err != OK:
+		return err
+	port = p_port
+	_start(peer)
+	role = Role.CLIENT
+	_joined = false
+	_join_password = password
+	_connect_timer = CONNECT_TIMEOUT
+	_world_packets.clear()
+	_presses = [[0, 0], [0, 0]]
+	_sent_input = PackedByteArray()
+	_latest_snapshot = -1
+	return OK
+
+
+## Ends the session: a host closes the game, a client leaves it.
+func leave() -> void:
+	if role == Role.OFFLINE:
+		return
+	_say_goodbye(END_HOST_LEFT if role == Role.HOST else END_LEFT)
+	_flush(0.1)
+	_end(END_LEFT)
+
+
+## A name fit to show: printable, trimmed, at most NAME_MAX letters, upper case
+## as every name on the screens is.
+static func clean_name(text: String) -> String:
+	var out := ""
+	for i in text.length():
+		var c := text.unicode_at(i)
+		if c >= 32 and c != 127:
+			out += char(c)
+	return out.strip_edges().left(NAME_MAX).to_upper()
+
+
+# =====================================================================
+# Session plumbing
+# =====================================================================
+
+func _configure(peer: WebSocketMultiplayerPeer) -> void:
+	peer.inbound_buffer_size = BUFFER_SIZE
+	peer.outbound_buffer_size = BUFFER_SIZE
+	peer.handshake_timeout = CONNECT_TIMEOUT
+
+
+func _start(peer: WebSocketMultiplayerPeer) -> void:
+	_peer = peer
+	_mp = SceneMultiplayer.new()
+	_mp.auth_callback = _on_auth
+	_mp.auth_timeout = AUTH_TIMEOUT
+	_mp.server_relay = false            # clients only ever talk to the host
+	_mp.allow_object_decoding = false
+	_mp.peer_authenticating.connect(_on_peer_authenticating)
+	_mp.peer_authentication_failed.connect(_on_peer_authentication_failed)
+	_mp.peer_connected.connect(_on_peer_connected)
+	_mp.peer_disconnected.connect(_on_peer_disconnected)
+	_mp.connected_to_server.connect(_on_connected_to_server)
+	_mp.connection_failed.connect(_on_connection_failed)
+	_mp.server_disconnected.connect(_on_server_disconnected)
+	_mp.peer_packet.connect(_on_peer_packet)
+	get_tree().set_multiplayer(_mp)
+	_mp.multiplayer_peer = peer
+	_end_reason = ""
+	_last_heard.clear()
+	acks.clear()
+	_last_sent = Time.get_ticks_msec()
+
+
+## Ends the session once the multiplayer is done with the call it is in: the
+## signals that end one (a dropped connection, a refusal) come from inside its
+## poll, and freeing it there would pull it out from under itself.
+func _end_soon(reason: String) -> void:
+	if _ending:
+		return
+	_ending = true
+	_end.call_deferred(reason)
+
+
+## Closes everything and goes back to offline play.
+func _end(reason: String) -> void:
+	_ending = false
+	if role == Role.OFFLINE and _mp == null:
+		return
+	var was := role
+	var was_joined := _joined
+	if _mp != null:
+		_mp.multiplayer_peer = null
+	if _peer != null:
+		_peer.close()
+	_peer = null
+	_mp = null
+	get_tree().set_multiplayer(SceneMultiplayer.new())
+	role = Role.OFFLINE
+	peers.clear()
+	acks.clear()
+	_knocking.clear()
+	_password = ""
+	_join_password = ""
+	host_screen = SCREEN_NONE
+	host_name = ""
+	_joined = false
+	input_blocked = false
+	_world_packets.clear()
+	world_sink = Callable()
+	PlayerInput.reset_to_local()
+	if was != Role.OFFLINE:
+		session_ended.emit(reason)
+	session_changed.emit()
+	# A client whose game ended under it (the host left, a kick, a lost line)
+	# goes back to the ONLINE screen, which says why. (A join that never got in
+	# says why through join_failed, on the screen it was started from.)
+	if was == Role.CLIENT and was_joined and reason != END_LEFT:
+		_last_end_reason = reason
+		var tree := get_tree()
+		tree.paused = false
+		if tree.current_scene == null or tree.current_scene.scene_file_path != ONLINE_SCENE:
+			tree.change_scene_to_file(ONLINE_SCENE)
+
+
+## Why the last session ended (an END_* code), once: "" when it was our choice
+## or that was already shown.
+func take_end_reason() -> String:
+	var reason := _last_end_reason
+	_last_end_reason = ""
+	return reason
+
+
+func _say_goodbye(reason: String) -> void:
+	if _mp == null or _mp.get_peers().is_empty():
+		return
+	if role == Role.HOST:
+		_h_bye.rpc(reason)
+	elif _joined:
+		_c_bye.rpc_id(1)
+
+
+## Keeps the connection turning for up to [param seconds], so what was just sent
+## goes out before the socket closes.
+func _flush(seconds: float) -> void:
+	if _peer == null:
+		return
+	var until := Time.get_ticks_msec() + int(seconds * 1000.0)
+	while Time.get_ticks_msec() < until:
+		_peer.poll()
+		OS.delay_msec(5)
+
+
+func _process(delta: float) -> void:
+	if role == Role.OFFLINE:
+		return
+	if role == Role.CLIENT and not _joined:
+		_connect_timer -= delta
+		if _connect_timer <= 0.0:
+			_fail_join(END_NO_HOST)
+			return
+	var now := Time.get_ticks_msec()
+	if _session_dirty and role == Role.HOST:
+		_session_dirty = false
+		_h_session.rpc(_session_info())
+		session_changed.emit()
+		_last_sent = now
+	# Keepalive both ways, and give up on the silent.
+	if now - _last_sent > int(KEEPALIVE * 1000.0) and _mp != null and not _mp.get_peers().is_empty():
+		if role == Role.HOST:
+			_h_alive.rpc()
+		elif _joined:
+			_c_alive.rpc_id(1)
+		_last_sent = now
+	for peer: int in _last_heard.keys():
+		if now - int(_last_heard[peer]) > int(SILENCE_LIMIT * 1000.0):
+			_last_heard.erase(peer)
+			if role == Role.HOST:
+				_drop_peer(peer)
+			else:
+				_end_soon(END_LOST)
+				return
+
+
+func _physics_process(_delta: float) -> void:
+	if role == Role.CLIENT and _joined:
+		_send_input()
+
+
+func _heard(peer: int) -> void:
+	_last_heard[peer] = Time.get_ticks_msec()
+
+
+## Small messages (a key press) go out at once rather than waiting to be
+## bundled (Nagle's algorithm off on that connection's TCP socket).
+func _no_delay(peer: int) -> void:
+	var ws := _peer.get_peer(peer) if _peer else null
+	if ws:
+		ws.set_no_delay(true)
+
+
+# --- The handshake ---
+
+func _on_peer_authenticating(peer: int) -> void:
+	# The client speaks first: its protocol and name.
+	if role == Role.CLIENT and peer == 1:
+		_mp.send_auth(1, var_to_bytes({"protocol": PROTOCOL, "name": local_name,
+				"version": ProjectSettings.get_setting("application/config/version", "")}))
+
+
+func _on_auth(peer: int, data: PackedByteArray) -> void:
+	var message: Variant = bytes_to_var(data) if data.size() < 4096 else null
+	if typeof(message) != TYPE_DICTIONARY:
+		if role == Role.HOST:
+			_refuse(peer, END_VERSION)
+		return
+	if role == Role.HOST:
+		if _knocking.has(peer):
+			_check_proof(peer, message)
+		else:
+			_check_newcomer(peer, message)
+	elif peer == 1:
+		if message.has("challenge"):
+			_answer_challenge(message["challenge"])
+		elif message.get("ok", false):
+			host_name = clean_name(str(message.get("name", "")))
+			_mp.complete_auth(1)
+		else:
+			_end_reason = str(message.get("reason", END_LOST))
+
+
+## The host's side of the handshake: in, turned away with a reason, or (a game
+## with a password) challenged to prove it knows the password.
+func _check_newcomer(peer: int, hello: Dictionary) -> void:
+	var name := clean_name(str(hello.get("name", "")))
+	if int(hello.get("protocol", -1)) != PROTOCOL:
+		_refuse(peer, END_VERSION)
+	elif name.is_empty():
+		_refuse(peer, END_BAD_NAME)
+	elif lock_new:
+		_refuse(peer, END_LOCKED)
+	elif client_ids().size() >= max_clients:
+		_refuse(peer, END_FULL)
+	elif _password.is_empty():
+		_admit(peer, name)
+	else:
+		var nonce := Crypto.new().generate_random_bytes(NONCE_SIZE)
+		_knocking[peer] = {"name": name, "nonce": nonce}
+		_mp.send_auth(peer, var_to_bytes({"challenge": nonce}))
+
+
+## A challenged newcomer's answer: the challenge signed with the password.
+func _check_proof(peer: int, answer: Dictionary) -> void:
+	var knock: Dictionary = _knocking[peer]
+	_knocking.erase(peer)
+	var proof: Variant = answer.get("proof")
+	var expected := password_proof(_password, knock["nonce"])
+	if not proof is PackedByteArray or (proof as PackedByteArray).is_empty():
+		_refuse(peer, END_NEED_PASSWORD)
+	elif (proof as PackedByteArray).size() != expected.size() \
+			or not Crypto.new().constant_time_compare(expected, proof):
+		_refuse(peer, END_WRONG_PASSWORD)
+	elif lock_new:  # while it answered
+		_refuse(peer, END_LOCKED)
+	elif client_ids().size() >= max_clients:
+		_refuse(peer, END_FULL)
+	else:
+		_admit(peer, knock["name"])
+
+
+func _admit(peer: int, name: String) -> void:
+	peers[peer] = {"name": _unique_name(name), "allow": [true, true]}
+	_mp.send_auth(peer, var_to_bytes({"ok": true, "name": local_name}))
+	_mp.complete_auth(peer)
+
+
+## What a player who knows [param password] answers challenge [param nonce]
+## with: an HMAC-SHA256 of it, keyed with the password. The password itself
+## never crosses the network.
+static func password_proof(password: String, nonce: PackedByteArray) -> PackedByteArray:
+	return Crypto.new().hmac_digest(HashingContext.HASH_SHA256, password.to_utf8_buffer(), nonce)
+
+
+## Client: the host's game has a password. With none to give, the answer is
+## empty and the host says the game needs one.
+func _answer_challenge(nonce: Variant) -> void:
+	if not nonce is PackedByteArray or (nonce as PackedByteArray).size() != NONCE_SIZE:
+		return  # not a challenge of ours: the handshake times out
+	var proof := PackedByteArray() if _join_password.is_empty() else password_proof(_join_password, nonce)
+	_mp.send_auth(1, var_to_bytes({"proof": proof}))
+
+
+func _refuse(peer: int, reason: String) -> void:
+	_mp.send_auth(peer, var_to_bytes({"ok": false, "reason": reason}))
+	get_tree().create_timer(PARTING_DELAY, true, false, true).timeout.connect(_drop_peer.bind(peer))
+
+
+## [param name], or "NAME 2", "NAME 3"... when someone already has it.
+func _unique_name(name: String) -> String:
+	var taken: Array = []
+	for info: Dictionary in peers.values():
+		taken.append(info["name"])
+	if name not in taken:
+		return name
+	for n in range(2, 10):
+		var candidate := "%s %d" % [name.left(NAME_MAX - 2), n]
+		if candidate not in taken:
+			return candidate
+	return name
+
+
+# --- Peers coming and going ---
+
+func _on_peer_connected(peer: int) -> void:
+	if role != Role.HOST:
+		return
+	if not peers.has(peer):
+		_drop_peer(peer)  # never passed the handshake
+		return
+	_heard(peer)
+	_no_delay(peer)
+	_post_notice(NOTICE_JOINED, peer_name(peer))
+	_h_session.rpc(_session_info())
+	_h_screen.rpc_id(peer, host_screen)
+	session_changed.emit()
+
+
+func _on_peer_disconnected(peer: int) -> void:
+	if role != Role.HOST:
+		return
+	_last_heard.erase(peer)
+	acks.erase(peer)
+	_knocking.erase(peer)
+	if not peers.has(peer):
+		return
+	var name := peer_name(peer)
+	peers.erase(peer)
+	for tank in PlayerInput.remove_peer(peer):
+		seat_vacated.emit(tank)
+	_post_notice(NOTICE_LEFT, name)
+	_session_dirty = true
+	session_changed.emit()
+
+
+func _on_connected_to_server() -> void:
+	_joined = true
+	_heard(1)
+	_no_delay(1)
+	join_succeeded.emit()
+	session_changed.emit()
+
+
+func _on_connection_failed() -> void:
+	_fail_join(_end_reason if not _end_reason.is_empty() else END_NO_HOST)
+
+
+func _on_peer_authentication_failed(peer: int) -> void:
+	_knocking.erase(peer)  # host: a newcomer that never answered its challenge
+	if role == Role.CLIENT and peer == 1 and not _joined:
+		_fail_join(_end_reason if not _end_reason.is_empty() else END_LOST)
+
+
+func _on_server_disconnected() -> void:
+	if not _joined:
+		_fail_join(_end_reason if not _end_reason.is_empty() else END_NO_HOST)
+		return
+	_end_soon(_end_reason if not _end_reason.is_empty() else END_LOST)
+
+
+## A join that never got in: the session closes and join_failed says why.
+func _fail_join(reason: String) -> void:
+	if _ending or role != Role.CLIENT:
+		return
+	_joined = false
+	_end_soon(reason)
+	(func() -> void: join_failed.emit(reason)).call_deferred()
+
+
+## Someone came or went: said on every machine, each in its own language.
+func _post_notice(kind: String, name: String) -> void:
+	notice_posted.emit(notice_text(kind, name))
+	if role == Role.HOST:
+		_h_notice.rpc(kind, name)
+
+
+func notice_text(kind: String, name: String) -> String:
+	match kind:
+		NOTICE_JOINED:
+			return tr("%s joined the game.") % name
+		NOTICE_LEFT:
+			return tr("%s left the game.") % name
+	return ""
+
+
+func _session_info() -> Dictionary:
+	var list: Array = []
+	for peer: int in peers:
+		list.append([peer, peers[peer]["name"], peers[peer]["allow"][0], peers[peer]["allow"][1]])
+	return {"peers": list, "seats": PlayerInput.seats.duplicate(), "lock": lock_new, "lobby": lobby}
+
+
+# --- The world ---
+
+## A world snapshot: its number (acknowledged at once, so the host's flow
+## control sees what has arrived), then the snapshot for the game view.
+func _on_peer_packet(peer: int, packet: PackedByteArray) -> void:
+	if role != Role.CLIENT or peer != 1 or packet.size() < 4:
+		return  # only the host sends raw packets
+	_heard(1)
+	_latest_snapshot = packet.decode_u32(0)
+	var body := packet.slice(4)
+	if world_sink.is_valid():
+		world_sink.call(body)
+	else:
+		_world_packets.append(body)
+		if _world_packets.size() > 600:
+			_world_packets.remove_at(0)  # no game view for ages: keep the newest
+
+
+## Client: the snapshots that came before the game view was ready to take them.
+func take_world_packets() -> Array[PackedByteArray]:
+	var packets := _world_packets
+	_world_packets = []
+	return packets
+
+
+# --- The client's inputs ---
+
+## Samples both local players and sends them, with the newest snapshot seen,
+## whenever either changed (a press always does).
+func _send_input() -> void:
+	for slot in 2:
+		var prefix := PlayerInput.action_prefix(slot)
+		for b in 2:
+			if not input_blocked and Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[b]):
+				_presses[slot][b] = (int(_presses[slot][b]) + 1) & 0xff
+	var ack := _latest_snapshot
+	var bytes := PackedByteArray()
+	bytes.resize(12)
+	bytes.encode_s32(0, ack)
+	for slot in 2:
+		var at := 4 + slot * 4
+		var direction := -1 if input_blocked else PlayerInput.local_direction_index(slot)
+		var held := 0
+		if not input_blocked:
+			for b in 2:
+				if Input.is_action_pressed(PlayerInput.action_prefix(slot) + PlayerInput.BUTTONS[b]):
+					held |= 1 << b
+		bytes[at] = direction + 1
+		bytes[at + 1] = held
+		bytes[at + 2] = _presses[slot][0]
+		bytes[at + 3] = _presses[slot][1]
+	if bytes == _sent_input:
+		return
+	_sent_input = bytes
+	_c_input.rpc_id(1, bytes)
+	_last_sent = Time.get_ticks_msec()
+
+
+# =====================================================================
+# RPCs: client -> host
+# =====================================================================
+
+@rpc("any_peer", "call_remote", "reliable")
+func _c_input(bytes: PackedByteArray) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role != Role.HOST or not peers.has(sender) or bytes.size() != 12:
+		return
+	_heard(sender)
+	acks[sender] = bytes.decode_s32(0)
+	for slot in 2:
+		var at := 4 + slot * 4
+		var direction := int(bytes[at]) - 1
+		var held := int(bytes[at + 1])
+		PlayerInput.set_remote(sender, slot, direction,
+				[held & 1 != 0, held & 2 != 0], [int(bytes[at + 2]), int(bytes[at + 3])])
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _c_claim(tank: int) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role != Role.HOST or not peers.has(sender) or tank < 0 or tank > 1:
+		return
+	_heard(sender)
+	var scene := get_tree().current_scene
+	if scene and scene.has_method(&"net_claim"):
+		scene.net_claim(PlayerInput.controller_key(sender, 0), tank)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _c_alive() -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role == Role.HOST and peers.has(sender):
+		_heard(sender)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _c_bye() -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role == Role.HOST and _mp != null:
+		_drop_peer.call_deferred(sender)  # not from inside the poll delivering this
+
+
+# =====================================================================
+# RPCs: host -> clients
+# =====================================================================
+
+@rpc("authority", "call_remote", "reliable")
+func _h_session(info: Dictionary) -> void:
+	if role != Role.CLIENT:
+		return
+	_heard(1)
+	peers.clear()
+	for entry: Array in info.get("peers", []):
+		if entry.size() == 4:
+			peers[int(entry[0])] = {"name": str(entry[1]), "allow": [bool(entry[2]), bool(entry[3])]}
+	var seats: Array = info.get("seats", [])
+	if seats.size() == 2:
+		PlayerInput.seats = [int(seats[0]), int(seats[1])]
+		PlayerInput.seats_changed.emit()
+	lock_new = bool(info.get("lock", false))
+	var got_lobby: Variant = info.get("lobby", {})
+	if got_lobby is Dictionary:
+		lobby = got_lobby
+	session_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_screen(screen: String) -> void:
+	if role != Role.CLIENT:
+		return
+	_heard(1)
+	host_screen = screen
+	var tree := get_tree()
+	var current := tree.current_scene.scene_file_path if tree.current_scene else ""
+	if screen == SCREEN_LOBBY and current != LOBBY_SCENE:
+		tree.change_scene_to_file(LOBBY_SCENE)
+	elif screen == SCREEN_GAME and current != GAME_SCENE:
+		tree.change_scene_to_file(GAME_SCENE)
+	session_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_notice(kind: String, name: String) -> void:
+	if role == Role.CLIENT:
+		_heard(1)
+		var text := notice_text(kind, clean_name(name))
+		if not text.is_empty():
+			notice_posted.emit(text)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_rumble(slot: int, weak: float, strong: float, duration: float) -> void:
+	if role == Role.CLIENT and slot >= 0 and slot < 2:
+		InputSettings.rumble(slot, clampf(weak, 0.0, 1.0), clampf(strong, 0.0, 1.0), clampf(duration, 0.0, 2.0))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_alive() -> void:
+	if role == Role.CLIENT:
+		_heard(1)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_bye(reason: String) -> void:
+	if role == Role.CLIENT:
+		_end_reason = reason

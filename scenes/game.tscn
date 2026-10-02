@@ -296,18 +296,6 @@ theme_override_font_sizes/font_size = 32
 text = "20"
 horizontal_alignment = 1
 
-[node name="CreditLabel" type="Label" parent="HUD/RightPanel"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 155.0
-offset_right = 154.0
-offset_bottom = 170.0
-theme_override_font_sizes/font_size = 20
-theme_override_colors/font_color = Color(0.3, 0.8, 1.0, 1)
-text = "Credit: 3"
-horizontal_alignment = 1
-clip_text = true
-
 [node name="P2Hits" type="Label" parent="HUD/RightPanel"]
 visible = false
 layout_mode = 0

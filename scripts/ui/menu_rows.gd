@@ -125,6 +125,27 @@ static func make_tab_row(titles: Array[String], prev_hint: String, next_hint: St
 	return row
 
 
+## "NAME   [ text field ]" — a row with a field to type in, "Field", which takes
+## the keys after a click on it (the host gives it the focus when the row is
+## pressed, and takes it back on Esc).
+static func make_field_row(title: String, max_length: int, placeholder: String) -> Button:
+	var row := make_row()
+	var layout := layout_of(row)
+	layout.add_child(_make_name_label(title))
+	var field := LineEdit.new()
+	field.name = "Field"
+	field.theme_type_variation = &"FieldEdit"
+	field.max_length = max_length
+	field.placeholder_text = placeholder
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	field.focus_mode = Control.FOCUS_CLICK
+	field.caret_blink = true
+	field.context_menu_enabled = false
+	layout.add_child(field)
+	return row
+
+
 ## "NAME                    hint" — a row that runs an action when pressed.
 static func make_action_row(title: String, hint: String) -> Button:
 	var row := make_row()
@@ -149,6 +170,16 @@ static func layout_of(row: Button) -> HBoxContainer:
 
 static func value_label(row: Button) -> Label:
 	return row.get_node("Layout/Value") as Label
+
+
+## A field row's text field.
+static func field(row: Button) -> LineEdit:
+	return row.get_node("Layout/Field") as LineEdit
+
+
+## A row's name label, on the left.
+static func name_label(row: Button) -> Label:
+	return row.get_node("Layout/Name") as Label
 
 
 ## The [param index]th slot of a slot row.

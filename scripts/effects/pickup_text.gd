@@ -71,6 +71,7 @@ var _t := 0.0
 ## Shows [param cookie_type]'s words for an item taken at [param at] (its
 ## centre). Returns null for an item with no words.
 static func spawn(parent: Node, cookie_type: int, at: Vector2) -> PickupText:
+	NetHostWorld.record(NetWorld.EV_PICKUP_TEXT, [cookie_type, at.x, at.y])
 	if not WORDS.has(cookie_type):
 		return null
 	var text := PickupText.new()

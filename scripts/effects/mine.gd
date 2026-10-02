@@ -23,6 +23,7 @@ extends Area2D
 ## rule; the original hit it as it was thrown, let an add-on soak the hit and
 ## never threw a memory-save tank.
 ## Opposing explosions set mines off too, so fields chain. Bullets never do.
+## A player's bomb sets every mine off at once, sparing the players (Sean).
 
 const TILE_SIZE: int = 32
 
@@ -69,6 +70,7 @@ func setup(p_cell: Vector2i, p_level: int, p_from_player: bool, p_level_manager:
 
 
 func _ready() -> void:
+	add_to_group(NetWorld.GROUP)
 	z_index = 0  # on the ground, below tanks (Playfield subtree draws before Entities)
 	collision_layer = 0
 	set_collision_mask_value(3, true)  # player_tanks
@@ -96,6 +98,12 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_age += delta
+	if Net.is_client():
+		# Only its frames run here: when it shows, and how clearly, is the host's.
+		if _age > ARM_TIME:
+			_armed = true
+			_show_frame()
+		return
 	if _age <= ARM_TIME:
 		return  # still deploying: hidden, and nothing can touch it
 
@@ -123,8 +131,33 @@ func is_armed() -> bool:
 	return _armed and not _triggered
 
 
-## Go off with no one on it: the blast alone. Used when an explosion reaches it.
-func set_off() -> void:
+# --- Online (NetWorld): a mine is its level and side, how long it has lain
+# (its frames go by that), and whether and how clearly it shows. ---
+
+func net_type() -> int:
+	return NetWorld.T_MINE
+
+func net_spawn_args() -> Array:
+	return [level, 1 if from_player else 0, _age]
+
+func net_state() -> Array:
+	return [global_position.x, global_position.y, 1 if visible else 0,
+			_sprite.modulate.a if _sprite else 1.0]
+
+func net_setup(args: Array) -> void:
+	level = clampi(int(args[0]), 0, 3)
+	from_player = int(args[1]) != 0
+	_age = float(args[2])
+
+func net_apply(state: Array) -> void:
+	visible = int(state[2]) != 0
+	if _sprite:
+		_sprite.modulate.a = float(state[3])
+
+
+## Go off with no one on it: the blast alone. Used when an explosion reaches it,
+## and for a player's bomb ([param spare_players]: no player tank takes the blast).
+func set_off(spare_players: bool = false) -> void:
 	if _triggered:
 		return
 	_triggered = true
@@ -132,7 +165,7 @@ func set_off() -> void:
 	if level >= 2:
 		SoundManager.play(&"mine_explode")
 	if _level_manager:
-		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, null, owner_id)
+		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, null, owner_id, spare_players)
 		_level_manager.unregister_mine(self)
 	queue_free()
 

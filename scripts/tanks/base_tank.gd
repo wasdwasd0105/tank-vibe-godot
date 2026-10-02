@@ -105,6 +105,7 @@ var _materialize_saved_layer: int = 0
 func _ready() -> void:
 	health = max_health
 	add_to_group("tanks")
+	add_to_group(NetWorld.GROUP)
 	if shoot_cooldown:
 		shoot_cooldown.timeout.connect(_on_shoot_cooldown_timeout)
 
@@ -719,13 +720,103 @@ func _spawn_explosion() -> void:
 	# tank into image 9, _B_48); otherwise the built-in burst.
 	var frames: Array = ThemeManager.get_tank_explode_frames()
 	if not frames.is_empty():
-		HitEffect.spawn(parent, global_position, frames, ThemeManager.get_tank_explode_duration())
+		HitEffect.spawn(parent, global_position, frames, ThemeManager.get_tank_explode_duration(), "tank")
 		return
 	var explosion_scene := preload("res://scenes/effects/explosion.tscn")
 	var explosion := explosion_scene.instantiate()
 	explosion.global_position = global_position
 	explosion.scale = Vector2(2, 2)  # Larger explosion for 2x2 tanks
 	parent.add_child(explosion)
+	NetHostWorld.record(NetWorld.EV_EXPLOSION, [global_position.x, global_position.y, 2.0])
+
+# =====================================================================
+# Online (NetWorld): a tank's look, streamed from the host to its clients.
+# State: [x, y, facing 0-3, flags, damage flash left, flight altitude, flight
+# tumble, health, add-on bits] and a subclass's own after those.
+# =====================================================================
+
+const NET_MOVING := 1
+const NET_MATERIALIZING := 2
+const NET_FLYING := 4
+## Bits past these are a subclass's.
+const NET_OWN_FLAGS := 8
+const NET_ADDON_BITS: Dictionary = {
+	"moon-shield": 1, "anti-water": 2, "anti-ice": 4, "memory-save": 8,
+}
+## The flight's altitude and tumble glide between snapshots.
+const NET_GLIDES: Array[int] = [5, 6]
+
+func net_spawn_args() -> Array:
+	return []
+
+func net_state() -> Array:
+	var flags := 0
+	if velocity != Vector2.ZERO:
+		flags |= NET_MOVING
+	if is_materializing:
+		flags |= NET_MATERIALIZING
+	if is_flying:
+		flags |= NET_FLYING
+	var addon_bits := 0
+	for addon_name: String in get_addon_names():
+		addon_bits |= int(NET_ADDON_BITS.get(addon_name, 0))
+	return [global_position.x, global_position.y, maxi(FACINGS.find(current_direction), 0), flags,
+			snappedf(maxf(_damage_flash_timer, 0.0), 0.01),
+			_fly_altitude if is_flying else 0.0, _fly_angle if is_flying else 0.0,
+			health, addon_bits]
+
+## A client's tank takes on the host's: facing, whether it drives (the add-ons
+## sit differently still), hidden while it materializes, the flight's size and
+## tumble, the red hit flash and its health. Its own _process draws the rest.
+func net_apply(state: Array) -> void:
+	var facing: Vector2 = FACINGS[clampi(int(state[2]), 0, FACINGS.size() - 1)]
+	if facing != current_direction:
+		current_direction = facing
+		if not is_flying:
+			_update_sprite_direction()
+	var flags := int(state[3])
+	velocity = current_direction if flags & NET_MOVING else Vector2.ZERO
+	var materializing := flags & NET_MATERIALIZING != 0
+	if materializing != is_materializing:
+		is_materializing = materializing
+		_materialize_timer = INF if materializing else 0.0  # the host says when
+		visible = not materializing
+	var flying := flags & NET_FLYING != 0
+	if flying and not is_flying:
+		is_flying = true
+		if sprite:
+			_fly_base_sprite_scale = sprite.scale
+			_fly_base_rotation = sprite.rotation
+		_fly_saved_z = z_index
+		z_index = FLY_Z_INDEX
+	elif not flying and is_flying:
+		is_flying = false
+		z_index = _fly_saved_z
+		if sprite:
+			sprite.scale = _fly_base_sprite_scale
+			sprite.position = Vector2.ZERO
+		_update_sprite_direction()
+	if is_flying and sprite:
+		sprite.scale = _fly_base_sprite_scale * (1.0 + float(state[5]))
+		sprite.rotation = _fly_base_rotation + float(state[6]) * TAU / 256.0
+	var flash := float(state[4])
+	if flash <= 0.0 and _damage_flash_timer > 0.0 and sprite:
+		sprite.modulate = Color.WHITE
+	_damage_flash_timer = flash
+	health = int(state[7])
+	_net_apply_addons(int(state[8]))
+
+## The add-ons named by [param bits] (NET_ADDON_BITS), put on and taken off.
+func _net_apply_addons(_bits: int) -> void:
+	pass
+
+## Which add-on names [param bits] holds.
+static func net_addon_names(bits: int) -> Array[String]:
+	var names: Array[String] = []
+	for addon_name: String in NET_ADDON_BITS:
+		if bits & int(NET_ADDON_BITS[addon_name]):
+			names.append(addon_name)
+	return names
 
 func clamp_to_playfield() -> void:
 	global_position.x = clampf(global_position.x, PLAYFIELD_MIN_X, PLAYFIELD_MAX_X)

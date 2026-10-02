@@ -73,11 +73,7 @@ const MINE_THROW_RUMBLE: Array[float] = [0.6, 0.9, 0.35]
 const KILL_RUMBLE: Array[float] = [0.3, 0.5, 0.15]
 const BOMB_RUMBLE: Array[float] = DEATH_RUMBLE
 
-const MOVE_ACTIONS: Array[String] = ["up", "down", "left", "right"]
-const MOVE_DIRECTIONS: Array[Vector2] = [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]
 const POWERUP_INVINCIBILITY: float = 10.0
-
-var _input_prefix: String = "p1_"
 
 # Player colors
 const PLAYER_COLORS: Array[Color] = [
@@ -108,7 +104,6 @@ var _rapid_special_ammo_progress: int = 0
 
 func _ready() -> void:
 	super._ready()
-	_input_prefix = "p%d_" % (player_id + 1)
 	add_to_group("players")
 
 	# Load persisted stats from GameManager
@@ -150,6 +145,8 @@ func _ready() -> void:
 		sprite.modulate = Color.WHITE
 
 func _physics_process(delta: float) -> void:
+	if Net.is_client():
+		return  # the host drives every tank; this one only shows it
 	if is_materializing:
 		velocity = Vector2.ZERO
 		return
@@ -188,10 +185,10 @@ func _physics_process(delta: float) -> void:
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
-	if Input.is_action_pressed(_input_prefix + "shoot"):
+	if PlayerInput.is_held(player_id, 0):
 		shoot_regular()
-	var auto_secondary_held := secondary_weapon_type in ["rapid", "fire", "explosion", "ap"] and Input.is_action_pressed(_input_prefix + "shoot2")
-	if auto_secondary_held or Input.is_action_just_pressed(_input_prefix + "shoot2"):
+	var auto_secondary_held := secondary_weapon_type in ["rapid", "fire", "explosion", "ap"] and PlayerInput.is_held(player_id, 1)
+	if auto_secondary_held or PlayerInput.is_just_pressed(player_id, 1):
 		shoot_secondary()
 
 # --- Speed & weapon upgrade application ---
@@ -542,7 +539,7 @@ func _check_ice() -> void:
 ## If this tank is sitting on water without a boat, it sinks. Called when the
 ## anti-water addon is lost (e.g. shot off) while afloat.
 func _sink_if_stranded_on_water() -> void:
-	if has_boat or is_flying or not is_instance_valid(self):
+	if has_boat or is_flying or not is_instance_valid(self) or Net.is_client():
 		return
 	var game = get_tree().get_first_node_in_group("game")
 	if not game or not game.has_method("get_level_manager"):
@@ -687,26 +684,71 @@ func _apply_hit_punishment() -> void:
 			GameManager.set_weapon_level(player_id, weapon_level)
 			_apply_weapon_upgrade()
 
-## The way the player is pushing: the strongest of the four directions, so a
-## stick held off the diagonal drives along its main axis. Keys all push at full
-## strength, and a tie keeps the old order: up, down, left, right.
+## The way the player is pushing (PlayerInput.move_direction): this tank's
+## controls offline, whoever took its seat online.
 func _read_move_direction() -> Vector2:
-	var best := Vector2.ZERO
-	var best_strength := 0.0
-	for i in MOVE_ACTIONS.size():
-		var strength := Input.get_action_strength(_input_prefix + MOVE_ACTIONS[i])
-		if strength > best_strength:
-			best_strength = strength
-			best = MOVE_DIRECTIONS[i]
-	return best
+	return PlayerInput.move_direction(player_id)
 
 func _rumble(pattern: Array[float]) -> void:
 	rumble_player(player_id, pattern)
 
+# --- Online (see BaseTank's net_state) ---
+
+## Past the base's flags: invincible (it blinks), and showing the helmet's wreath.
+const NET_INVINCIBLE := NET_OWN_FLAGS
+const NET_WREATH := NET_OWN_FLAGS << 1
+
+func net_type() -> int:
+	return NetWorld.T_PLAYER
+
+func net_spawn_args() -> Array:
+	return [player_id]
+
+## A client's tank for player [param args][0], set before it enters the tree.
+func net_setup(args: Array) -> void:
+	player_id = clampi(int(args[0]), 0, 1)
+
+func net_state() -> Array:
+	var state := super.net_state()
+	var flags: int = state[3]
+	if is_invincible:
+		flags |= NET_INVINCIBLE
+	if is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT:
+		flags |= NET_WREATH
+	state[3] = flags
+	return state
+
+func net_apply(state: Array) -> void:
+	super.net_apply(state)
+	var flags := int(state[3])
+	is_invincible = flags & NET_INVINCIBLE != 0
+	# The wreath shows while more than WREATH_MIN_LEFT is left; the host says
+	# when, so the clock here only has to sit on the right side of it.
+	_helmet_invincible = flags & NET_WREATH != 0
+	invincible_timer = WREATH_MIN_LEFT + 1.0 if _helmet_invincible else (1.0 if is_invincible else 0.0)
+
+func _net_apply_addons(bits: int) -> void:
+	var wanted := BaseTank.net_addon_names(bits)
+	var moon := "moon-shield" in wanted
+	if moon and not has_moon_shield:
+		apply_addon("moon-shield")
+	elif not moon and has_moon_shield:
+		_remove_moon_shield()
+	var utility := ""
+	for addon_name in wanted:
+		if addon_name in UTILITY_ADDONS:
+			utility = addon_name
+	if utility != _current_utility_addon:
+		if utility.is_empty():
+			_remove_utility_addon()
+		else:
+			apply_addon(utility)
+
 ## Rumbles player [param pid]'s controller with [param pattern], their tank on
-## the field or not (a kill by a shell still flying, or by a mine).
+## the field or not (a kill by a shell still flying, or by a mine). Online it's
+## whoever drives that tank, on this machine or a client (Net.rumble_tank).
 static func rumble_player(pid: int, pattern: Array[float]) -> void:
-	InputSettings.rumble(pid, pattern[0], pattern[1], pattern[2])
+	Net.rumble_tank(pid, pattern[0], pattern[1], pattern[2])
 
 func take_damage() -> void:
 	if is_invincible and _hit_grace_frame != Engine.get_process_frames():

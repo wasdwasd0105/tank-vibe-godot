@@ -46,6 +46,7 @@ var _t := 0.0
 ## Shows the score of a kill worth [param points], the [param combo]th of a
 ## combo (1 for a lone kill), over the tank that stood at [param tank_centre].
 static func spawn(parent: Node, points: int, combo: int, tank_centre: Vector2) -> KillText:
+	NetHostWorld.record(NetWorld.EV_KILL_TEXT, [points, combo, tank_centre.x, tank_centre.y])
 	var text := KillText.new()
 	text.setup(points, combo, tank_centre)
 	parent.add_child(text)

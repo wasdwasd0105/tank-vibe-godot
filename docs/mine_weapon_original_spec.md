@@ -208,8 +208,8 @@ The enemy spawn (`0x00499f30`) sets:
 
 So mine tanks 21-24 lay L0/L1/L1/L2 mines up to HARD, and L1/L2/L2/L3 on EXPERT
 and INSANE. The remake's difficulty 1-5 is the original's 1-5; the save
-importer copies it straight across. The remake caps enemy mines at L2 (see
-section 6).
+importer copies it straight across. The remake caps enemy mines at L2 by
+default, and the settings can turn enemy mines off (see section 6).
 
 ## 6. What the remake does differently
 
@@ -236,11 +236,21 @@ section 6).
 
   A tank with both the moon shield and another add-on loses only the moon shield.
 
-- **Enemy mines stop at level 2** (`EnemyTank.ENEMY_MINE_MAX_LEVEL`), by design.
-  The original's type-24 tank lays ringed L3 mines on EXPERT and INSANE; in the
-  remake it lays L2 there. Only the mine is capped: the tank's gun level stays
-  3, and that still sets its landing blast after a mine flight. Player mines
-  still reach L3.
+- **Enemy mines stop at level 2 by default.** The original's type-24 tank lays
+  ringed L3 mines on EXPERT and INSANE; in the remake it lays L2 there. Only the
+  mine is capped: the tank's gun level stays 3, and that still sets its landing
+  blast after a mine flight. Player mines still reach L3.
+- **The settings' GAME tab sets the enemies' mines** (Sean, 2026-10-02: players
+  found the original's mines made the game too hard).
+  - ENEMY MINE LEVEL (`InputSettings.get_enemy_mine_level`) is the strongest
+    mine an enemy lays, counted 1-4 as players do. Its default 3 is the L2 cap
+    above, and 4 lets in the original's ringed L3 mines.
+  - ENEMY MINES off (`InputSettings.get_enemy_mines`): the mine tanks 21-24
+    fire rapid shells instead, at the gun levels of the rapid tanks 5-8
+    (`EnemyTank._apply_weapon`).
+  - Both take effect mid-stage: the mine tanks on the field switch weapon at
+    once, keeping gun levels they took from items, and the enemies' mines
+    already laid are cleared (`LevelManager._on_enemy_mines_changed`).
 - **The flight** is the original's, integrated the same way
   (`BaseTank._update_flying`). The tank moves at 5 × its offset from the mine
   centre per time unit, so driving into a mine (contact about 22 px short of its
@@ -250,6 +260,13 @@ section 6).
   clamp. The original kept the tank's centre 32 px from the left and top edges
   but let it reach the right and bottom edges; the remake keeps the whole tank
   on the field. (Before 2026-09-23 the remake threw tanks to a random spot.)
+- **A player's bomb sets every mine off** (Sean's rule, 2026-09-27). When a
+  player takes the bomb, every mine on the field goes off at once, both sides'
+  and those still being laid (`LevelManager.set_off_all_mines`).
+  - Each makes its own blast, which breaks walls and hurts enemies as usual,
+    but no player tank takes its spray (`ExplosionBlast.spare_players`).
+  - No tank touches a mine this way, so nobody is slowed or thrown either.
+  - The original's bomb only destroyed the enemy tanks.
 - **Chains** are judged once, when the blast appears. Each chained mine then
   goes off as the wave ring reaches it, 50 ms a tile. The original re-tests
   every frame while the wave passes, which gives the same result.

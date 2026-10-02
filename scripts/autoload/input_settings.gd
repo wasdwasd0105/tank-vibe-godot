@@ -2,6 +2,10 @@ extends Node
 
 ## The GAME SPEED setting changed (see save_game_speed).
 signal game_speed_changed
+## ENEMY MINES was switched (see save_enemy_mines).
+signal enemy_mines_changed
+## BASE INVINCIBLE was switched (see save_base_invincible).
+signal base_invincible_changed
 ## A player's controller was asked to rumble with their vibration on, whether
 ## or not one is plugged in (see rumble).
 signal rumbled(player_id: int, weak: float, strong: float, duration: float)
@@ -148,8 +152,8 @@ var _pad_slots: Dictionary = {}
 
 func _ready() -> void:
 	if is_test_run():
-		_save_path = TEST_SAVE_PATH
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_SAVE_PATH))
+		_save_path = test_save_path()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_save_path))
 	load_and_apply()
 	_add_menu_pad_buttons()
 
@@ -160,6 +164,17 @@ static func is_test_run() -> bool:
 		if arg.begins_with("res://scenes/test/"):
 			return true
 	return "--test-settings" in OS.get_cmdline_user_args()
+
+## A test run's settings file. A run given --test-profile=NAME gets its own
+## (user://test_settings_NAME.cfg), so two processes of one test (an online host
+## and its client) never share one.
+static func test_save_path() -> String:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--test-profile="):
+			var profile := arg.get_slice("=", 1).validate_filename()
+			if not profile.is_empty():
+				return "user://test_settings_%s.cfg" % profile
+	return TEST_SAVE_PATH
 
 ## The settings file in use: the player's, or a test run's own.
 func get_save_path() -> String:
@@ -536,19 +551,50 @@ func save_map_pool(pool_id: String) -> void:
 func get_saved_map_pool() -> String:
 	return _config.get_value("game", "map_pool", "")
 
-func save_max_credits(value: int) -> void:
-	_config.set_value("game", "max_credits", clampi(value, 1, 50))
-	_config.save(_save_path)
-
-func get_saved_max_credits() -> int:
-	return _config.get_value("game", "max_credits", 3)
-
 func save_difficulty(value: int) -> void:
 	_config.set_value("game", "difficulty", clampi(value, 1, 5))
 	_config.save(_save_path)
 
 func get_saved_difficulty() -> int:
 	return _config.get_value("game", "difficulty", 1)
+
+## ENEMY MINES: whether the mine tanks lay mines. Off, they fire rapid shells
+## instead (EnemyTank); players found the original's mines made it too hard.
+func save_enemy_mines(on: bool) -> void:
+	_config.set_value("game", "enemy_mines", on)
+	_config.save(_save_path)
+	enemy_mines_changed.emit()
+
+func get_enemy_mines() -> bool:
+	var on: Variant = _config.get_value("game", "enemy_mines", true)
+	return on if on is bool else true
+
+## BASE INVINCIBLE: no shell can destroy the base (Bullet._hit_base), and its
+## flag shows the guard for as long as it's on. Off out of the box.
+func save_base_invincible(on: bool) -> void:
+	_config.set_value("game", "base_invincible", on)
+	_config.save(_save_path)
+	base_invincible_changed.emit()
+
+func get_base_invincible() -> bool:
+	var on: Variant = _config.get_value("game", "base_invincible", false)
+	return on if on is bool else false
+
+## ENEMY MINE LEVEL: the strongest mine an enemy lays, as players count mine
+## levels (1-4; Mine.level is 0-3). Out of the box 3, Sean's old cap: the ringed
+## level-4 mines the original's toughest mine tank laid on EXPERT and INSANE
+## stay out.
+const ENEMY_MINE_LEVEL_MIN := 1
+const ENEMY_MINE_LEVEL_MAX := 4
+const DEFAULT_ENEMY_MINE_LEVEL := 3
+
+func save_enemy_mine_level(level: int) -> void:
+	_config.set_value("game", "enemy_mine_level", clampi(level, ENEMY_MINE_LEVEL_MIN, ENEMY_MINE_LEVEL_MAX))
+	_config.save(_save_path)
+
+func get_enemy_mine_level() -> int:
+	var level: Variant = _config.get_value("game", "enemy_mine_level", DEFAULT_ENEMY_MINE_LEVEL)
+	return clampi(level, ENEMY_MINE_LEVEL_MIN, ENEMY_MINE_LEVEL_MAX) if level is int else DEFAULT_ENEMY_MINE_LEVEL
 
 ## The original's game speeds, in percent: its clock ran at speed / 75 ticks a
 ## millisecond (0x4c7a3b; table 0x4d3c58), 100 % unless changed in its options.
@@ -590,6 +636,74 @@ func save_import_dir(purpose: String, path: String) -> void:
 
 func get_saved_import_dir(purpose: String) -> String:
 	return _config.get_value("import", purpose + "_dir", "")
+
+# =====================================================================
+# Online play: hosting (the pause menu's ONLINE tab) and the ONLINE BATTLE list
+# =====================================================================
+
+## The game's default port (Net.DEFAULT_PORT; not named here, as Net loads after
+## this).
+const DEFAULT_ONLINE_PORT: int = 24680
+## Hosting lets in up to this many remote players (Net.MAX_CLIENTS).
+const MAX_HOST_PLAYERS: int = 3
+
+## The port, password ("" for none) and most remote players a game opened to
+## others uses.
+func save_host_settings(port: int, password: String, max_players: int) -> void:
+	_config.set_value("online", "port", port)
+	_config.set_value("online", "host_password", password)
+	_config.set_value("online", "max_players", clampi(max_players, 1, MAX_HOST_PLAYERS))
+	_config.save(_save_path)
+
+func get_online_port() -> int:
+	var value: Variant = _config.get_value("online", "port", DEFAULT_ONLINE_PORT)
+	return value if value is int and value > 0 and value < 65536 else DEFAULT_ONLINE_PORT
+
+func get_host_password() -> String:
+	var value: Variant = _config.get_value("online", "host_password", "")
+	return value if value is String else ""
+
+func get_host_max_players() -> int:
+	var value: Variant = _config.get_value("online", "max_players", MAX_HOST_PLAYERS)
+	return clampi(value, 1, MAX_HOST_PLAYERS) if value is int else MAX_HOST_PLAYERS
+
+## The name the player goes by online: the one their most recently used
+## connection plays under, or PLAYER.
+func get_online_name() -> String:
+	var newest: Dictionary = {}
+	for connection: Dictionary in get_online_connections():
+		if newest.is_empty() or connection["used"] > newest["used"]:
+			newest = connection
+	return newest.get("name", "PLAYER")
+
+## The games the player has saved on the ONLINE BATTLE screen, each as
+## {"name": the name to play as, "address": the host's, as typed,
+## "password": the game's ("" for none), "used": when it was saved or last
+## connected to (Unix time), "joined": when it last got in (local ISO date and
+## time, "" never)}. Entries that aren't whole are left out.
+func get_online_connections() -> Array[Dictionary]:
+	var connections: Array[Dictionary] = []
+	var saved: Variant = _config.get_value("online", "connections", [])
+	if not saved is Array:
+		return connections
+	for entry: Variant in saved:
+		if not entry is Dictionary:
+			continue
+		var name: Variant = entry.get("name")
+		var address: Variant = entry.get("address")
+		if not name is String or not address is String or (name as String).is_empty() \
+				or (address as String).is_empty():
+			continue
+		connections.append({"name": name, "address": address, "password": str(entry.get("password", "")),
+				"used": float(entry.get("used", 0.0)), "joined": str(entry.get("joined", ""))})
+	return connections
+
+func save_online_connections(connections: Array[Dictionary]) -> void:
+	_config.set_value("online", "connections", connections)
+	for old_key: String in ["address", "name"]:  # the last address and name, from before the list
+		if _config.has_section_key("online", old_key):
+			_config.erase_section_key("online", old_key)
+	_config.save(_save_path)
 
 # =====================================================================
 # Audio volume persistence (0.0 - 1.0)

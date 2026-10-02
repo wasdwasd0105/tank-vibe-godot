@@ -8,7 +8,6 @@ F11   FULLSCREEN,F11   全屏
 MOUSE   CLICK TO SELECT,鼠标   点击选择
 MAP,地图
 IMPORT MAP,导入地图
-CREDITS,投币数
 DIFFICULTY,难度
 EASY,容易
 NORMAL,中等
@@ -36,6 +35,10 @@ ON,开
 OFF,关
 ALWAYS FULLSCREEN,总是全屏
 GAME SPEED,游戏速度
+GAME,游戏
+BASE INVINCIBLE,基地无敌
+ENEMY MINES,敌方地雷
+ENEMY MINE LEVEL,敌方地雷等级
 LANGUAGE,语言
 %s CONTROLS,%s 按键
 KEYBOARD,键盘
@@ -97,7 +100,6 @@ Paddle 4,背键 4
 Button %d,按钮 %d
 Axis %d%s,轴 %d%s
 PRESS FIRE TO JOIN,按开火键加入
-CREDITS   %d,投币   %d
 Each player presses their fire button to join   ·   fire again to start   ·   Esc goes back,各自按开火键加入   ·   再按一次开始   ·   Esc 返回
 START,开始
 PLAYER %d,玩家 %d
@@ -106,7 +108,6 @@ OR PAD,或手柄
 TO JOIN,加入
 TO START,开始
 READY,已就绪
-NO CREDITS,投币已用完
 No saved games yet.\nThe game saves automatically after every cleared stage.,还没有存档。\n每通过一关，游戏都会自动存档。
 "Click a save to continue it   ·   MORE changes its map, duplicates, exports or deletes it   ·   Esc goes back",点击存档继续游戏   ·   「更多」可更换地图、复制、导出或删除   ·   Esc 返回
 IMPORT,导入
@@ -154,3 +155,78 @@ RESULTS,战斗成绩
 TOTAL,总计
 BATTLE TANK,坦克决战
 Battle Tank,坦克决战
+ONLINE,联网
+YOUR NAME,你的名字
+ADDRESS,地址
+Enter the host's address first.,请先输入主机的地址。
+That port isn't a number from 1 to 65535.,端口必须是 1 到 65535 之间的数字。
+Connecting to %s : %d ...,正在连接 %s : %d ……
+Joined %s's game. Waiting for the host...,已加入 %s 的游戏，等待主机……
+Stopped connecting.,已停止连接。
+ONLINE BATTLE,联网对战
+CREATE,新建
+EDIT,编辑
+CONNECT,连接
+USERNAME,用户名
+PASSWORD,密码
+OPTIONAL,选填
+JOIN,加入
+SAVE,保存
+CANCEL,取消
+NEW CONNECTION,新建连接
+EDIT CONNECTION,编辑连接
+PASSWORD SAVED,已存密码
+NOT JOINED YET,还没加入过
+JOINED %s,加入于 %s
+"No saved connections yet.\nCREATE adds one: your name, the host's address, and the game's password if it has one.",还没有保存的连接。\n「新建」一个：填上你的名字、主机的地址，游戏有密码的话再填密码。
+"Click a connection to join its game   ·   MORE connects, edits or deletes it   ·   Esc goes back",点击连接即加入游戏   ·   「更多」可连接、编辑或删除   ·   Esc 返回
+CONNECT joins its game   ·   EDIT changes it   ·   DELETE removes it   ·   Esc closes,连接：加入这局游戏   ·   编辑：修改这个连接   ·   删除：移除这个连接   ·   Esc 关闭
+Press CONFIRM? again to delete this connection. Moving away cancels.,再按一次「确定？」即删除此连接，移开则取消。
+"Click a field, or press Enter on it, to type   ·   Enter moves on   ·   Esc closes",点击输入栏或在上面按回车即可输入   ·   回车跳到下一栏   ·   Esc 关闭
+"ADDRESS: the host's IP address or name, with :PORT if its port isn't %d",地址：主机的 IP 地址或名称；端口不是 %d 时在后面加上「:端口」
+This game needs a password.,这局游戏需要密码。
+Wrong password.,密码不对。
+The host has ended the game.,游戏主机已经结束了游戏。
+The host removed you from the game.,游戏主机结束了您的游戏。
+The connection to the host was lost.,跟游戏主机失去联系。
+No game answered at that address.,这个地址没有游戏回应。
+The host is running a different version.,游戏主机的版本跟您的版本不一样。
+That game is full.,这局游戏人数已满。
+The host isn't letting new players in.,游戏主机不允许新玩家加入。
+Enter a name first.,请先输入名字。
+That port is in use. Try another.,这个端口已被占用，请换一个。
+ONLINE GAME,联网游戏
+SHARE YOUR ADDRESS:   %s,你的地址：   %s
+HOSTED BY %s,主机：%s
+Press fire to take a tank   ·   fire again or START to begin   ·   Esc ends the online game,按开火键接手坦克   ·   再按一次或按开始即开战   ·   Esc 结束联网游戏
+Press fire to take a tank   ·   the host starts the game   ·   Esc leaves,按开火键接手坦克   ·   由主机开始游戏   ·   Esc 离开
+TO TAKE IT,接手
+WAITING FOR A DRIVER,等待玩家接手
+PLAYERS   %s,玩家   %s
+MENU,菜单
+LEAVE GAME,离开游戏
+WHO MAY DRIVE WHICH TANK,谁可以控制哪辆坦克
+P1 + P2,P1 + P2
+P1 ONLY,仅 P1
+P2 ONLY,仅 P2
+WATCH ONLY,只能观看
+DRIVING P%d,正在控制 P%d
+KICK,踢出
+GENERAL,常规
+ALLOW REMOTE PLAYERS,允许远程玩家加入
+PORT,端口
+MAX PLAYERS,最多玩家
+%d + YOU,%d + 你
+YOUR ADDRESS,你的地址
+CONNECTED PLAYERS   %d / %d,已连接的玩家   %d / %d
+NO ONE YET,还没有人
+WATCHING,观看中
+HOST,主机
+Turn ALLOW REMOTE PLAYERS on to open this game to others.,打开「允许远程玩家加入」，这局游戏就向其他人开放。
+Nobody new can join. The players here stay.,新玩家不能加入，已经在的玩家留下。
+Open: others join from ONLINE BATTLE at YOUR ADDRESS.,已开放：其他人在「联网对战」输入「你的地址」即可加入。
+The port can't change while the game is open.,游戏开放期间不能更改端口。
+COPIED: %s,已复制：%s
+PAUSED BY THE HOST,主机已暂停
+%s joined the game.,（系统信息）%s 加入游戏。
+%s left the game.,（系统信息）%s 离开游戏。

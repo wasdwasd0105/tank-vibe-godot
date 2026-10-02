@@ -8,7 +8,11 @@ var _frame_time: float = 0.025
 var _time: float = 0.0
 
 
-static func spawn(parent: Node, at: Vector2, frames: Array, duration: float) -> HitEffect:
+## [param net_key] names the frames for the clients of an online game: "tank"
+## for a tank's explosion, else the shot's style (ThemeManager.get_hit_frames).
+static func spawn(parent: Node, at: Vector2, frames: Array, duration: float, net_key: String = "") -> HitEffect:
+	if not net_key.is_empty():
+		NetHostWorld.record(NetWorld.EV_HIT, [net_key, at.x, at.y])
 	var fx := HitEffect.new()
 	fx._frames = frames
 	fx._frame_time = duration / frames.size()

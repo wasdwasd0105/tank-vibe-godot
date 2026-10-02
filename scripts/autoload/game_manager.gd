@@ -1,5 +1,8 @@
 extends Node
 
+## The game's difficulty was changed while it runs (set_difficulty).
+signal difficulty_changed
+
 var current_stage: int = 1
 var player_active: Array[bool] = [false, false]
 ## An active player sitting out (the pause menu's PLAYER 2 option): no tank on the
@@ -11,10 +14,6 @@ var enemies_frozen: bool = false
 var players_frozen: bool = false
 var players_freeze_timer: float = 0.0
 var current_map_pool_id: String = ""
-
-# --- Credits (shared between both players) ---
-var credits: int = 3
-var max_credits: int = 3
 
 # --- Difficulty ---
 ## The original's hardest level, which only looping the map reaches.
@@ -62,6 +61,8 @@ func _ready() -> void:
 	pass
 
 func _process(delta: float) -> void:
+	if Net.is_client():
+		return  # online, a client's copy of these is the host's
 	if enemies_frozen:
 		freeze_timer -= delta
 		if freeze_timer <= 0:
@@ -77,7 +78,6 @@ func reset() -> void:
 	is_game_over = false
 	enemies_frozen = false
 	players_frozen = false
-	credits = max_credits
 	player_active = [false, false]
 	player_disabled = [false, false]
 	player_lives = [3, 3]
@@ -121,6 +121,16 @@ func advance_stage() -> void:
 		current_stage = 1  # Loop back to stage 1
 		difficulty = mini(difficulty + 1, MAX_DIFFICULTY)  # Increase difficulty on map loop
 
+## The DIFFICULTY setting (1-5). Unlike the original, which fixed it when a game
+## began, it can change any time: a running stage takes it up at once
+## (EnemySpawner.apply_difficulty), and new games start from it.
+func set_difficulty(value: int) -> void:
+	value = clampi(value, 1, MAX_DIFFICULTY)
+	InputSettings.save_difficulty(value)
+	if value != difficulty:
+		difficulty = value
+		difficulty_changed.emit()
+
 func get_max_stages() -> int:
 	return LevelData.get_stage_count()
 
@@ -157,18 +167,15 @@ func add_life(player_id: int) -> void:
 	player_lives[player_id] += 1
 	SoundManager.play(&"extra_life")
 
-func join_player(player_id: int) -> bool:
-	if credits <= 0:
-		return false
-	credits -= 1
+## [param player_id] joins the game. Credits are unlimited (Sean, 2026-10-02):
+## joining, and coming back in after a game over, never runs out.
+func join_player(player_id: int) -> void:
 	player_active[player_id] = true
 	player_lives[player_id] = 3
-	return true
 
-func rejoin_player(player_id: int) -> bool:
-	if credits <= 0:
-		return false
-	credits -= 1
+## [param player_id], out of lives, comes back in with fresh lives and a fresh
+## tank, as often as they like.
+func rejoin_player(player_id: int) -> void:
 	player_lives[player_id] = 3
 	player_speed_levels[player_id] = 1
 	player_weapon_levels[player_id] = 0
@@ -177,7 +184,6 @@ func rejoin_player(player_id: int) -> bool:
 	player_hp[player_id] = 4
 	player_addons[player_id] = []
 	Events.player_joined.emit(player_id)
-	return true
 
 func is_any_player_active() -> bool:
 	return player_active[0] or player_active[1]
@@ -276,7 +282,6 @@ func freeze_all_players(duration: float) -> void:
 ## Used by "Restart Stage" in the pause menu to restore state.
 func save_stage_start_snapshot() -> void:
 	_stage_start_snapshot = {
-		"credits": credits,
 		"player_active": [player_active[0], player_active[1]],
 		"player_lives": [player_lives[0], player_lives[1]],
 		"player_scores": [player_scores[0], player_scores[1]],
@@ -292,7 +297,6 @@ func save_stage_start_snapshot() -> void:
 func restore_stage_start_snapshot() -> void:
 	if _stage_start_snapshot.is_empty():
 		return
-	credits = _stage_start_snapshot["credits"]
 	player_active = [_stage_start_snapshot["player_active"][0], _stage_start_snapshot["player_active"][1]]
 	player_lives = [_stage_start_snapshot["player_lives"][0], _stage_start_snapshot["player_lives"][1]]
 	player_scores = [_stage_start_snapshot["player_scores"][0], _stage_start_snapshot["player_scores"][1]]

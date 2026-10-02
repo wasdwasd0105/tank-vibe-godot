@@ -36,6 +36,7 @@ func setup(type: int, delay: float = 0.0, origin: Vector2 = Vector2.ZERO) -> voi
 
 func _ready() -> void:
 	add_to_group("cookies")
+	add_to_group(NetWorld.GROUP)
 	body_entered.connect(_on_body_entered)
 	# Set collision
 	set_collision_layer_value(7, true)  # powerups layer
@@ -69,6 +70,8 @@ func _ready() -> void:
 		set_deferred("monitoring", false)
 
 func _process(delta: float) -> void:
+	if Net.is_client():
+		return  # the host sprays, times and hands out every item; this one only shows it
 	# Spray animation: arc from origin to target
 	if _is_spraying:
 		_spray_timer += delta
@@ -136,7 +139,30 @@ func _process(delta: float) -> void:
 	if _lifetime > _despawn_time:
 		queue_free()
 
+# --- Online (NetWorld): an item is its type, where it is, its size (it grows
+# as it's sprayed out) and how faded it is (it breathes out as it expires).
+
+const NET_GLIDES: Array[int] = [2, 3]
+
+func net_type() -> int:
+	return NetWorld.T_COOKIE
+
+func net_spawn_args() -> Array:
+	return [cookie_type]
+
+func net_state() -> Array:
+	return [global_position.x, global_position.y, scale.x, modulate.a]
+
+func net_setup(args: Array) -> void:
+	cookie_type = int(args[0])
+
+func net_apply(state: Array) -> void:
+	scale = Vector2.ONE * float(state[2])
+	modulate.a = float(state[3])
+
 func _on_body_entered(body: Node2D) -> void:
+	if Net.is_client():
+		return
 	if _pickup_delay > 0.0 or is_queued_for_deletion():
 		return  # cannot be picked up yet, or already taken this frame
 	if body is PlayerTank:

@@ -25,12 +25,19 @@ var _spawn_queue: Array = []
 var _active_enemies: int = 0
 var _total_spawned: int = 0
 var _halted: bool = false
+## The stage being played (0: none), and per type id how many of its enemies
+## have come on the field and how many reinforcements were added: what a change
+## of difficulty mid-stage counts from (apply_difficulty).
+var _stage_num: int = 0
+var _sent_by_type: Dictionary = {}
+var _extra_by_type: Dictionary = {}
 
 @onready var spawn_timer: Timer = $SpawnTimer
 
 func _ready() -> void:
 	if spawn_timer:
 		spawn_timer.timeout.connect(_on_spawn_timer_timeout)
+	GameManager.difficulty_changed.connect(apply_difficulty)
 
 ## Readies [param stage_num]'s enemies and starts sending them in at once.
 func start_stage(stage_num: int) -> void:
@@ -44,14 +51,40 @@ func prepare_stage(stage_num: int) -> void:
 	_total_spawned = 0
 	_active_enemies = 0
 	_halted = false
+	_stage_num = stage_num
+	_sent_by_type.clear()
+	_extra_by_type.clear()
 
 	# Every tank the stage lists, as many as the difficulty sends
 	_spawn_queue = LevelData.get_enemy_spawn_queue(stage_num, GameManager.difficulty)
 
 	GameManager.enemies_remaining = _spawn_queue.size()
 
-	# Worked out once a stage, as the original did; the players don't change it.
+	# Worked out once a stage, as the original did; the players don't change it
+	# (a change of difficulty does: apply_difficulty).
 	max_concurrent_enemies = LevelData.get_max_concurrent(stage_num, GameManager.difficulty)
+
+## The difficulty changed mid-stage (the settings' GAME tab), which the original
+## never allowed: of each type, as many come in all as the new difficulty sends,
+## less those already sent, with any reinforcements still on top; the limit on
+## the field follows. The enemies on the field stay as they are.
+func apply_difficulty() -> void:
+	if _stage_num <= 0 or _halted:
+		return
+	var totals := {}
+	for type_id: int in LevelData.get_enemy_spawn_queue(_stage_num, GameManager.difficulty):
+		totals[type_id] = totals.get(type_id, 0) + 1
+	for type_id: int in _extra_by_type:
+		totals[type_id] = totals.get(type_id, 0) + _extra_by_type[type_id]
+	var queue: Array = []
+	for type_id: int in totals:
+		for _i in maxi(totals[type_id] - _sent_by_type.get(type_id, 0), 0):
+			queue.append(type_id)
+	GameManager.enemies_remaining += queue.size() - _spawn_queue.size()
+	_spawn_queue = queue
+	max_concurrent_enemies = LevelData.get_max_concurrent(_stage_num, GameManager.difficulty)
+	if _spawn_queue.is_empty() and _active_enemies <= 0:
+		Events.all_enemies_defeated.emit()
 
 ## Starts sending the enemies in: the first wave after [param first_delay]
 ## seconds (at once for 0), then wave after wave until the stage ends. A stage
@@ -100,6 +133,7 @@ func _spawn_enemy() -> bool:
 		return false
 	var spawn_pos := _spot_centre(lm, spot)
 	var type_id := _take_type()
+	_sent_by_type[type_id] = _sent_by_type.get(type_id, 0) + 1
 
 	var enemy_scene := preload("res://scenes/tanks/enemy_tank.tscn")
 	var enemy: EnemyTank = enemy_scene.instantiate()
@@ -209,6 +243,7 @@ func add_reinforcements(taker_type: int) -> void:
 		types.append(taker_type)
 	for type_id in types:
 		_spawn_queue.append(type_id)
+		_extra_by_type[type_id] = _extra_by_type.get(type_id, 0) + 1
 		GameManager.enemies_remaining += 1
 		SoundManager.play(&"extra_life")
 	# The waves run until the stage ends; should they have stopped, they start again.

@@ -7,6 +7,10 @@ extends BaseTank
 
 var special_weapon_type: String = "none"
 var special_weapon_level: int = 0
+## The gun level its type came on the field with, at the difficulty then. A hit
+## it survives knocks back out what items gave it above this; a difficulty
+## changed mid-stage leaves it be, so lowering one shakes no gun items loose.
+var _base_weapon_level: int = 0
 var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
@@ -44,9 +48,14 @@ const ENEMY_EXPLOSION_COOLDOWN_MAX: float = 3.5
 const ENEMY_MINE_CHANCE: float = 0.25
 const ENEMY_MINE_COOLDOWN_MIN: float = 2.5
 const ENEMY_MINE_COOLDOWN_MAX: float = 4.5
-## Enemy mines stop at level 2. The original let the toughest mine tank lay
-## ringed level-3 mines on EXPERT and INSANE; the remake leaves those out.
-const ENEMY_MINE_MAX_LEVEL: int = 2
+## With ENEMY MINES off, the mine tanks (21-24) fire rapid shells, at the gun
+## levels of their rapid counterparts (5-8), sixteen types back.
+const MINE_TO_RAPID_TYPE: int = 16
+## The special weapons fired as shells: their tanks may have this many in
+## flight. The plain gun, which mine tanks fire too, has one at a time.
+const SHELL_SPECIALS: Array[String] = ["rapid", "fire", "explosion", "ap"]
+const SHELL_SPECIAL_MAX_BULLETS: int = 12
+const PLAIN_MAX_BULLETS: int = 1
 
 const ENEMY_AP_CHANCE: float = 0.4
 const ENEMY_AP_COOLDOWN_MIN: float = 1.5
@@ -165,10 +174,9 @@ func _ready() -> void:
 	health = max_health
 	bullet_speed = stats["bullet_speed"]
 	points_value = stats["points"]
-	special_weapon_type = CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none")
-	special_weapon_level = CookieData.get_enemy_weapon_level(tank_type_id, GameManager.difficulty)
-	if special_weapon_type == "rapid" or special_weapon_type == "fire" or special_weapon_type == "explosion" or special_weapon_type == "ap":
-		max_bullets = 12
+	_apply_weapon()
+	special_weapon_level = _base_weapon_level
+	InputSettings.enemy_mines_changed.connect(_on_enemy_mines_changed)
 	current_direction = Vector2.DOWN
 	_direction_change_timer = randf_range(1.0, 3.0)
 	_shoot_cooldown = randf_range(0.5, 2.0)
@@ -223,6 +231,8 @@ func _sync_frost_overlay() -> void:
 		_frost_shown = false
 
 func _physics_process(delta: float) -> void:
+	if Net.is_client():
+		return  # the host drives every tank; this one only shows it
 	_tick_afloat()
 	if is_materializing:
 		velocity = Vector2.ZERO
@@ -615,8 +625,32 @@ func _has_explosion_special() -> bool:
 func _has_mine_special() -> bool:
 	return special_weapon_type == "mine"
 
+## The weapon its type carries, as ENEMY MINES has it: with mines off, a mine
+## tank fires rapid shells instead, at its rapid counterpart's gun level. Sets
+## the level it starts from, and how many shells it may have in flight.
+func _apply_weapon() -> void:
+	var weapon: String = CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none")
+	var level_type := tank_type_id
+	if weapon == "mine" and not InputSettings.get_enemy_mines():
+		weapon = "rapid"
+		level_type -= MINE_TO_RAPID_TYPE
+	special_weapon_type = weapon
+	_base_weapon_level = CookieData.get_enemy_weapon_level(level_type, GameManager.difficulty)
+	max_bullets = SHELL_SPECIAL_MAX_BULLETS if weapon in SHELL_SPECIALS else PLAIN_MAX_BULLETS
+
+## ENEMY MINES switched with this tank on the field (the pause menu): a mine
+## tank changes weapon at once, keeping the gun levels items gave it.
+func _on_enemy_mines_changed() -> void:
+	if CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none") != "mine":
+		return
+	var gained := special_weapon_level - _base_weapon_level
+	_apply_weapon()
+	special_weapon_level = clampi(_base_weapon_level + gained, 0, MAX_ITEM_GUN)
+
+## A mine at the tank's gun level, held to the ENEMY MINE LEVEL setting (1-4 as
+## players count them, so a mine level one lower).
 func _lay_mine_special() -> bool:
-	if not _place_mine(mini(special_weapon_level, ENEMY_MINE_MAX_LEVEL)):
+	if not _place_mine(mini(special_weapon_level, InputSettings.get_enemy_mine_level() - 1)):
 		return false
 	# The original sounded every special weapon, enemies' included; only the
 	# plain gun was silent for them.
@@ -816,7 +850,15 @@ func promote_type() -> void:
 	if tank_type_id % 2 == 0:
 		return
 	tank_type_id += 1
+	_base_weapon_level = maxi(_base_weapon_level, _promoted_base_level())
 	_apply_type_look()
+
+## The gun level the stronger type starts with, for the weapon fired now.
+func _promoted_base_level() -> int:
+	var level_type := tank_type_id
+	if CookieData.TYPE_WEAPON_MAP.get(tank_type_id, "none") == "mine" and special_weapon_type == "rapid":
+		level_type -= MINE_TO_RAPID_TYPE
+	return CookieData.get_enemy_weapon_level(level_type, GameManager.difficulty)
 
 ## The tank's picture for its type, from the theme.
 func _apply_type_look() -> void:
@@ -876,7 +918,7 @@ func destroy() -> void:
 ## else a speed step ("Speed Up"). So what an enemy took can be won back
 ## (Tank.exe's Damage, 0x00492763).
 func _lose_an_upgrade() -> void:
-	if special_weapon_level > CookieData.get_enemy_weapon_level(tank_type_id, GameManager.difficulty):
+	if special_weapon_level > _base_weapon_level:
 		special_weapon_level -= 1
 		_spawn_cookie_at_position(CookieData.CookieType.WEAPONS_UP)
 	elif move_speed > _type_speed():
@@ -917,7 +959,7 @@ func _remove_addon(addon_name: String) -> void:
 
 func _stay_afloat() -> void:
 	var lm := _get_level_manager()
-	if lm == null:
+	if lm == null or Net.is_client():
 		return
 	for body in lm.water_bodies_under(global_position):
 		if body not in _afloat_on:
@@ -936,6 +978,45 @@ func _tick_afloat() -> void:
 		if is_instance_valid(body):
 			remove_collision_exception_with(body)
 		_afloat_on.erase(body)
+
+# --- Online (see BaseTank's net_state; its type follows the rest) ---
+
+## Past the base's flags: the blink of an item's invulnerability.
+const NET_BLINKING := NET_OWN_FLAGS
+
+func net_type() -> int:
+	return NetWorld.T_ENEMY
+
+func net_spawn_args() -> Array:
+	return [tank_type_id]
+
+## A client's tank of type [param args][0], set before it enters the tree.
+func net_setup(args: Array) -> void:
+	tank_type_id = clampi(int(args[0]), 1, 24)
+
+func net_state() -> Array:
+	var state := super.net_state()
+	if _invulnerable_timer > 0.0:
+		state[3] = int(state[3]) | NET_BLINKING
+	state.append(tank_type_id)
+	return state
+
+func net_apply(state: Array) -> void:
+	super.net_apply(state)
+	# The blink runs here; the host says while.
+	_invulnerable_timer = 1.0 if int(state[3]) & NET_BLINKING else 0.0
+	if state.size() > 9 and int(state[9]) != tank_type_id:
+		tank_type_id = clampi(int(state[9]), 1, 24)  # a MAX promoted it
+		_apply_type_look()
+
+func _net_apply_addons(bits: int) -> void:
+	var wanted := BaseTank.net_addon_names(bits)
+	for addon_name: String in addons.duplicate():
+		if addon_name not in wanted:
+			_remove_addon(addon_name)
+	for addon_name in wanted:
+		if addon_name not in addons:
+			_add_addon(addon_name)
 
 func _spawn_cookie_at_position(cookie_type: int) -> void:
 	var cookie_scene := preload("res://scenes/powerups/powerup.tscn")

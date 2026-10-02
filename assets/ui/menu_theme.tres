@@ -1,4 +1,4 @@
-[gd_resource type="Theme" load_steps=29 format=3]
+[gd_resource type="Theme" load_steps=31 format=3]
 
 [ext_resource type="FontFile" path="res://assets/ui/fonts/gold_font.fnt" id="1_font"]
 
@@ -399,6 +399,38 @@ corner_radius_top_right = 4
 corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
 
+[sub_resource type="StyleBoxFlat" id="field_normal"]
+content_margin_left = 12.0
+content_margin_top = 4.0
+content_margin_right = 12.0
+content_margin_bottom = 4.0
+bg_color = Color(0.07, 0.08, 0.11, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.33, 0.35, 0.43, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="field_focus"]
+content_margin_left = 12.0
+content_margin_top = 4.0
+content_margin_right = 12.0
+content_margin_bottom = 4.0
+bg_color = Color(0.1, 0.1, 0.13, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.98, 0.78, 0.22, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
 [resource]
 default_font_size = 24
 Button/colors/font_color = Color(0.86, 0.86, 0.86, 1)
@@ -560,3 +592,13 @@ TabButton/styles/hover = SubResource("tab_hover")
 TabButton/styles/hover_pressed = SubResource("tab_active")
 TabButton/styles/normal = SubResource("tab_normal")
 TabButton/styles/pressed = SubResource("tab_active")
+FieldEdit/base_type = &"LineEdit"
+FieldEdit/colors/caret_color = Color(1, 0.85, 0.3, 1)
+FieldEdit/colors/font_color = Color(1, 0.95, 0.75, 1)
+FieldEdit/colors/font_placeholder_color = Color(0.5, 0.5, 0.53, 1)
+FieldEdit/colors/font_uneditable_color = Color(0.6, 0.6, 0.62, 1)
+FieldEdit/colors/selection_color = Color(0.85, 0.62, 0.16, 0.45)
+FieldEdit/font_sizes/font_size = 26
+FieldEdit/styles/focus = SubResource("field_focus")
+FieldEdit/styles/normal = SubResource("field_normal")
+FieldEdit/styles/read_only = SubResource("field_normal")

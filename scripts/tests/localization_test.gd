@@ -145,10 +145,11 @@ func _run() -> void:
 	await _open("res://scenes/main.tscn")
 	check(_shown(_screen._new_game_button) == "NEW GAME", "English: NEW GAME")
 	_screen._open_settings()
+	_screen._tabs.select(_screen.SettingsTab.GENERAL)
 	await tree.process_frame
 	var language_row: Button = _screen._common.language_row
 	check(_screen._nav.items.has(language_row) and MenuRows.value_label(language_row).text == "English",
-		"the settings list a LANGUAGE row: English")
+		"the settings' GENERAL tab lists a LANGUAGE row: English")
 	language_row.grab_focus()
 	await _key(KEY_RIGHT)
 	check(Localization.get_language() == "zh_CN" and TranslationServer.get_locale() == "zh_CN",
@@ -168,13 +169,16 @@ func _run() -> void:
 	check(version.text == "Ver. %s" % ProjectSettings.get_setting("application/config/version")
 		and _shown(version) == "Ver. 1.0.0" and corner.x > screen.x - 40 and corner.y > screen.y - 40,
 		"Ver. 1.0.0, the project's version, in the bottom-right corner, the same in Chinese (%s)" % str(corner))
-	check(MenuRows.value_label(_screen._difficulty_row).text == "%d   %s" % [GameManager.difficulty,
+	check(_shown(MenuRows.tab(_screen._tabs.strip, 0)) == "常规" and _shown(MenuRows.tab(_screen._tabs.strip, 1)) == "游戏",
+		"the settings' tabs: 常规, 游戏")
+	var difficulty_row: Button = _screen._game.difficulty_row
+	check(MenuRows.value_label(difficulty_row).text == "%d   %s" % [GameManager.difficulty,
 		["容易", "中等", "困难", "极困难", "疯狂"][GameManager.difficulty - 1]],
-		"the difficulty, built from parts, is rebuilt: %s" % MenuRows.value_label(_screen._difficulty_row).text)
+		"the difficulty, built from parts, is rebuilt: %s" % MenuRows.value_label(difficulty_row).text)
 	check(MenuRows.value_label(_screen._map_row).text.ends_with("64 关"),
 		"and the map's stage count: %s" % MenuRows.value_label(_screen._map_row).text)
 	await _key(KEY_LEFT)
-	check(Localization.get_language() == "en" and MenuRows.value_label(_screen._difficulty_row).text.ends_with("EASY")
+	check(Localization.get_language() == "en" and MenuRows.value_label(difficulty_row).text.ends_with("EASY")
 		and _shown(_screen._new_game_button) == "NEW GAME", "left: English again, everything back")
 	check(_shown(_screen.get_node("TitleBlock/Title")) == "BATTLE TANK" and tree.root.title == "Battle Tank",
 		"BATTLE TANK on the title screen, Battle Tank on the window")
@@ -233,6 +237,7 @@ func _run() -> void:
 	check(Array(game.stage_overlay.box_words()) == ["战斗成绩", "总计"],
 		"the results box, the one in-game text translated: 战斗成绩 over it, 总计 at its foot")
 	menu._open_settings()
+	menu._tabs.select(menu.SettingsTab.GENERAL)
 	await tree.process_frame
 	menu._common.language_row.grab_focus()
 	await _key(KEY_RIGHT)

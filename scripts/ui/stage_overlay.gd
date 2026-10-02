@@ -174,6 +174,15 @@ var _band_styles: Array[StyleBoxFlat] = []   # a kill row's band: even rows, odd
 var _rewarded := false
 var _letters: Array[FlyingLetter] = []
 
+## Online, on a client: the screens are the host's (net_show, net_set_time) and
+## this overlay's own clock stands still.
+var net_follow := false
+## Where _picture and _panel_texture came from, so a client can load the same:
+## "stage:NAME" (ThemeManager.get_stage_picture) or "screen:KEY"
+## (ThemeManager.get_screen_texture), "" for none.
+var _picture_key := ""
+var _panel_texture_key := ""
+
 
 ## One player's results panel.
 class ResultsPanel:
@@ -223,7 +232,8 @@ func _ready() -> void:
 ## Covers the playfield with [param stage_num]'s intro and plays it; emits
 ## [signal intro_finished] once the map is revealed.
 func play_intro(stage_num: int) -> void:
-	_picture = ThemeManager.get_stage_picture(LevelData.get_stage_intro_picture(stage_num))
+	_picture_key = "stage:" + LevelData.get_stage_intro_picture(stage_num)
+	_picture = _net_texture(_picture_key)
 	_plain_backdrop = false
 	_title = ""
 	_stage_text = "Stage %02d" % stage_num
@@ -237,7 +247,8 @@ func play_intro(stage_num: int) -> void:
 func play_mission(won: bool) -> void:
 	_won = won
 	_title = TITLE_WON if won else TITLE_LOST
-	_picture = ThemeManager.get_screen_texture("stage_win" if won else "stage_lose")
+	_picture_key = "screen:" + ("stage_win" if won else "stage_lose")
+	_picture = _net_texture(_picture_key)
 	_plain_backdrop = _picture == null
 	quarter_pattern = randi() % 3
 	_start(Mode.MISSION)
@@ -268,7 +279,8 @@ func play_results(won: bool, tallies: Array, difficulty: int) -> void:
 			_panels[i].reward = rewards[i]["amount"]
 			_panels[i].reward_won = rewards[i]["beat_other"]
 			_panels[i].copies = _make_copies(_panels[i], rewards[i]["copies"])
-	_panel_texture = ThemeManager.get_screen_texture("results_panel")
+	_panel_texture_key = "screen:results_panel"
+	_panel_texture = _net_texture(_panel_texture_key)
 	_rewarded = false
 	_start(Mode.RESULTS)
 
@@ -321,7 +333,7 @@ func _start(mode: Mode) -> void:
 
 
 func _process(delta: float) -> void:
-	if _mode == Mode.NONE:
+	if _mode == Mode.NONE or net_follow:
 		return
 	advance(delta * (1.0 if _mode == Mode.MISSION else _speed()))
 
@@ -366,8 +378,8 @@ func advance(seconds: float) -> void:
 ## How fast the clock runs: every player holding a fire button adds 2.5x.
 func _speed() -> float:
 	var holding := 0
-	for prefix in ["p1_", "p2_"]:
-		if Input.is_action_pressed(prefix + "shoot") or Input.is_action_pressed(prefix + "shoot2"):
+	for tank in 2:
+		if PlayerInput.is_fire_held(tank):
 			holding += 1
 	return 1.0 + 2.5 * holding
 
@@ -378,6 +390,90 @@ func _results_out_start() -> float:
 
 func _results_end() -> float:
 	return _results_out_start() + RESULTS_OUT
+
+
+# =====================================================================
+# Online: the host's screens on a client
+# =====================================================================
+
+## Everything drawn on the screen showing (or last shown), the draws of its
+## random choices included, for a client to draw the same: [visible, mode,
+## quarter pattern, picture, plain backdrop, stage text, caption, title, won,
+## panels, panel picture, letters, rewarded]. Its clock is get_time().
+func net_screen() -> Array:
+	var panels: Array = []
+	for panel in _panels:
+		var copies: Array = []
+		for copy in panel.copies:
+			copies.append([copy.start.x, copy.start.y, copy.target.x, copy.target.y])
+		panels.append([panel.player, panel.kills, panel.max_hits, panel.max_combos, panel.total,
+				panel.reward, panel.reward_won, copies])
+	var letters: Array = []
+	for letter in _letters:
+		letters.append([letter.glyph, letter.width, letter.home.x, letter.home.y,
+				letter.away.x, letter.away.y, letter.turns])
+	return [visible, _mode, quarter_pattern, _picture_key, _plain_backdrop, _stage_text,
+			Array(_caption_lines), _title, _won, panels, _panel_texture_key, letters, _rewarded]
+
+
+## A client shows the host's screen, [param screen] from net_screen().
+func net_show(screen: Array) -> void:
+	if screen.size() < 13:
+		return
+	visible = bool(screen[0])
+	_mode = clampi(int(screen[1]), Mode.NONE, Mode.GAME_OVER) as Mode
+	quarter_pattern = int(screen[2])
+	_picture_key = str(screen[3])
+	_picture = _net_texture(_picture_key)
+	_plain_backdrop = bool(screen[4])
+	_stage_text = str(screen[5])
+	_caption_lines = PackedStringArray(screen[6])
+	_title = str(screen[7])
+	_won = bool(screen[8])
+	_panels.clear()
+	for entry: Array in screen[9]:
+		var panel := ResultsPanel.new()
+		panel.player = clampi(int(entry[0]), 0, 1)
+		panel.kills = entry[1]
+		panel.max_hits = int(entry[2])
+		panel.max_combos = int(entry[3])
+		panel.total = int(entry[4])
+		panel.reward = int(entry[5])
+		panel.reward_won = bool(entry[6])
+		for c: Array in entry[7]:
+			var copy := RewardCopy.new()
+			copy.start = Vector2(c[0], c[1])
+			copy.target = Vector2(c[2], c[3])
+			panel.copies.append(copy)
+		_panels.append(panel)
+	_panel_texture_key = str(screen[10])
+	_panel_texture = _net_texture(_panel_texture_key)
+	_letters.clear()
+	for entry: Array in screen[11]:
+		var letter := FlyingLetter.new()
+		letter.glyph = str(entry[0])
+		letter.width = float(entry[1])
+		letter.home = Vector2(entry[2], entry[3])
+		letter.away = Vector2(entry[4], entry[5])
+		letter.turns = float(entry[6])
+		_letters.append(letter)
+	_rewarded = bool(screen[12])
+	queue_redraw()
+
+
+## A client's screen clock, as the host's.
+func net_set_time(t: float) -> void:
+	_t = t
+	queue_redraw()
+
+
+## The picture a key from net_screen() names.
+static func _net_texture(key: String) -> Texture2D:
+	if key.begins_with("stage:"):
+		return ThemeManager.get_stage_picture(key.substr(6))
+	if key.begins_with("screen:"):
+		return ThemeManager.get_screen_texture(key.substr(7))
+	return null
 
 
 # =====================================================================

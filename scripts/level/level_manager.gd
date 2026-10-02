@@ -51,6 +51,12 @@ var _eagle_tiles: Array[Vector2i] = []
 
 const BG_ASSETS_DIR: String = "res://assets/background/"
 
+## Online, on a client: the map is the host's (net_load_map, net_set_cell) and
+## none of its rules run here: no fires, no fortification clock, no melting ice.
+var net_mirror := false
+## The stage's background picture's file name, for net_map().
+var _bg_bitmap := ""
+
 func _ready() -> void:
 	terrain_node = $TerrainLayer
 	tree_node = $TreeLayer
@@ -60,6 +66,8 @@ func _ready() -> void:
 	# Get textures from ThemeManager (procedural or image-based)
 	_tile_textures = ThemeManager.get_all_tile_textures()
 	ThemeManager.theme_changed.connect(_on_theme_changed)
+	InputSettings.enemy_mines_changed.connect(_on_enemy_mines_changed)
+	InputSettings.base_invincible_changed.connect(_on_base_invincible_changed)
 
 	_load_animated_tile_frames()
 	_load_grass_variants()
@@ -82,6 +90,9 @@ func _ready() -> void:
 				_eagle_tiles.append(etl + Vector2i(ox, oy))
 
 func _process(delta: float) -> void:
+	if net_mirror:
+		_tick_tile_anim(delta)
+		return
 	if _is_fortified:
 		_fortify_timer -= delta
 		if _fortify_timer <= 0:
@@ -146,6 +157,7 @@ func load_stage(stage_num: int) -> void:
 	# any whose image is missing) show it instead of a black void.
 	if _bg_color_rect:
 		_bg_color_rect.color = stage_data.bg_color
+	_bg_bitmap = stage_data.bg_bitmap
 	_load_background_image(stage_data.bg_bitmap)
 
 	for y in range(LevelData.GRID_HEIGHT):
@@ -162,6 +174,7 @@ func load_stage(stage_num: int) -> void:
 					_place_fg_tile(Vector2i(x, y), fg_code)
 
 	_place_base_walls()
+	_set_flag_invincible(false)   # no guard yet, unless BASE INVINCIBLE is on
 
 func _load_background_image(bg_bitmap: String) -> void:
 	if not _bg_image_sprite:
@@ -342,6 +355,7 @@ func _place_bg_tile(pos: Vector2i, code: int) -> void:
 
 	_maybe_animate_tile(spr, code, pos)
 	_bg_tile_data[pos] = { "sprite": spr, "body": body, "code": code }
+	NetHostWorld.mark_tile(pos)
 
 func _place_fg_tile(pos: Vector2i, code: int) -> void:
 	var world_pos := Vector2(pos.x * TILE_SIZE + TILE_SIZE / 2, pos.y * TILE_SIZE + TILE_SIZE / 2)
@@ -404,6 +418,7 @@ func _place_fg_tile(pos: Vector2i, code: int) -> void:
 
 	_maybe_animate_tile(spr, code, pos)
 	_fg_tile_data[pos] = { "sprite": spr, "body": body, "code": code }
+	NetHostWorld.mark_tile(pos)
 
 func _create_tile_body(world_pos: Vector2, layer: int) -> StaticBody2D:
 	var body := StaticBody2D.new()
@@ -470,10 +485,100 @@ func break_base_guard() -> void:
 	if _is_fortified:
 		_revert_fortification()
 
+## The flag's guard look: while the base is fortified, and for as long as the
+## BASE INVINCIBLE setting is on.
 func _set_flag_invincible(value: bool) -> void:
 	var flag := get_node_or_null("Eagle")
 	if flag is BaseFlag:
-		flag.invincible = value
+		flag.invincible = value or InputSettings.get_base_invincible()
+
+## BASE INVINCIBLE switched mid-stage (the pause menu): the flag shows it at once.
+## (Online, a client's flag follows the host's.)
+func _on_base_invincible_changed() -> void:
+	if not net_mirror:
+		_set_flag_invincible(_is_fortified)
+
+# =====================================================================
+# Online: the map as data (NetHostWorld sends it, NetClientWorld builds it)
+# =====================================================================
+
+## The whole map for a client new to this stage: [background colour, background
+## picture, then the cells row by row as bytes: bg codes, fg codes and each
+## brick's standing quarters]. 0 is an empty cell.
+func net_map() -> Array:
+	var count := GRID_WIDTH * GRID_HEIGHT
+	var bg := PackedByteArray()
+	var fg := PackedByteArray()
+	var masks := PackedByteArray()
+	bg.resize(count)
+	fg.resize(count)
+	masks.resize(count)
+	for y in GRID_HEIGHT:
+		for x in GRID_WIDTH:
+			var cell: Array = net_cell(Vector2i(x, y))
+			var i := y * GRID_WIDTH + x
+			bg[i] = cell[0]
+			fg[i] = cell[1]
+			masks[i] = cell[2]
+	var colour := _bg_color_rect.color if _bg_color_rect else Color.BLACK
+	return [colour, _bg_bitmap, bg, fg, masks]
+
+## One cell's [bg code, fg code, standing brick quarters], 0 for none.
+func net_cell(cell: Vector2i) -> Array:
+	var bg: int = _bg_tile_data[cell].get("code", 0) if _bg_tile_data.has(cell) else 0
+	var fg: int = _fg_tile_data[cell].get("code", 0) if _fg_tile_data.has(cell) else 0
+	return [bg & 0xff, fg & 0xff, int(_brick_damage.get(cell, 0)) & 0xff]
+
+## A client builds the host's map from net_map()'s [param map].
+func net_load_map(map: Array) -> void:
+	_clear_tiles()
+	_clear_fire()
+	_clear_mines()
+	_brick_damage.clear()
+	_hard_brick_hp.clear()
+	if map.size() < 5:
+		return
+	if _bg_color_rect and map[0] is Color:
+		_bg_color_rect.color = map[0]
+	_bg_bitmap = str(map[1])
+	_load_background_image(_bg_bitmap)
+	var bg: PackedByteArray = map[2]
+	var fg: PackedByteArray = map[3]
+	var masks: PackedByteArray = map[4]
+	var count := GRID_WIDTH * GRID_HEIGHT
+	if bg.size() != count or fg.size() != count or masks.size() != count:
+		return
+	for i in count:
+		var cell := Vector2i(i % GRID_WIDTH, i / GRID_WIDTH)
+		if bg[i] != 0:
+			_place_bg_tile(cell, bg[i])
+		if fg[i] != 0:
+			_place_fg_tile(cell, fg[i])
+			_net_set_mask(cell, masks[i])
+
+## A client sets one cell as the host has it now (see net_cell).
+func net_set_cell(cell: Vector2i, bg: int, fg: int, mask: int) -> void:
+	if not _is_in_bounds(cell):
+		return
+	var now: Array = net_cell(cell)
+	if now[0] != bg:
+		_remove_bg_tile(cell)
+		if bg != 0:
+			_place_bg_tile(cell, bg)
+	if now[1] != fg:
+		_remove_fg_tile(cell)
+		_brick_damage.erase(cell)
+		_hard_brick_hp.erase(cell)
+		if fg != 0:
+			_place_fg_tile(cell, fg)
+	_net_set_mask(cell, mask)
+
+## A brick with only some quarters standing: those, as the host's.
+func _net_set_mask(cell: Vector2i, mask: int) -> void:
+	if mask == 0 or not _brick_damage.has(cell) or _brick_damage[cell] == mask:
+		return
+	_brick_damage[cell] = mask
+	_update_brick_visual(cell, mask)
 
 # =====================================================================
 # Tile Removal
@@ -488,6 +593,7 @@ func _remove_fg_tile(tile_pos: Vector2i) -> void:
 	if data.has("body") and is_instance_valid(data["body"]):
 		data["body"].queue_free()
 	_fg_tile_data.erase(tile_pos)
+	NetHostWorld.mark_tile(tile_pos)
 
 func _remove_bg_tile(tile_pos: Vector2i) -> void:
 	if not _bg_tile_data.has(tile_pos):
@@ -498,6 +604,7 @@ func _remove_bg_tile(tile_pos: Vector2i) -> void:
 	if data.has("body") and is_instance_valid(data["body"]):
 		data["body"].queue_free()
 	_bg_tile_data.erase(tile_pos)
+	NetHostWorld.mark_tile(tile_pos)
 
 # =====================================================================
 # Soft Brick Damage
@@ -545,6 +652,7 @@ func _update_brick_visual(tile_pos: Vector2i, damage: int) -> void:
 	var variant := LevelData.get_variant_index(code)
 
 	spr.texture = ThemeManager.get_partial_brick_texture(damage, variant)
+	NetHostWorld.mark_tile(tile_pos)
 
 	# Update collision shape
 	var body: StaticBody2D = data.get("body")
@@ -603,6 +711,7 @@ func _update_hard_brick_visual(tile_pos: Vector2i) -> void:
 	var hp: int = _hard_brick_hp[tile_pos]
 	var new_code := LevelData.get_hard_brick_code(hp, variant)
 	data["code"] = new_code
+	NetHostWorld.mark_tile(tile_pos)
 	var spr: Sprite2D = data["sprite"]
 	if is_instance_valid(spr):
 		spr.texture = _tile_textures.get(new_code, spr.texture)
@@ -990,6 +1099,25 @@ func get_mines() -> Array[Mine]:
 	return mines
 
 
+## A player's bomb (Sean, 2026-09-27): every mine on the field goes off, each
+## with its own blast, which breaks walls and hurts enemies as usual but spares
+## the players.
+func set_off_all_mines() -> void:
+	for mine in get_mines():
+		mine.set_off(true)
+
+
+## ENEMY MINES switched off mid-stage (the pause menu): the enemies' mines
+## already laid go with it, quietly. The players' stay.
+func _on_enemy_mines_changed() -> void:
+	if net_mirror or InputSettings.get_enemy_mines():
+		return
+	for mine in get_mines():
+		if not mine.from_player:
+			unregister_mine(mine)
+			mine.queue_free()
+
+
 func unregister_mine(mine: Mine) -> void:
 	if _mine_tiles.get(mine.cell) == mine:
 		_mine_tiles.erase(mine.cell)
@@ -1216,6 +1344,7 @@ func _convert_grass_to_burned(tile: Vector2i) -> void:
 	var data: Dictionary = _fg_tile_data[tile]
 	var new_code: int = data.get("code", 0) + 4  # GRASS 0x09-0x0C -> BURNED 0x0D-0x10
 	data["code"] = new_code
+	NetHostWorld.mark_tile(tile)
 	if data.has("sprite") and is_instance_valid(data["sprite"]):
 		# Burned variant keeps the same index as the green tile it replaces.
 		var btex := _grass_texture(new_code)
@@ -1230,10 +1359,11 @@ func _convert_grass_to_burned(tile: Vector2i) -> void:
 ## Detonate a shockwave at [param world_pos]. Called from an explosion bullet's
 ## death (and, later, mines). Deferred add_child because detonation usually fires
 ## from inside a physics callback (a bullet's collision).
-func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null, owner_id: int = -1) -> void:
+func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null, owner_id: int = -1, spare_players: bool = false) -> void:
 	var blast := ExplosionBlast.new()
-	blast.setup(level, from_player, self, neutral, exclude, owner_id)
+	blast.setup(level, from_player, self, neutral, exclude, owner_id, spare_players)
 	blast.global_position = world_pos
+	NetHostWorld.record(NetWorld.EV_BLAST, [world_pos.x, world_pos.y, level])
 	var container: Node = get_tree().get_first_node_in_group("effects_container")
 	if container == null:
 		container = terrain_node

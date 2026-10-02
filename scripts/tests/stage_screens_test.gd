@@ -90,7 +90,6 @@ func _run() -> void:
 	ThemeManager.load_theme("juezhuantanke")
 	GameManager.current_stage = 1
 	GameManager.difficulty = 2
-	GameManager.credits = 3
 	GameManager.player_active = [true, true]
 	GameManager.player_lives = [3, 3]
 	GameManager.player_scores = [0, 0]
@@ -293,10 +292,9 @@ func _run() -> void:
 	_overlay.advance(0.02)
 	check(_events.count("results_finished") == 1, "over at 5.5 s (the game then autosaves, next stage)")
 
-	print("\n[E] Out of lives with no credits: Mission Fail, results, Game Over")
+	print("\n[E] Out of lives and nobody rejoins: Mission Fail, results, Game Over")
 	GameManager.player_active = [true, false]
 	GameManager.player_lives = [0, 3]
-	GameManager.credits = 0
 	await _new_game(false, true)
 	await _frames(2)
 	var cleared := GameManager.save_counter
@@ -306,8 +304,11 @@ func _run() -> void:
 	p1.health = 1
 	p1.take_damage()
 	await _frames(3)
-	check(GameManager.player_lives[0] < 0, "P1's last tank is gone")
-	check(_game.get_phase() == "mission" and _overlay._title == "Mission Fail", "\"Mission Fail\" at once")
+	check(GameManager.player_lives[0] < 0 and _game.get_phase() == "play" and _game.get_game_over_countdown() > 4.5,
+		"P1's last tank is gone: credits are unlimited, so the rejoin window opens")
+	_game._game_over_countdown = 0.001   # nobody rejoins: the window runs out
+	await _frames(2)
+	check(_game.get_phase() == "mission" and _overlay._title == "Mission Fail", "\"Mission Fail\" once it runs out")
 	check(GameManager.save_counter == cleared and _game.hud.stages_played_label.text == "Played: %d" % cleared,
 		"a lost stage isn't a cleared one: Played stays at %d" % cleared)
 	check(_events.count("game_over") == 1, "with the lose jingle")
@@ -333,9 +334,8 @@ func _run() -> void:
 	_overlay.advance(0.01)
 	check(_events.count("game_over_finished") == 1, "then back to the title")
 
-	print("\n[F] With credits, a rejoin window first; losing the base with none ends it")
+	print("\n[F] A rejoin window, as often as needed; losing the base too")
 	GameManager.player_lives = [0, 3]
-	GameManager.credits = 2
 	await _new_game(false)
 	await _frames(2)
 	p1 = _players()[0]
@@ -351,8 +351,8 @@ func _run() -> void:
 	await _frames(1)
 	Input.action_release("p1_shoot")
 	await _frames(1)
-	check(GameManager.player_lives[0] == 3 and GameManager.credits == 1 and _game.get_game_over_countdown() < 0
-		and not _game.enemy_spawner.spawn_timer.paused, "fire: rejoined for a credit, the countdown off")
+	check(GameManager.player_lives[0] == 3 and _game.get_game_over_countdown() < 0
+		and not _game.enemy_spawner.spawn_timer.paused, "fire: rejoined, the countdown off")
 	# Out again, and nobody rejoins: the stage is lost when the 5 s run out.
 	var fails: int = _events.count("game_over")
 	GameManager.player_lives[0] = 0
@@ -367,14 +367,20 @@ func _run() -> void:
 	check(_game.get_phase() == "mission" and _events.count("game_over") == fails + 1,
 		"closed at 5 s: Mission Fail")
 	GameManager.player_lives = [0, 3]
-	GameManager.credits = 0
 	await _new_game(false)
 	await _frames(2)
 	fails = _events.count("game_over")
-	Events.base_destroyed.emit()
-	await _frames(2)
-	check(_game.get_phase() == "mission" and _events.count("game_over") == fails + 1,
-		"the base destroyed with no credits: Mission Fail at once")
+	for round in 2:
+		Events.base_destroyed.emit()
+		await _frames(2)
+		check(_game.get_phase() == "play" and _game.get_game_over_countdown() > 4.5 and _game._base_destroyed,
+			"the base destroyed (%s time): the rejoin window, not Mission Fail" % ["first", "second"][round])
+		Input.action_press("p1_shoot")
+		await _frames(1)
+		Input.action_release("p1_shoot")
+		await _frames(1)
+		check(not _game._base_destroyed and GameManager.player_lives[0] == 3 and _game.get_game_over_countdown() < 0
+			and _events.count("game_over") == fails, "fire: rejoined, and the base is back")
 
 	print("\n[G] The panel's rules")
 	var every: Dictionary = {}

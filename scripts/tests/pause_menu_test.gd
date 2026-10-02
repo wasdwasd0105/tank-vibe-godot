@@ -5,8 +5,11 @@ extends Node
 ## the game always opens fullscreen, the game's speed (the stage's clock follows it,
 ## and time runs normally again outside the stage), a key and a player's
 ## vibration without leaving the stage, and opens a player's controls page (the title screen's) on the
-## right tab; Esc, B and Start step back a page at a time. Driven by simulated
-## keys and controller buttons. A test run keeps its own settings file.
+## right tab; Esc, B and Start step back a page at a time. The settings' ONLINE
+## tab opens the game to remote players (its port, password and most players
+## typed and kept), and once someone has joined, HOST shows on the first page.
+## Driven by simulated keys and controller buttons. A test run keeps its own
+## settings file.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/pause_menu_test.tscn
 
@@ -50,6 +53,33 @@ func _pad(button: JoyButton) -> void:
 
 func _focus() -> Control:
 	return get_viewport().gui_get_focus_owner()
+
+
+## Types [param text] into whatever has the keys, as a keyboard would.
+func _type(text: String) -> void:
+	for i in text.length():
+		for pressed in [true, false]:
+			var ev := InputEventKey.new()
+			ev.unicode = text.unicode_at(i)
+			ev.pressed = pressed
+			Input.parse_input_event(ev)
+			Input.flush_buffered_events()
+	await get_tree().process_frame
+
+
+## The settings file as it is on disk, read afresh.
+func _settings_file() -> ConfigFile:
+	var config := ConfigFile.new()
+	config.load(InputSettings.get_save_path())
+	return config
+
+
+## The GAME tab's rows' names.
+func _game_row_names() -> Array:
+	var names: Array = []
+	for row: Button in _menu._game.rows():
+		names.append(MenuRows.layout_of(row).get_node("Name").text)
+	return names
 
 
 func _row_names() -> Array:
@@ -97,7 +127,7 @@ func _run() -> void:
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused and _requests == ["resume_requested"], "Esc again: resumed")
 
-	print("\n[B] SETTINGS: sound and fullscreen, straight from the pause")
+	print("\n[B] SETTINGS: the game's rules, sound and fullscreen, straight from the pause")
 	await _key(KEY_ESCAPE)
 	var order: Array = []
 	for button: Button in _menu._page_items(0):
@@ -114,10 +144,71 @@ func _run() -> void:
 	check(_focus() == _menu._settings_button, "up three times (round past QUIT GAME and MAIN MENU): SETTINGS")
 	await _key(KEY_ENTER)
 	check(_menu._settings_panel.visible and not _menu._main_panel.visible and _focus() == _menu._common.sfx_row,
-		"Enter: the settings page, on SFX VOLUME")
-	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "ALWAYS FULLSCREEN", "GAME SPEED", "LANGUAGE",
+		"Enter: the settings page, on its GENERAL tab, on SFX VOLUME")
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	check(_menu._game_rows.visible and not _menu._settings_rows.visible and _focus() == _menu._game.difficulty_row,
+		"RB: the GAME tab, on DIFFICULTY")
+	check(_game_row_names() == ["DIFFICULTY", "GAME SPEED", "BASE INVINCIBLE", "ENEMY MINES", "ENEMY MINE LEVEL"],
+		"the GAME tab's rows: %s" % str(_game_row_names()))
+	var difficulty := GameManager.difficulty
+	await _key(KEY_RIGHT)
+	check(GameManager.difficulty == difficulty + 1 and InputSettings.get_saved_difficulty() == difficulty + 1
+		and MenuRows.value_label(_menu._game.difficulty_row).text.begins_with(str(difficulty + 1)),
+		"right on DIFFICULTY: the game's goes up at once, mid-stage, and is kept for new games")
+	await _key(KEY_LEFT)
+	check(GameManager.difficulty == difficulty, "left: back down")
+	var speed_row: Button = _menu._game.game_speed_row
+	var speed_text := func() -> String: return MenuRows.value_label(speed_row).text
+	await _key(KEY_DOWN)
+	check(_focus() == speed_row and speed_text.call() == "100%" and is_equal_approx(Engine.time_scale, 1.0),
+		"down: GAME SPEED, 100% as the original's default, the stage at normal time")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 117 and speed_text.call() == "117%"
+		and is_equal_approx(Engine.time_scale, 1.17), "right: 117%, saved, and the stage's clock runs at it")
+	for i in 4:
+		await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 150 and MenuRows.arrow(speed_row, "Right").disabled
+		and is_equal_approx(Engine.time_scale, 1.5), "up to 150%, the original's fastest, and no further")
+	for i in 5:
+		await _key(KEY_LEFT)
+	check(InputSettings.get_saved_game_speed() == 83 and MenuRows.arrow(speed_row, "Left").disabled
+		and is_equal_approx(Engine.time_scale, 0.83), "down to 83%, its slowest")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_saved_game_speed() == 100 and is_equal_approx(Engine.time_scale, 1.0), "and back to 100%")
+	var base_row: Button = _menu._game.base_row
+	await _key(KEY_DOWN)
+	check(_focus() == base_row and MenuRows.value_label(base_row).text == "OFF" and not _game.eagle.invincible,
+		"down: BASE INVINCIBLE, OFF")
+	await _key(KEY_ENTER)
+	check(InputSettings.get_base_invincible() and MenuRows.value_label(base_row).text == "ON" and _game.eagle.invincible,
+		"Enter: ON, saved, and the stage's flag shows the guard at once")
+	await _key(KEY_ENTER)
+	check(not InputSettings.get_base_invincible() and not _game.eagle.invincible, "Enter: OFF again")
+	var mines_row: Button = _menu._game.enemy_mines_row
+	var level_row: Button = _menu._game.mine_level_row
+	await _key(KEY_DOWN)
+	check(_focus() == mines_row and MenuRows.value_label(mines_row).text == "ON" and not level_row.disabled,
+		"down: ENEMY MINES, ON")
+	await _key(KEY_ENTER)
+	check(not InputSettings.get_enemy_mines() and MenuRows.value_label(mines_row).text == "OFF" and level_row.disabled
+		and level_row.modulate.a < 1.0, "Enter: OFF, and ENEMY MINE LEVEL greys out")
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._settings_back_button, "down skips the greyed row: BACK")
+	await _key(KEY_UP)
+	await _key(KEY_ENTER)
+	await _key(KEY_DOWN)
+	check(InputSettings.get_enemy_mines() and _focus() == level_row and MenuRows.value_label(level_row).text == "3"
+		and level_row.modulate.a == 1.0, "ON again: down to ENEMY MINE LEVEL, 3, no longer dimmed")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_enemy_mine_level() == 4 and MenuRows.arrow(level_row, "Right").disabled, "right: 4, the most")
+	await _key(KEY_LEFT)
+	check(InputSettings.get_enemy_mine_level() == 3, "left: 3")
+	await _pad(JOY_BUTTON_LEFT_SHOULDER)
+	check(_menu._settings_rows.visible and not _menu._game_rows.visible and _focus() == _menu._common.sfx_row,
+		"LB: back to the GENERAL tab, on SFX VOLUME")
+	check(_row_names() == ["SFX VOLUME", "MUSIC VOLUME", "FULLSCREEN", "ALWAYS FULLSCREEN", "LANGUAGE",
 		"P1 CONTROLS", "P2 CONTROLS"],
-		"its rows, VIBRATION now being on each player's controls page: %s" % str(_row_names()))
+		"its rows, VIBRATION being on each player's controls page and GAME SPEED on the GAME tab: %s" % str(_row_names()))
 	var sfx := SoundManager.get_sfx_volume()
 	await _key(KEY_LEFT)
 	check(is_equal_approx(SoundManager.get_sfx_volume(), snappedf(sfx, 0.1) - 0.1)
@@ -155,24 +246,6 @@ func _run() -> void:
 	check(InputSettings.get_always_fullscreen() and asked.is_empty(), "switched on in the menus: saved, the window left alone")
 	WindowManager.set_always_fullscreen(false)
 	WindowManager.enter_game()  # back in this stage for the rest of the test
-	var speed_row: Button = _menu._common.game_speed_row
-	var speed_text := func() -> String: return MenuRows.value_label(speed_row).text
-	await _key(KEY_DOWN)
-	check(_focus() == speed_row and speed_text.call() == "100%" and is_equal_approx(Engine.time_scale, 1.0),
-		"down: GAME SPEED, 100% as the original's default, the stage at normal time")
-	await _key(KEY_RIGHT)
-	check(InputSettings.get_saved_game_speed() == 117 and speed_text.call() == "117%"
-		and is_equal_approx(Engine.time_scale, 1.17), "right: 117%, saved, and the stage's clock runs at it")
-	for i in 4:
-		await _key(KEY_RIGHT)
-	check(InputSettings.get_saved_game_speed() == 150 and MenuRows.arrow(speed_row, "Right").disabled
-		and is_equal_approx(Engine.time_scale, 1.5), "up to 150%, the original's fastest, and no further")
-	for i in 5:
-		await _key(KEY_LEFT)
-	check(InputSettings.get_saved_game_speed() == 83 and MenuRows.arrow(speed_row, "Left").disabled
-		and is_equal_approx(Engine.time_scale, 0.83), "down to 83%, its slowest")
-	await _key(KEY_RIGHT)
-	check(InputSettings.get_saved_game_speed() == 100 and is_equal_approx(Engine.time_scale, 1.0), "and back to 100%")
 	check(tree.paused and _menu.visible, "and the stage stays paused throughout")
 
 	print("\n[C] P1 CONTROLS: the controls page, inside the pause")
@@ -210,10 +283,12 @@ func _run() -> void:
 	for i in 3:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
 	await _pad(JOY_BUTTON_A)
-	check(_menu._settings_panel.visible, "down three times, A: the settings")
-	for i in 6:
+	check(_menu._settings_panel.visible and _focus() == _menu._common.sfx_row,
+		"down three times, A: the settings, on the GENERAL tab")
+	for i in 5:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
-	check(_focus() == _menu._common.p1_row, "down six times (past ALWAYS FULLSCREEN, GAME SPEED and LANGUAGE): P1 CONTROLS")
+	check(_focus() == _menu._common.p1_row,
+		"down five times (past FULLSCREEN, ALWAYS FULLSCREEN and LANGUAGE): P1 CONTROLS")
 	await _pad(JOY_BUTTON_A)
 	check(cp.visible and cp._tab == cp.Tab.GAMEPAD and _focus() == cp._pad_rows[0],
 		"A: P1 CONTROLS on the GAMEPAD tab (opened with a pad), on MOVE")
@@ -276,6 +351,8 @@ func _run() -> void:
 	Input.parse_input_event(ev)
 	Input.flush_buffered_events()
 
+	await _test_online_tab()
+
 	print("\n[G] The game's speed belongs to the stage")
 	InputSettings.save_game_speed(133)
 	check(is_equal_approx(Engine.time_scale, 1.33), "133%: the stage runs at it")
@@ -294,3 +371,185 @@ func _run() -> void:
 	await tree.create_timer(0.5).timeout  # let the menu sounds finish before quitting
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)
+
+
+func _test_online_tab() -> void:
+	var tree := get_tree()
+	print("\n[H] SETTINGS' ONLINE tab: the game opened to remote players")
+	_menu.set_can_open(true)
+	await _key(KEY_ESCAPE)
+	_menu._settings_button.grab_focus()
+	await _key(KEY_ENTER)
+	var strip: Button = _menu._tabs.strip
+	var tabs: Array = [MenuRows.tab(strip, 0), MenuRows.tab(strip, 1), MenuRows.tab(strip, 2)]
+	check(strip.visible and tabs.map(func(tab: Button) -> String: return tab.text) == ["GENERAL", "GAME", "ONLINE"]
+		and tabs[0].button_pressed and _focus() == _menu._common.sfx_row,
+		"SETTINGS has three tabs, GENERAL first, on SFX VOLUME")
+	await tree.process_frame
+	var page_rect: Rect2 = _menu._settings_panel.get_global_rect()
+	await _key(KEY_UP)
+	check(_focus() == strip, "up: the tab strip")
+	await _key(KEY_RIGHT)
+	check(_menu._game_rows.visible and not _menu._settings_rows.visible and tabs[1].button_pressed
+		and _focus() == strip, "right: the GAME tab, still on the strip")
+	await tree.process_frame
+	check(_menu._settings_panel.get_global_rect() == page_rect, "the page keeps its size")
+	await _key(KEY_RIGHT)
+	check(_menu._online_tab.visible and not _menu._game_rows.visible and tabs[2].button_pressed
+		and not tabs[1].button_pressed and _focus() == strip, "right again: the ONLINE tab, still on the strip")
+	await tree.process_frame
+	check(_menu._settings_panel.get_global_rect() == page_rect, "still the same size")
+	await _key(KEY_RIGHT)
+	check(tabs[2].button_pressed, "right at the end stays on ONLINE")
+	var titles: Array = []
+	for row: Button in [_menu._allow_row, _menu._port_row, _menu._password_row, _menu._max_row, _menu._address_row]:
+		titles.append(MenuRows.name_label(row).text)
+	check(titles == ["ALLOW REMOTE PLAYERS", "PORT", "PASSWORD", "MAX PLAYERS", "YOUR ADDRESS"], "its rows: %s" % str(titles))
+	var port_field: LineEdit = MenuRows.field(_menu._port_row)
+	var password_field: LineEdit = MenuRows.field(_menu._password_row)
+	check(MenuRows.value_label(_menu._allow_row).text == "OFF" and not Net.is_online(), "ALLOW REMOTE PLAYERS: OFF")
+	check(port_field.text == "24680" and port_field.editable and password_field.text.is_empty()
+		and password_field.placeholder_text == "OPTIONAL" and password_field.secret
+		and MenuRows.value_label(_menu._max_row).text == "3 + YOU",
+		"out of the box: port 24680, no password (dots, when there is one), 3 others besides you")
+	check(_menu._players_caption.text == "CONNECTED PLAYERS   0 / 3" and _menu._player_lines[0].text == "NO ONE YET",
+		"CONNECTED PLAYERS: nobody")
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._allow_row, "down: ALLOW REMOTE PLAYERS")
+
+	await _key(KEY_DOWN)
+	await _key(KEY_ENTER)
+	check(_focus() == port_field and _menu._typing == port_field, "Enter on PORT: typing in it")
+	_menu._password_row.mouse_entered.emit()
+	check(_focus() == port_field, "the mouse passing over another row doesn't take the keys away")
+	port_field.text = ""
+	await _type("70000")
+	await _key(KEY_ENTER)
+	check(_focus() == _menu._port_row and _menu._typing == null and port_field.text == "24680"
+		and _menu._online_note.text == "That port isn't a number from 1 to 65535."
+		and _menu._online_note.has_theme_color_override("font_color"), "70000: not a port, it says so in red; still 24680")
+	var port := 42000 + randi() % 8000
+	await _key(KEY_ENTER)
+	port_field.text = ""
+	await _type(str(port))
+	await _key(KEY_ENTER)
+	check(InputSettings.get_online_port() == port and _settings_file().get_value("online", "port") == port,
+		"a port that is one is kept: %d" % port)
+	await _key(KEY_DOWN)
+	await _key(KEY_ENTER)
+	await _type("Tank 1.22")
+	await _key(KEY_ESCAPE)
+	check(_focus() == _menu._password_row and InputSettings.get_host_password() == "Tank 1.22"
+		and _settings_file().get_value("online", "host_password") == "Tank 1.22", "PASSWORD: kept exactly as typed")
+	check(_menu.visible and tree.paused and _menu._settings_panel.visible, "Esc while typing only stops the typing")
+	_menu._max_row.mouse_entered.emit()
+	check(_focus() == _menu._max_row, "not typing, the mouse takes the focus as ever")
+	await _key(KEY_LEFT)
+	check(MenuRows.value_label(_menu._max_row).text == "2 + YOU" and _settings_file().get_value("online", "max_players") == 2,
+		"MAX PLAYERS: left, 2 others, kept")
+	await _key(KEY_LEFT)
+	await _key(KEY_LEFT)
+	check(InputSettings.get_host_max_players() == 1 and MenuRows.arrow(_menu._max_row, "Left").disabled,
+		"down to 1, and no further")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_host_max_players() == 2, "right: 2")
+
+	_menu._allow_row.grab_focus()
+	await _key(KEY_RIGHT)
+	check(Net.is_host() and Net.port == port and Net.has_password() and Net.max_clients == 2 and not Net.lock_new,
+		"ALLOW REMOTE PLAYERS, right: hosting, on that port, with the password, up to 2 others")
+	check(MenuRows.value_label(_menu._allow_row).text == "ON" and not port_field.editable
+		and _menu._online_note.text == "Open: others join from ONLINE BATTLE at YOUR ADDRESS.", "ON, the port fixed while open")
+	check(MenuRows.value_label(_menu._address_row).text.ends_with(" : %d" % port),
+		"YOUR ADDRESS: %s" % MenuRows.value_label(_menu._address_row).text)
+	check(_game.has_node("NetHostWorld") and Net.host_screen == Net.SCREEN_GAME, "the stage goes out to whoever joins")
+	check(PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.NO_SEAT],
+		"player 1 keeps tank 1; tank 2, never joined, is free for whoever presses fire")
+	check(tree.paused and _menu.visible, "still paused, in the menu")
+	_menu._password_row.grab_focus()
+	await _key(KEY_ENTER)
+	MenuRows.field(_menu._password_row).text = ""
+	await _type("Open Sesame")
+	await _key(KEY_ENTER)
+	check(Net._password == "Open Sesame" and InputSettings.get_host_password() == "Open Sesame",
+		"a new password, while open: newcomers need it from now on")
+	_menu._max_row.grab_focus()
+	await _key(KEY_LEFT)
+	check(Net.max_clients == 1, "MAX PLAYERS, while open: at once")
+	await _key(KEY_RIGHT)
+	_menu._port_row.grab_focus()
+	await _key(KEY_ENTER)
+	check(_menu._typing == null and _menu._online_note.text == "The port can't change while the game is open.",
+		"the port can't be typed in while open")
+	_menu._address_row.grab_focus()
+	await _key(KEY_ENTER)
+	check(MenuRows.value_label(_menu._address_row).text.begins_with("COPIED: "), "Enter on YOUR ADDRESS copies it")
+
+	# Someone joins (a stand-in for one: the real thing is online_test's).
+	await _key(KEY_ESCAPE)
+	check(_menu._main_panel.visible and not _menu._host_button.visible, "the first page: no HOST while nobody has joined")
+	Net.peers[7] = {"name": "CLIENTA", "allow": [true, true]}
+	PlayerInput.set_seat(1, PlayerInput.controller_key(7, 0))
+	Net.session_changed.emit()
+	var order: Array = []
+	for button: Button in _menu._page_items(0):
+		order.append(button.text)
+	check(order == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "SETTINGS", "HOST", "MAIN MENU", "QUIT GAME"],
+		"someone joined: HOST, under SETTINGS: %s" % str(order))
+	_menu._host_button.grab_focus()
+	await _key(KEY_ENTER)
+	var drive_names: Array = []
+	for peer: int in _menu._drive_rows:
+		drive_names.append(MenuRows.name_label(_menu._drive_rows[peer]).text)
+	check(_menu._host_panel.visible and drive_names == [Net.local_name, "CLIENTA"] and _menu._kick_rows.keys() == [7],
+		"HOST: who may drive what, the host too (%s), and KICK for the one who joined" % str(drive_names))
+	check(MenuRows.value_label(_menu._drive_rows[7]).text == "P1 + P2   ·   DRIVING P2", "CLIENTA drives P2")
+	await _key(KEY_DOWN)
+	await _key(KEY_RIGHT)
+	check(Net.peers[7]["allow"] == [true, false] and PlayerInput.seats[1] == PlayerInput.NO_SEAT,
+		"right on CLIENTA: P1 ONLY, and tank 2 is taken from them")
+	await _key(KEY_ESCAPE)
+	_menu._settings_button.grab_focus()
+	await _key(KEY_ENTER)
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	check(_menu._online_tab.visible and _menu._players_caption.text == "CONNECTED PLAYERS   1 / 2"
+		and _menu._player_lines[0].text == "CLIENTA   ·   WATCHING", "RB twice: the ONLINE tab, CLIENTA connected, watching")
+	await _pad(JOY_BUTTON_LEFT_SHOULDER)
+	check(_menu._game_rows.visible and not _menu._online_tab.visible, "LB: back to GAME")
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	_menu._allow_row.grab_focus()
+	await _key(KEY_ENTER)
+	check(Net.is_host() and Net.lock_new and MenuRows.value_label(_menu._allow_row).text == "OFF"
+		and _menu._online_note.text == "Nobody new can join. The players here stay.",
+		"OFF with someone here: nobody new gets in, and they stay")
+	await _key(KEY_ENTER)
+	check(Net.is_host() and not Net.lock_new and MenuRows.value_label(_menu._allow_row).text == "ON", "ON again: open")
+	Net.peers.erase(7)
+	Net.session_changed.emit()
+	check(not _menu._host_button.visible and _menu._player_lines[0].text == "NO ONE YET", "they left: no HOST, nobody listed")
+	await _key(KEY_ENTER)
+	check(not Net.is_online() and MenuRows.value_label(_menu._allow_row).text == "OFF" and port_field.editable,
+		"OFF with nobody here: the game closes to the network")
+	check(not _game.has_node("NetHostWorld") and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2],
+		"and plays on offline, the keys driving their own tanks")
+
+	var blocker := TCPServer.new()
+	if blocker.listen(port) == OK:
+		await _key(KEY_ENTER)
+		check(not Net.is_online() and MenuRows.value_label(_menu._allow_row).text == "OFF"
+			and _menu._online_note.text == "That port is in use. Try another."
+			and _menu._online_note.has_theme_color_override("font_color"), "a port in use: it says so, and stays OFF")
+		blocker.stop()
+
+	_menu.set_online_client(true)
+	await _key(KEY_ESCAPE)
+	_menu._settings_button.grab_focus()
+	await _key(KEY_ENTER)
+	check(not strip.visible and _menu._settings_rows.visible and not _menu._game_rows.visible
+		and not _menu._page_items(1).has(strip) and _focus() == _menu._common.sfx_row,
+		"a client's settings: GENERAL only, no GAME or ONLINE tab (the host's game and its rules aren't theirs)")
+	_menu.set_online_client(false)
+	await _key(KEY_ESCAPE)
+	await _key(KEY_ESCAPE)
+	check(not _menu.visible and not tree.paused, "Esc, Esc: resumed")

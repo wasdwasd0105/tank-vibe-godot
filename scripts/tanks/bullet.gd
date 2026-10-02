@@ -87,6 +87,7 @@ const BG_KEY_B: float = 248.0 / 255.0
 const BG_KEY_THRESHOLD: float = 0.05
 
 func _ready() -> void:
+	add_to_group(NetWorld.GROUP)
 	area_entered.connect(_on_area_entered)
 	body_entered.connect(_on_body_entered)
 	monitoring = true
@@ -148,13 +149,9 @@ func _physics_process(delta: float) -> void:
 	if _destroyed:
 		return
 
-	_animation_timer += delta
-	var frame_duration: float = FRAME_DURATIONS.get(visual_style, FRAME_DURATION)
-	var active_textures := _get_active_bullet_textures()
-	if active_textures.size() > 1 and _animation_timer >= frame_duration:
-		_animation_timer -= frame_duration
-		_current_frame = (_current_frame + 1) % active_textures.size()
-		_update_visual_frame()
+	_animate(delta)
+	if Net.is_client():
+		return  # the host flies every shell; this one only shows it
 
 	# AP shells launch slow and accelerate to a high top speed.
 	if accel > 0.0 and max_speed > 0.0:
@@ -270,10 +267,16 @@ func _on_body_entered(body: Node2D) -> void:
 				body.take_damage()
 		_destroy()
 	elif body.is_in_group("eagle"):
-		Events.base_destroyed.emit()
-		_destroy()
+		_hit_base()
 	elif body.is_in_group("boundary"):
 		_destroy()
+
+## The shell reached the base: it falls, unless the BASE INVINCIBLE setting is
+## on, when the shell just stops there.
+func _hit_base() -> void:
+	if not InputSettings.get_base_invincible():
+		Events.base_destroyed.emit()
+	_destroy()
 
 ## An explosion bullet's DIRECT hit: deal its `damage` as HP (no retaliation),
 ## then the caller detonates the wave.
@@ -319,8 +322,7 @@ func _ap_on_body(body: Node2D) -> void:
 		return
 
 	if body.is_in_group("eagle"):
-		Events.base_destroyed.emit()
-		_destroy()
+		_hit_base()
 	elif body.is_in_group("boundary"):
 		_destroy()
 
@@ -389,7 +391,7 @@ func _destroy() -> void:
 	# the original did; otherwise the built-in flash marks each lane.
 	var hit_frames: Array = ThemeManager.get_hit_frames(visual_style)
 	if not hit_frames.is_empty():
-		HitEffect.spawn(parent_node, global_position, hit_frames, ThemeManager.get_hit_duration())
+		HitEffect.spawn(parent_node, global_position, hit_frames, ThemeManager.get_hit_duration(), visual_style)
 		queue_free()
 		return
 
@@ -406,8 +408,44 @@ func _destroy() -> void:
 		explosion.global_position = global_position + perp * lane_offset
 		explosion.scale = Vector2(1.0, 1.0)
 		parent_node.add_child(explosion)
+		NetHostWorld.record(NetWorld.EV_EXPLOSION, [explosion.global_position.x, explosion.global_position.y, 1.0])
 
 	queue_free()
+
+## Steps the shell's frames on.
+func _animate(delta: float) -> void:
+	_animation_timer += delta
+	var frame_duration: float = FRAME_DURATIONS.get(visual_style, FRAME_DURATION)
+	var active_textures := _get_active_bullet_textures()
+	if active_textures.size() > 1 and _animation_timer >= frame_duration:
+		_animation_timer -= frame_duration
+		_current_frame = (_current_frame + 1) % active_textures.size()
+		_update_visual_frame()
+
+# --- Online (NetWorld): a shell is its look and where it is. ---
+
+func net_type() -> int:
+	return NetWorld.T_BULLET
+
+func net_spawn_args() -> Array:
+	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets)]
+
+func net_state() -> Array:
+	return [global_position.x, global_position.y]
+
+## A client's shell: flying [param args][0] (a BaseTank facing), drawn in style
+## [param args][1] on lanes [param args][2].
+func net_setup(args: Array) -> void:
+	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
+	visual_style = str(args[1])
+	var lanes: Array[float] = []
+	for lane: Variant in args[2]:
+		lanes.append(float(lane))
+	visual_lane_offsets = lanes
+	collision_lane_offsets = lanes.duplicate()
+
+func net_apply(_state: Array) -> void:
+	pass
 
 func _create_visual_sprites() -> void:
 	var active_textures := _get_active_bullet_textures()

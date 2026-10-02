@@ -1,7 +1,7 @@
 extends Node
 ## Headless test for the new-game (join) screen: each player joins with their
-## fire button or a click on their card, a credit each; fire again, START or a
-## controller's Start begins the game; Esc, B or BACK return to the title
+## fire button or a click on their card, as often as they like (credits are
+## unlimited); fire again, START or a controller's Start begins the game; Esc, B or BACK return to the title
 ## screen.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/join_screen_test.tscn
@@ -46,9 +46,8 @@ func _pad(button: JoyButton) -> void:
 
 ## A fresh game and its join screen, made the current scene so that leaving it
 ## (to the title or the game) replaces it instead of this test.
-func _open(credits: int) -> void:
+func _open() -> void:
 	GameManager.reset()
-	GameManager.credits = credits
 	_screen = load(JOIN_SCENE).instantiate()
 	get_tree().root.add_child(_screen)
 	get_tree().current_scene = _screen
@@ -84,8 +83,8 @@ func _run() -> void:
 		tree.quit(1)
 		return
 
-	print("\n[A] The screen: a card per player, the credits, START waiting")
-	await _open(3)
+	print("\n[A] The screen: a card per player, START waiting")
+	await _open()
 	check(_screen.get_node("Header").text == "NEW GAME" and _screen.theme != null, "a NEW GAME page in the menu style")
 	check(_screen._card_buttons.size() == 2 and _screen._card_buttons[0].get_node("Column/Title").text == "PLAYER 1",
 		"two cards, PLAYER 1 first")
@@ -99,17 +98,17 @@ func _run() -> void:
 	check(_prompt_text(0) == "PRESS %s OR PAD %s TO JOIN" % [p1_key, pad_button],
 		"with P1's controller plugged in, its button too, marked PAD: %s" % _prompt_text(0))
 	_screen._fill_prompt(0, "TO JOIN", false)
-	check(_screen._credits_label.text == "CREDITS   3" and _screen._start_button.disabled, "CREDITS 3, START disabled")
+	check(_screen.get_node_or_null("CreditsLabel") == null and _screen._start_button.disabled,
+		"no credits line (credits are unlimited), START disabled")
 
 	print("\n[B] Fire joins; a click on a card joins too")
 	await _key(KEY_T)
-	check(_screen._joined == [true, false] and GameManager.credits == 2 and GameManager.player_active[0],
-		"P1's fire: P1 joins for a credit")
+	check(_screen._joined == [true, false] and GameManager.player_active[0], "P1's fire: P1 joins")
 	check(_screen._status_labels[0].text == "READY" and _prompt_text(0) == "PRESS %s TO START" % p1_key
 		and _screen._tank_images[0].modulate.a == 1.0, "P1's card: READY, PRESS %s TO START" % p1_key)
-	check(not _screen._start_button.disabled and _screen._credits_label.text == "CREDITS   2", "START on, CREDITS 2")
+	check(not _screen._start_button.disabled, "START on")
 	_screen._card_buttons[1].pressed.emit()
-	check(_screen._joined == [true, true] and GameManager.credits == 1, "a click on P2's card: P2 joins")
+	check(_screen._joined == [true, true], "a click on P2's card: P2 joins")
 
 	print("\n[C] Esc goes back to the title")
 	_screen._back_button.pressed.emit()
@@ -128,45 +127,42 @@ func _run() -> void:
 	check(await _left_to() == "res://scenes/main.tscn", "Esc: the title screen")
 
 	print("\n[D] Fire again starts the game")
-	await _open(3)
+	await _open()
 	await _key(KEY_T)
 	await _key(KEY_T)
 	check(await _left_to() == "res://scenes/game.tscn", "P1's fire twice: the game")
 
 	print("\n[E] A controller: B goes back, Start starts once someone joined")
-	await _open(3)
+	await _open()
 	await _pad(JOY_BUTTON_START)
 	check(tree.current_scene == _screen, "Start with nobody in: nothing")
 	_screen._card_buttons[0].pressed.emit()
 	await _pad(JOY_BUTTON_START)
 	check(await _left_to() == "res://scenes/game.tscn", "Start after a join: the game")
-	await _open(3)
+	await _open()
 	await _pad(JOY_BUTTON_B)
 	check(await _left_to() == "res://scenes/main.tscn", "B: the title screen")
 
 	print("\n[F] The mouse: START and BACK")
-	await _open(3)
+	await _open()
 	_screen._start_button.pressed.emit()
 	check(tree.current_scene == _screen, "START does nothing before a join")
 	_screen._card_buttons[1].pressed.emit()
 	_screen._start_button.pressed.emit()
 	check(await _left_to() == "res://scenes/game.tscn", "START after P2 joins: the game")
-	await _open(3)
+	await _open()
 	_screen._back_button.pressed.emit()
 	check(await _left_to() == "res://scenes/main.tscn", "BACK: the title screen")
 
-	print("\n[G] Out of credits")
-	await _open(1)
-	await _key(KEY_T)
-	check(_screen._joined == [true, false] and GameManager.credits == 0, "the last credit goes to P1")
-	check(_screen._card_buttons[1].disabled and _screen._status_labels[1].text == "NO CREDITS"
-		and _screen._prompts[1].modulate.a == 0.0, "P2's card: NO CREDITS, no prompt")
-	check(_screen._card_buttons[0].get_node("Column/Title").global_position.y
-		== _screen._card_buttons[1].get_node("Column/Title").global_position.y, "the two cards still line up")
-	_screen._on_player_fire(1)
-	check(_screen._joined == [true, false], "and P2 can't join")
-	_screen._back_button.pressed.emit()
-	await _left_to()
+	print("\n[G] Credits are unlimited: a card never runs out")
+	for i in 3:
+		await _open()
+		await _key(KEY_T)
+		_screen._on_player_fire(1)
+		check(_screen._joined == [true, true] and not _screen._card_buttons[1].disabled
+			and _screen._status_labels[1].text == "READY", "game %d: both players join" % (i + 1))
+		_screen._back_button.pressed.emit()
+		await _left_to()
 
 	await tree.create_timer(0.5).timeout  # let the menu sounds finish before quitting
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))

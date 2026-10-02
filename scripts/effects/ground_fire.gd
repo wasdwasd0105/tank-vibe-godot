@@ -52,6 +52,7 @@ func setup(p_tile: Vector2i, p_from_player: bool, p_arm_delay: float) -> void:
 
 
 func _ready() -> void:
+	add_to_group(NetWorld.GROUP)
 	# Draw above the floor but BELOW tanks: fire lives in the Playfield subtree,
 	# which renders before the Entities (tank) subtree at the same z_index.
 	z_index = 0
@@ -93,6 +94,9 @@ func _process(delta: float) -> void:
 			visible = true
 		return
 
+	if Net.is_client():
+		_advance_animation(delta)  # it burns out when the host says
+		return
 	_damage_timer -= delta
 	if _damage_timer <= 0.0:
 		_damage_timer = DAMAGE_POLL
@@ -131,6 +135,30 @@ func _advance_animation(delta: float) -> void:
 		_anim_timer -= ANIM_FRAME_TIME
 		_frame = (_frame + 1) % _frames.size()
 		_sprite.texture = _frames[_frame] as Texture2D
+
+
+# --- Online (NetWorld): a burning tile is its row (whose fire), how long until
+# it shows, and where its flames are in their loop. ---
+
+func net_type() -> int:
+	return NetWorld.T_FIRE
+
+func net_spawn_args() -> Array:
+	return [_current_row(), 0.0 if _armed else _arm_timer, _frame, _anim_timer]
+
+func net_state() -> Array:
+	return [global_position.x, global_position.y]
+
+func net_setup(args: Array) -> void:
+	var row := int(args[0])
+	is_grass_fire = row == 1
+	from_player = row == 3
+	_arm_timer = float(args[1])
+	_frame = int(args[2])
+	_anim_timer = float(args[3])
+
+func net_apply(_state: Array) -> void:
+	pass
 
 
 static func _load_textures(row: int) -> Array:

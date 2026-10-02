@@ -1,6 +1,7 @@
 extends Node
 ## Headless integration test for the mine weapon against the original game's
-## rules (docs/mine_weapon_original_spec.md). Run as an override main scene:
+## rules (docs/mine_weapon_original_spec.md), and a player's bomb setting every
+## mine off with the players spared (Sean's rule). Run as an override main scene:
 ##   Godot --headless res://scenes/test/mine_test.tscn
 ##
 ## Test enemies run with physics (AI) disabled so the harness is deterministic;
@@ -606,6 +607,7 @@ func _run() -> void:
 	await get_tree().create_timer(0.1).timeout  # clear the lay-sound repeat guard
 	await _frames()
 	var sound_before: int = SoundManager._last_played.get(&"lay_mine", -1)
+	layer.current_direction = Vector2.DOWN  # its AI may have turned it while we waited
 	check(layer._lay_mine_special(), "enemy laid a mine")
 	check(SoundManager._last_played.get(&"lay_mine", -1) > sound_before, "an enemy laying a mine plays the lay sound")
 	var laid_mines := _lm.get_mines()
@@ -630,6 +632,59 @@ func _run() -> void:
 	check(hard_layer._lay_mine_special() and _lm.get_mines().size() == 1 and _lm.get_mines()[0].level == 2
 		and hard_layer.special_weapon_level == 3,
 		"an INSANE type-24 tank (gun level 3) lays level-2 mines: enemy mines stop at L2")
+
+	print("\n[M] A player's bomb_cookie sets every mine off, sparing the players (Sean)")
+	await _reset()
+	_clear_arena()
+	_place(_player, Vector2(320, 320), Vector2.UP)
+	var bomb_hp := _player.health
+	var near_enemy_mine := _lm._spawn_mine(Vector2i(12, 9), 3, false)   # 3 tiles right: its blast reaches 4
+	var own_mine := _lm._spawn_mine(Vector2i(6, 9), 2, true, 0)         # 3 tiles left, the player's
+	var laying_mine := _lm._spawn_mine(Vector2i(24, 20), 1, false)   # still being laid
+	_put_fg(Vector2i(14, 9), 0x19)   # a brick beside the enemy mine
+	var bomb_victim := _spawn_enemy(Vector2(640, 480))
+	# Player 2, not the one taking the bomb (whose pickup grace would cover it),
+	# 3 tiles below the enemy mine.
+	var p2: PlayerTank = load("res://scenes/tanks/player_tank.tscn").instantiate()
+	p2.player_id = 1
+	_game.get_node("Entities/Players").add_child(p2)
+	p2.global_position = _at(Vector2(416, 416))
+	await _frames()
+	p2.is_invincible = false
+	var p2_hp := p2.health
+	_arm(near_enemy_mine)
+	_arm(own_mine)
+	laying_mine._age = -100.0
+	await _frames()
+	var bomb_cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
+	bomb_cookie.setup(CookieData.CookieType.TANK_BOMB)
+	_game.get_node("Entities/PowerUps").add_child(bomb_cookie)
+	bomb_cookie._apply_effect(_player)
+	bomb_cookie.queue_free()
+	await _frames()
+	check(_lm.get_mines().is_empty() and not is_instance_valid(near_enemy_mine) and not is_instance_valid(own_mine)
+		and not is_instance_valid(laying_mine), "every mine goes off, the one still being laid too")
+	check(_blast_count() == 3, "each in its own blast (%d)" % _blast_count())
+	await _settle()
+	check(_player.health == bomb_hp and not _player.is_flying and not _player.is_mine_slowed,
+		"the player, within the enemy L3 mine's reach, is unhurt, not thrown, not slowed (HP %d)" % _player.health)
+	check(p2.health == p2_hp and not p2.is_flying and not p2.is_mine_slowed,
+		"and so is player 2, in reach and not invincible (HP %d of %d)" % [p2.health, p2_hp])
+	check(not is_instance_valid(bomb_victim), "and the enemies are gone, as the bomb does")
+	p2.queue_free()
+	check(not _lm._fg_tile_data.has(Vector2i(14, 9)), "the brick beside the enemy mine breaks, as in any mine blast")
+	# The control: the same mine going off as usual_mine hurts the player.
+	await _reset()
+	_clear_arena()
+	_place(_player, Vector2(320, 320), Vector2.UP)
+	var usual_mine := _lm._spawn_mine(Vector2i(12, 9), 3, false)
+	await _frames()
+	_arm(usual_mine)
+	await _frames()
+	usual_mine.set_off()
+	await _settle()
+	check(_player.health < bomb_hp, "while the same mine going off on its own hurts the player (HP %d)" % _player.health)
+	_player.health = bomb_hp
 
 	# The last lay sound (0.92 s) must finish, or the engine reports its playback
 	# as leaked when the test quits.

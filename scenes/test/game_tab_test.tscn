@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cgametabtest1"]
+
+[ext_resource type="Script" path="res://scripts/tests/game_tab_test.gd" id="1_gametab"]
+
+[node name="GameTabTest" type="Node"]
+script = ExtResource("1_gametab")
