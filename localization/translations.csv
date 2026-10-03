@@ -247,6 +247,8 @@ Turn ALLOW REMOTE PLAYERS on to open this game to others.,打开「允许远程�
 Nobody new can join. The players here stay.,新玩家不能加入，已经在的玩家留下。
 Open: others join from ONLINE BATTLE at YOUR ADDRESS.,已开放：其他人在「联网对战」输入「你的地址」即可加入。
 The port can't change while the game is open.,游戏开放期间不能更改端口。
+PORT TYPE,端口类型
+The port type can't change while the game is open.,游戏开放期间不能更改端口类型。
 COPIED: %s,已复制：%s
 PAUSED BY THE HOST,主机已暂停
 %s joined the game.,（系统信息）%s 加入游戏。

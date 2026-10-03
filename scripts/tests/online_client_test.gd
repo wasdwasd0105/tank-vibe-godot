@@ -20,6 +20,8 @@ const HOST_MAP_B := "Online_Test_Map_B"
 var _fail := 0
 var _lines: PackedStringArray = []
 var _port := 0
+## The transport the host takes ("TCP" or "UDP"), for checking this machine found it.
+var _transport := ""
 var _done := false
 ## Rumbles this machine's controllers got, as [slot, strong motor].
 var _rumbles: Array = []
@@ -46,6 +48,8 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--online-test-port="):
 			_port = int(arg.get_slice("=", 1))
+		elif arg.begins_with("--online-test-transport="):
+			_transport = arg.get_slice("=", 1)
 	get_tree().create_timer(TIME_LIMIT).timeout.connect(_finish)
 	_run.call_deferred()
 
@@ -159,6 +163,7 @@ func _run() -> void:
 
 	# --- The host's running stage ---
 	check(await _wait(func() -> bool: return _scene_is("res://scenes/game.tscn"), 20.0), "joined: straight into the host's stage")
+	check(Net.TRANSPORT_NAMES[Net.transport] == _transport, "over %s, found out by itself" % Net.TRANSPORT_NAMES[Net.transport])
 
 	# --- The host's map set: this computer lacks it, so it's offered ---
 	check(await _wait(func() -> bool: return tree.root.get_node_or_null("NetMapPrompt") != null, 10.0),

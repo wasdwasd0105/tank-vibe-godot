@@ -1,13 +1,23 @@
 # Online Play — Design and Implementation
 
-How the remake plays over a network. It keeps the original's model (network_original_spec.md): one player hosts and runs the game, up to three others join, and there are still two tanks. The machinery is modern: Godot's high-level multiplayer, snapshot interpolation and one TCP port for everything.
+How the remake plays over a network. It keeps the original's model (network_original_spec.md): one player hosts and runs the game, up to three others join, and there are still two tanks. The machinery is modern: Godot's high-level multiplayer, snapshot interpolation and one port for everything, TCP or UDP as the host picks.
 
 ## 1. Framework and transport
 
-- **Godot 4.7's high-level multiplayer:** `SceneMultiplayer` on the scene tree, with `WebSocketMultiplayerPeer` as the transport. Nothing outside Godot.
-- **One TCP port.** The host listens on a single port (default **24680**, set on the pause menu's ONLINE tab). Every client connection and every message goes over it: the handshake, the lobby, inputs, snapshots and events.
-  - Nothing else is needed: no UDP, no discovery port and no port range (the original needed DirectPlay's 47624 plus 2300–2400).
-  - Behind a router, only that one TCP port needs forwarding on the host's side.
+- **Godot 4.7's high-level multiplayer:** `SceneMultiplayer` on the scene tree. Nothing outside Godot.
+- **One port, TCP or UDP** (Sean, 2026-10-04). The host listens on a single port (default **24680**). Its type is the ONLINE tab's PORT TYPE: TCP (the default, as before) or UDP. Every client connection and every message goes over it: the handshake, the lobby, inputs, snapshots, events and map sets.
+  - **TCP:** a `WebSocketMultiplayerPeer`. Nagle's algorithm is off on each connection.
+  - **UDP:** an `ENetMultiplayerPeer` with two channels: RPCs on the first, the world's snapshots on the second, so a big snapshot never holds up a key press.
+    - Everything stays reliable and in order. The snapshot deltas count on every snapshot arriving, so this changes nothing above the transport; ENet's own resending is quicker than TCP's, and there's no Nagle.
+    - ENet takes up to 8 connections, so a newcomer turned away still hears why.
+    - ENet doesn't say how much it has queued, so over UDP only the snapshots' acks hold back a slow client (section 5).
+  - **A client finds out which by itself:** a join tries both at once (`Net._find_transport`).
+    - A plain TCP connection probes the port while the UDP join itself goes ahead.
+    - The UDP join connecting means a UDP host: the probe stops.
+    - The probe connecting means a TCP host. The UDP try then gets 0.4 s more, in case something else answers on a UDP host's TCP port, before the join turns to TCP.
+    - Neither within 8 s: "No game answered at that address." (A UDP join never fails by itself, so this is the wait at a closed port.)
+  - Nothing else is needed: no discovery port and no port range (the original needed DirectPlay's 47624 plus 2300–2400).
+  - Behind a router, only that one port needs forwarding on the host's side, as TCP or UDP to match PORT TYPE.
   - Clients type the host's address (with ":PORT" when the host's port isn't 24680). The ONLINE tab's YOUR ADDRESS and the lobby show the host's LAN address to share, as the original's 信息 button did.
 - **The handshake** is `SceneMultiplayer`'s authentication. The client sends its protocol number (`Net.PROTOCOL`, now 2) and name.
   - The host turns it away, with a reason the client shows, when the protocol differs, the name is empty, the game is full (MAX PLAYERS, 1 to 3 besides the host), or new players aren't allowed.
@@ -21,7 +31,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
   - Object decoding stays off, on the handshake and on snapshots.
   - Every client message is size- and range-checked, and only a peer that passed the handshake is heard.
 - **Liveness:** each side says something at least once a second, if only a keepalive. A peer silent for 10 s is dropped. A host that ends the game, or a kick, says why before closing.
-- **Latency:** Nagle's algorithm is off on every connection, so a key press goes out at once.
+- **Latency:** a key press goes out at once: over TCP, Nagle's algorithm is off; ENet never holds packets back.
 
 ## 2. Roles
 
@@ -54,6 +64,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
     - ON opens the game on the port, or lets newcomers in again.
     - OFF turns newcomers away; the players already in stay. With nobody connected it also closes the game to the network, and play goes on offline.
   - **PORT**, typed. It's kept, and fixed while the game is open.
+  - **PORT TYPE**, TCP or UDP (section 1). It's kept, and fixed while the game is open.
   - **PASSWORD**, optional, typed and shown as dots. It's kept, and applies to newcomers at once.
   - **MAX PLAYERS**: 1 to 3 others besides the host's machine ("3 + YOU"), so 4 in all. It's kept, and applies to newcomers at once.
   - **YOUR ADDRESS**: the LAN address and port to give the others. Activating it copies it.
@@ -114,7 +125,7 @@ Rumbles go straight to the peer they're for, outside the snapshots.
 
 **Flow control** is the original's ack gate, made gentler:
 - Each client acknowledges the newest snapshot it has received, with its input messages.
-- The host skips a client that is more than 15 snapshots behind on its acks, or whose connection has more than 48 KB still waiting.
+- The host skips a client that is more than 15 snapshots behind on its acks, or (over TCP) whose connection has more than 48 KB still waiting.
 - When it has caught up, that client gets one delta covering the gap. So a slow client gets fewer, bigger updates, never a growing backlog.
 
 **The client's view** is snapshot interpolation:
@@ -164,7 +175,7 @@ Changes apply at once. Taking a tank away from its driver frees it and it sits o
 ## 9. Code
 
 New:
-- `scripts/autoload/net.gd` (autoload `Net`): the session.
+- `scripts/autoload/net.gd` (autoload `Net`): the session, over a WebSocket (TCP) or ENet (UDP), and a joining client's choice between them.
   - host and join, the handshake, keepalives, peers, names and permissions;
   - the lobby's state, RPCs, raw snapshot packets, rumble routing, notices and why a session ended.
 - `scripts/autoload/player_input.gd` (autoload `PlayerInput`): the input layer and the seats.
@@ -182,14 +193,14 @@ Changed:
 - **game.gd:** host mode (a NetHostWorld, seats, tanks without drivers sit out), opening and closing a running game to others (`hosting_started`, `session_ended`), and mirror mode.
 - **Screens:** title (ONLINE BATTLE), join screen (the lobby), pause menu (SETTINGS' ONLINE tab, the HOST page, the client's MENU).
 - **SoundManager:** sounds to clients; a client plays only the host's.
-- **InputSettings:** `[online]` the host's `port`, `host_password` and `max_players`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file (and, through LevelData.user_map_dir, its own maps folder).
+- **InputSettings:** `[online]` the host's `port`, `port_type`, `host_password` and `max_players`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file (and, through LevelData.user_map_dir, its own maps folder).
 - **LevelData:** `pool_hash`, `bytes_hash`, `pool_with_hash`, `find_pool`, and `save_map_bytes` for a map set that came from a host.
 - `scripts/net/net_map_prompt.gd` (`NetMapPrompt`): the question about the host's map set.
 - **SaveManager:** player 1 never loads as sitting out.
 
 ## 10. Testing
 
-`scenes/test/online_test.tscn` (with its client half, `online_client_test.tscn`, which it starts as a second headless process on a random port) covers:
+`scenes/test/online_test.tscn` (with its client half, `online_client_test.tscn`, which it starts as a second headless process on a random port) covers the following over TCP. `online_udp_test.tscn` runs all of it again with the host on UDP, and the client finds out which by itself each time:
 - **the parts:** the encoding, names, seat rules, remote presses, and a busy port refusing to host;
 - **the handshake:** another version, no name, no password, a wrong password and a locked game are each turned away with the reason (an in-process fake client), and each challenge is fresh;
 - **the flow:**
@@ -216,7 +227,9 @@ The client half starts with an empty maps folder of its own while the host plays
 - JOIN's checks, what it keeps and where, a join failing and saying why without leaving the screen, and Esc stopping one;
 - a connection kept once, the order, MORE's options by keys, EDIT, DELETE after CONFIRM?, and a game that ended saying why once.
 
-`scenes/test/pause_menu_test.tscn` [H] covers the ONLINE tab and HOST: the tabs by keys and LB / RB, typing the port (a bad one refused) and the password, MAX PLAYERS, opening the game (the seats it leaves, its NetHostWorld), the port fixed while open, HOST appearing once someone joins and its rows, OFF locking with someone there and closing with nobody, a port in use, and no ONLINE tab on a client.
+`online_screen_test.tscn` [L] covers a join finding out the transport: a TCP host, a UDP host, and a UDP host with something else on its TCP port.
+
+`scenes/test/pause_menu_test.tscn` [H] covers the ONLINE tab and HOST, PORT TYPE too (an ENet server over UDP, a busy UDP port): the tabs by keys and LB / RB, typing the port (a bad one refused) and the password, MAX PLAYERS, opening the game (the seats it leaves, its NetHostWorld), the port fixed while open, HOST appearing once someone joins and its rows, OFF locking with someone there and closing with nobody, a port in use, and no ONLINE tab on a client.
 
 ## 11. Sean's calls (2026-09-29)
 
@@ -230,6 +243,13 @@ The client half starts with an empty maps folder of its own while the host plays
 
 - **ONLINE BATTLE** replaces ONLINE on the title: a list of saved connections, like the saved games' list, with CREATE, EDIT, DELETE and CONNECT. CREATE's window takes a username, the remote address (ip:port), an optional password, and JOIN (section 3).
 - **No host screen for now:** its design comes later.
+
+## 15. Sean's calls (2026-10-04)
+
+- **UDP support** (from players' feedback): the host's ONLINE tab has PORT TYPE, TCP or UDP. Clients detect which and connect with it.
+- My choices:
+  - TCP stays the default.
+  - Over UDP everything stays reliable and in order, on ENet: the same game, a quicker transport. Unreliable snapshots, with deltas against the last snapshot acked, could come later if play over poor links needs them.
 
 ## 14. Sean's calls (2026-10-03)
 

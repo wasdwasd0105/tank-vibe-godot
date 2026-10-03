@@ -667,6 +667,16 @@ func get_host_password() -> String:
 	var value: Variant = _config.get_value("online", "host_password", "")
 	return value if value is String else ""
 
+## The transport a game opened to others takes its players over: "TCP" or
+## "UDP" (Net.TRANSPORT_NAMES).
+func save_host_port_type(port_type: String) -> void:
+	_config.set_value("online", "port_type", "UDP" if port_type == "UDP" else "TCP")
+	_config.save(_save_path)
+
+func get_host_port_type() -> String:
+	var value: Variant = _config.get_value("online", "port_type", "TCP")
+	return "UDP" if value is String and value == "UDP" else "TCP"
+
 func get_host_max_players() -> int:
 	var value: Variant = _config.get_value("online", "max_players", MAX_HOST_PLAYERS)
 	return clampi(value, 1, MAX_HOST_PLAYERS) if value is int else MAX_HOST_PLAYERS

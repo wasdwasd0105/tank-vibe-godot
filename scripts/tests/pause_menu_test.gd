@@ -402,16 +402,19 @@ func _test_online_tab() -> void:
 	await _key(KEY_RIGHT)
 	check(tabs[2].button_pressed, "right at the end stays on ONLINE")
 	var titles: Array = []
-	for row: Button in [_menu._allow_row, _menu._port_row, _menu._password_row, _menu._max_row, _menu._address_row]:
+	for row: Button in [_menu._allow_row, _menu._port_row, _menu._port_type_row, _menu._password_row, _menu._max_row,
+			_menu._address_row]:
 		titles.append(MenuRows.name_label(row).text)
-	check(titles == ["ALLOW REMOTE PLAYERS", "PORT", "PASSWORD", "MAX PLAYERS", "YOUR ADDRESS"], "its rows: %s" % str(titles))
+	check(titles == ["ALLOW REMOTE PLAYERS", "PORT", "PORT TYPE", "PASSWORD", "MAX PLAYERS", "YOUR ADDRESS"],
+		"its rows: %s" % str(titles))
 	var port_field: LineEdit = MenuRows.field(_menu._port_row)
 	var password_field: LineEdit = MenuRows.field(_menu._password_row)
 	check(MenuRows.value_label(_menu._allow_row).text == "OFF" and not Net.is_online(), "ALLOW REMOTE PLAYERS: OFF")
 	check(port_field.text == "24680" and port_field.editable and password_field.text.is_empty()
+		and MenuRows.value_label(_menu._port_type_row).text == "TCP"
 		and password_field.placeholder_text == "OPTIONAL" and password_field.secret
 		and MenuRows.value_label(_menu._max_row).text == "3 + YOU",
-		"out of the box: port 24680, no password (dots, when there is one), 3 others besides you")
+		"out of the box: port 24680 over TCP, no password (dots, when there is one), 3 others besides you")
 	check(_menu._players_caption.text == "CONNECTED PLAYERS   0 / 3" and _menu._player_lines[0].text == "NO ONE YET",
 		"CONNECTED PLAYERS: nobody")
 	await _key(KEY_DOWN)
@@ -436,6 +439,15 @@ func _test_online_tab() -> void:
 	check(InputSettings.get_online_port() == port and _settings_file().get_value("online", "port") == port,
 		"a port that is one is kept: %d" % port)
 	await _key(KEY_DOWN)
+	check(_focus() == _menu._port_type_row, "down: PORT TYPE")
+	await _key(KEY_RIGHT)
+	check(MenuRows.value_label(_menu._port_type_row).text == "UDP" and _settings_file().get_value("online", "port_type") == "UDP",
+		"right: UDP, kept")
+	await _key(KEY_LEFT)
+	check(InputSettings.get_host_port_type() == "TCP", "left: TCP again")
+	await _key(KEY_ENTER)
+	check(InputSettings.get_host_port_type() == "UDP", "and Enter steps it too: UDP, for the game opened below")
+	await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
 	await _type("Tank 1.22")
 	await _key(KEY_ESCAPE)
@@ -458,6 +470,7 @@ func _test_online_tab() -> void:
 	await _key(KEY_RIGHT)
 	check(Net.is_host() and Net.port == port and Net.has_password() and Net.max_clients == 2 and not Net.lock_new,
 		"ALLOW REMOTE PLAYERS, right: hosting, on that port, with the password, up to 2 others")
+	check(Net.transport == Net.Transport.UDP and Net._peer is ENetMultiplayerPeer, "over UDP: an ENet server")
 	check(MenuRows.value_label(_menu._allow_row).text == "ON" and not port_field.editable
 		and _menu._online_note.text == "Open: others join from ONLINE BATTLE at YOUR ADDRESS.", "ON, the port fixed while open")
 	check(MenuRows.value_label(_menu._address_row).text.ends_with(" : %d" % port),
@@ -481,6 +494,11 @@ func _test_online_tab() -> void:
 	await _key(KEY_ENTER)
 	check(_menu._typing == null and _menu._online_note.text == "The port can't change while the game is open.",
 		"the port can't be typed in while open")
+	_menu._port_type_row.grab_focus()
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_host_port_type() == "UDP" and MenuRows.value_label(_menu._port_type_row).text == "UDP"
+		and _menu._online_note.text == "The port type can't change while the game is open."
+		and MenuRows.arrow(_menu._port_type_row, "Right").disabled, "nor its type")
 	_menu._address_row.grab_focus()
 	await _key(KEY_ENTER)
 	check(MenuRows.value_label(_menu._address_row).text.begins_with("COPIED: "), "Enter on YOUR ADDRESS copies it")
@@ -534,13 +552,27 @@ func _test_online_tab() -> void:
 	check(not _game.has_node("NetHostWorld") and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2],
 		"and plays on offline, the keys driving their own tanks")
 
-	var blocker := TCPServer.new()
-	if blocker.listen(port) == OK:
+	var udp_blocker := PacketPeerUDP.new()
+	if udp_blocker.bind(port) == OK:
 		await _key(KEY_ENTER)
 		check(not Net.is_online() and MenuRows.value_label(_menu._allow_row).text == "OFF"
 			and _menu._online_note.text == "That port is in use. Try another."
-			and _menu._online_note.has_theme_color_override("font_color"), "a port in use: it says so, and stays OFF")
+			and _menu._online_note.has_theme_color_override("font_color"), "a UDP port in use: it says so, and stays OFF")
+		udp_blocker.close()
+	_menu._port_type_row.grab_focus()
+	await _key(KEY_LEFT)
+	_menu._allow_row.grab_focus()
+	var blocker := TCPServer.new()
+	if blocker.listen(port) == OK:
+		await _key(KEY_ENTER)
+		check(not Net.is_online() and InputSettings.get_host_port_type() == "TCP"
+			and _menu._online_note.text == "That port is in use. Try another.", "and a TCP one")
 		blocker.stop()
+	await _key(KEY_ENTER)
+	check(Net.is_host() and Net.transport == Net.Transport.TCP and Net._peer is WebSocketMultiplayerPeer,
+		"a free one over TCP: a WebSocket server")
+	await _key(KEY_ENTER)
+	check(not Net.is_online(), "OFF: closed again")
 
 	_menu.set_online_client(true)
 	await _key(KEY_ESCAPE)

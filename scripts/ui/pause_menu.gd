@@ -10,8 +10,9 @@ extends Control
 ## mines (GameSettings, as on the title screen). Both apply at once, without
 ## leaving the stage. ONLINE opens the game to remote players
 ## (docs/network_design.md):
-## ALLOW REMOTE PLAYERS, the PORT, a PASSWORD (optional), MAX PLAYERS (1 to 3,
-## besides this machine's), the address to give them, and who is connected.
+## ALLOW REMOTE PLAYERS, the PORT and its type (TCP or UDP), a PASSWORD
+## (optional), MAX PLAYERS (1 to 3, besides this machine's), the address to give
+## them, and who is connected.
 ##
 ## Esc or Start opens it. Esc, B or Start go back a page, and from the first page
 ## resume. Mouse, keys and controller work as in the other menus; on the
@@ -78,6 +79,7 @@ var _game_rows: VBoxContainer
 var _online_tab: VBoxContainer
 var _allow_row: Button
 var _port_row: Button
+var _port_type_row: Button
 var _password_row: Button
 var _max_row: Button
 var _address_row: Button
@@ -299,7 +301,7 @@ func _page_items(page: Page) -> Array[Control]:
 				SettingsTab.GENERAL:
 					items.append_array(_common.rows())
 				SettingsTab.ONLINE:
-					items.append_array([_allow_row, _port_row, _password_row, _max_row, _address_row])
+					items.append_array([_allow_row, _port_row, _port_type_row, _password_row, _max_row, _address_row])
 			items.append(_settings_back_button)
 		Page.HOST:
 			for peer: int in _drive_rows:
@@ -321,6 +323,8 @@ func _adjust(direction: int) -> void:
 				_tabs.step(direction)
 			elif focused == _allow_row:
 				_toggle_hosting(direction)
+			elif focused == _port_type_row:
+				_cycle_port_type(direction)
 			elif focused == _max_row:
 				_cycle_max_players(direction)
 			elif not _game.adjust(focused, direction):
@@ -386,6 +390,7 @@ func _build_online_tab() -> void:
 	layout.move_child(_online_tab, _game_rows.get_index() + 1)
 	_allow_row = _add_online_value_row("ALLOW REMOTE PLAYERS", _toggle_hosting)
 	_port_row = _add_online_field_row("PORT", 5, str(Net.DEFAULT_PORT))
+	_port_type_row = _add_online_value_row("PORT TYPE", _cycle_port_type)
 	_password_row = _add_online_field_row("PASSWORD", PASSWORD_MAX, "OPTIONAL")
 	MenuRows.field(_password_row).secret = true
 	_max_row = _add_online_value_row("MAX PLAYERS", _cycle_max_players)
@@ -493,6 +498,9 @@ func _refresh_online_tab() -> void:
 	if _typing != port_field:
 		port_field.text = str(Net.port if hosting else InputSettings.get_online_port())
 	port_field.editable = not hosting
+	MenuRows.value_label(_port_type_row).text = _port_type()
+	for side: String in ["Left", "Right"]:
+		MenuRows.arrow(_port_type_row, side).disabled = hosting
 	var password_field := MenuRows.field(_password_row)
 	if _typing != password_field:
 		password_field.text = InputSettings.get_host_password()
@@ -568,13 +576,30 @@ func _toggle_hosting(_direction: int = 1) -> void:
 			Net.set_lock_new(true)
 		_set_online_note("")
 	elif Net.host(InputSettings.get_online_port(), InputSettings.get_online_name(),
-			InputSettings.get_host_password(), InputSettings.get_host_max_players()) != OK:
+			InputSettings.get_host_password(), InputSettings.get_host_max_players(),
+			Net.TRANSPORT_NAMES.find(InputSettings.get_host_port_type()) as Net.Transport) != OK:
 		_refresh_online_tab()
 		_set_online_note(Net.end_text(Net.END_PORT), true)
 		return
 	else:
 		_set_online_note("")
 	_refresh_online_tab()
+
+
+## PORT TYPE: TCP or UDP, kept for next time. Players joining find out which by
+## themselves. Fixed while the game is open, as the port is.
+func _cycle_port_type(_direction: int) -> void:
+	if Net.is_host():
+		_set_online_note(tr("The port type can't change while the game is open."), true)
+		return
+	InputSettings.save_host_port_type("TCP" if InputSettings.get_host_port_type() == "UDP" else "UDP")
+	_set_online_note("")
+	_refresh_online_tab()
+
+
+## The open game's transport, else the one it would open with.
+func _port_type() -> String:
+	return Net.TRANSPORT_NAMES[Net.transport] if Net.is_host() else InputSettings.get_host_port_type()
 
 
 ## MAX PLAYERS: 1 to 3 others besides this machine's players, kept for next time.

@@ -1,10 +1,11 @@
 extends Node
 ## Online play (docs/network_design.md): one machine hosts and runs the game, and
-## up to three clients join it, everything over one TCP port. Godot's high-level
-## multiplayer carries it: SceneMultiplayer over a WebSocketMultiplayerPeer. The
-## handshake is SceneMultiplayer's authentication, control messages are RPCs on
-## this node (the same path, /root/Net, on every machine) and the world's
-## snapshots go as raw packets.
+## up to three clients join it, everything over one port, TCP or UDP as the host
+## picks (a client finds out which by itself). Godot's high-level multiplayer
+## carries it: SceneMultiplayer over a WebSocketMultiplayerPeer (TCP) or an
+## ENetMultiplayerPeer (UDP). The handshake is SceneMultiplayer's
+## authentication, control messages are RPCs on this node (the same path,
+## /root/Net, on every machine) and the world's snapshots go as raw packets.
 ##
 ## The host keeps the session: who is connected, their names, which tank each
 ## may drive, and the seats (PlayerInput). A client sends its two local players'
@@ -32,6 +33,8 @@ signal map_progress(received: int, total: int)
 signal map_download_finished(name: String, error: String)
 
 enum Role { OFFLINE, HOST, CLIENT }
+## How a host takes its players: TCP (a WebSocket) or UDP (ENet).
+enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
 const PROTOCOL := 2
@@ -50,6 +53,18 @@ const SILENCE_LIMIT := 10.0
 const PARTING_DELAY := 0.5
 ## Big enough for a whole world (the map and every entity) in one go.
 const BUFFER_SIZE := 1 << 20
+## The names the host's PORT TYPE shows (Transport order).
+const TRANSPORT_NAMES: Array[String] = ["TCP", "UDP"]
+## UDP: ENet channels, the world's snapshots on one of their own so a big one
+## never holds up a key press or a map piece behind it.
+const UDP_CHANNELS := 2
+const WORLD_CHANNEL := 1
+## UDP: the connections ENet takes at once, more than the game's players, so a
+## newcomer turned away still hears why.
+const UDP_MAX_PEERS := 8
+## Client: a TCP answer waits this long for the UDP try before the join turns to
+## TCP, so a UDP host with something else on its TCP port isn't missed.
+const TCP_SWITCH_DELAY := 0.4
 ## The random challenge a host with a password sends each newcomer, in bytes.
 const NONCE_SIZE := 32
 ## A map set goes to a client that asks for it in pieces this big, one a frame
@@ -118,7 +133,16 @@ var world_sink: Callable = Callable()
 ## Host: acks each client sent with its inputs, the latest snapshot it has.
 var acks: Dictionary = {}
 
-var _peer: WebSocketMultiplayerPeer = null
+var _peer: MultiplayerPeer = null
+## The session's transport: TCP or UDP.
+var transport: Transport = Transport.TCP
+## Client: finding out which transport the host takes. A plain TCP connection
+## tries the port while the UDP join itself goes on beside it; the first to
+## answer decides (_find_transport).
+var _tcp_probe: StreamPeerTCP = null
+var _udp_lost := false              # the UDP try gave up while the probe was out
+var _tcp_answered_at := -1          # msec the probe got in, -1 not (yet)
+var _join_target: Dictionary = {}   # {"address", "port"} of the join
 var _mp: SceneMultiplayer = null
 var _ending := false
 var _end_reason := ""
@@ -316,17 +340,27 @@ static func _port_in(text: String) -> int:
 # =====================================================================
 
 ## Opens this machine's game to others on [param p_port] as [param p_name]: up
-## to [param p_max_clients] remote players, and with a [param password] only
-## those who know it. Returns OK, or an error when the port can't be listened
-## on. Every tank starts without a driver; a running game seats its players
+## to [param p_max_clients] remote players, with a [param password] only those
+## who know it, over [param p_transport]. Returns OK, or an error when the port
+## can't be listened on. Every tank starts without a driver; a running game seats its players
 ## again on hosting_started (game.gd).
-func host(p_port: int, p_name: String, password: String = "", p_max_clients: int = MAX_CLIENTS) -> Error:
+func host(p_port: int, p_name: String, password: String = "", p_max_clients: int = MAX_CLIENTS,
+		p_transport: Transport = Transport.TCP) -> Error:
 	leave()
-	var peer := WebSocketMultiplayerPeer.new()
-	_configure(peer)
-	var err := peer.create_server(p_port)
+	var peer: MultiplayerPeer
+	var err: Error
+	if p_transport == Transport.UDP:
+		var enet := ENetMultiplayerPeer.new()
+		err = enet.create_server(p_port, UDP_MAX_PEERS, UDP_CHANNELS)
+		peer = enet
+	else:
+		var socket := WebSocketMultiplayerPeer.new()
+		_configure(socket)
+		err = socket.create_server(p_port)
+		peer = socket
 	if err != OK:
 		return err
+	transport = p_transport
 	port = p_port
 	local_name = clean_name(p_name)
 	host_name = local_name
@@ -422,15 +456,18 @@ func set_lobby(active: Array, loaded: bool) -> void:
 ## Host: a world snapshot for client [param peer].
 func send_world(peer: int, bytes: PackedByteArray) -> void:
 	if _mp != null and _mp.get_peers().has(peer):
-		_mp.send_bytes(bytes, peer, MultiplayerPeer.TRANSFER_MODE_RELIABLE)
+		_mp.send_bytes(bytes, peer, MultiplayerPeer.TRANSFER_MODE_RELIABLE,
+				WORLD_CHANNEL if transport == Transport.UDP else 0)
 		_last_sent = Time.get_ticks_msec()
 
 
-## Host: how many bytes wait to go out to [param peer]: a slow link backs up here.
+## Host: how many bytes wait to go out to [param peer]: a slow link backs up
+## here. (ENet doesn't say; over UDP the snapshots' acks alone hold a slow
+## client back.)
 func pending_bytes(peer: int) -> int:
-	if _peer == null or not _mp.get_peers().has(peer):
+	if not _peer is WebSocketMultiplayerPeer or not _mp.get_peers().has(peer):
 		return 0
-	var ws := _peer.get_peer(peer)
+	var ws := (_peer as WebSocketMultiplayerPeer).get_peer(peer)
 	return ws.get_current_outbound_buffered_amount() if ws else 0
 
 
@@ -488,22 +525,25 @@ func rumble_tank(tank: int, weak: float, strong: float, duration: float) -> void
 
 ## Connects to the game at [param address] (a name or IP, IPv6 too) on
 ## [param p_port] as [param p_name], with the game's [param password] if it has
-## one. join_succeeded or join_failed follows.
+## one, over TCP or UDP, whichever the host takes. join_succeeded or
+## join_failed follows.
 func join(address: String, p_port: int, p_name: String, password: String = "") -> Error:
 	leave()
 	local_name = clean_name(p_name)
 	if local_name.is_empty():
 		return ERR_INVALID_PARAMETER
-	var host_part := address.strip_edges()
-	if host_part.contains(":") and not host_part.begins_with("["):
-		host_part = "[%s]" % host_part  # an IPv6 address
-	var peer := WebSocketMultiplayerPeer.new()
-	_configure(peer)
-	var err := peer.create_client("ws://%s:%d" % [host_part, p_port])
+	_join_target = {"address": address.strip_edges().trim_prefix("[").trim_suffix("]"), "port": p_port}
+	_udp_lost = false
+	_tcp_answered_at = -1
+	_tcp_probe = StreamPeerTCP.new()
+	if _tcp_probe.connect_to_host(_join_target["address"], p_port) != OK:
+		_tcp_probe = null
+	var err := _connect_client(Transport.UDP)
 	if err != OK:
-		return err
+		if _tcp_probe == null:
+			return err
+		_udp_lost = true  # a TCP host can still answer
 	port = p_port
-	_start(peer)
 	role = Role.CLIENT
 	_joined = false
 	_join_password = password
@@ -545,7 +585,85 @@ func _configure(peer: WebSocketMultiplayerPeer) -> void:
 	peer.handshake_timeout = CONNECT_TIMEOUT
 
 
-func _start(peer: WebSocketMultiplayerPeer) -> void:
+## Client: starts a join over [param kind] to the game at _join_target. One
+## already going over the other transport is dropped quietly: the host takes
+## this one.
+func _connect_client(kind: Transport) -> Error:
+	var address: String = _join_target["address"]
+	var target_port: int = _join_target["port"]
+	var peer: MultiplayerPeer
+	var err: Error
+	if kind == Transport.UDP:
+		var enet := ENetMultiplayerPeer.new()
+		err = enet.create_client(address, target_port, UDP_CHANNELS)
+		peer = enet
+	else:
+		var socket := WebSocketMultiplayerPeer.new()
+		_configure(socket)
+		var url_host := "[%s]" % address if address.contains(":") else address  # IPv6 in brackets
+		err = socket.create_client("ws://%s:%d" % [url_host, target_port])
+		peer = socket
+	if err != OK:
+		return err
+	_release_multiplayer()
+	transport = kind
+	_start(peer)
+	return OK
+
+
+## Client, while the join goes on: the UDP try connecting means a UDP host, and
+## the probe stops. A TCP connection that opens means a TCP host: unless the UDP
+## try connects within TCP_SWITCH_DELAY, it gives way to a join over TCP. With
+## neither left, nothing answered.
+func _find_transport() -> void:
+	if transport != Transport.UDP:
+		return
+	if _peer != null and _peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		_stop_probe()
+		_tcp_answered_at = -1
+		return
+	if _tcp_probe != null:
+		_tcp_probe.poll()
+		var status := _tcp_probe.get_status()
+		if status == StreamPeerTCP.STATUS_CONNECTED:
+			_stop_probe()
+			_tcp_answered_at = Time.get_ticks_msec()
+		elif status != StreamPeerTCP.STATUS_CONNECTING:
+			_stop_probe()  # no TCP there: it's UDP or nothing
+			if _udp_lost:
+				_fail_join(END_NO_HOST)
+			return
+	if _tcp_answered_at >= 0 and (_udp_lost or Time.get_ticks_msec() - _tcp_answered_at >= int(TCP_SWITCH_DELAY * 1000.0)):
+		_tcp_answered_at = -1
+		if _connect_client(Transport.TCP) != OK:
+			_fail_join(END_NO_HOST)
+
+
+func _stop_probe() -> void:
+	if _tcp_probe != null:
+		_tcp_probe.disconnect_from_host()
+		_tcp_probe = null
+
+
+## Lets go of the multiplayer and its peer without a word from either: none of
+## their signals reach this node any more.
+func _release_multiplayer() -> void:
+	if _mp == null:
+		return
+	for sig: Dictionary in _mp.get_signal_list():
+		for connection: Dictionary in _mp.get_signal_connection_list(sig["name"]):
+			var target: Callable = connection["callable"]
+			if target.get_object() == self:
+				_mp.disconnect(sig["name"], target)
+	_mp.auth_callback = Callable()
+	_mp.multiplayer_peer = null
+	if _peer != null:
+		_peer.close()
+	_peer = null
+	_mp = null
+
+
+func _start(peer: MultiplayerPeer) -> void:
 	_peer = peer
 	_mp = SceneMultiplayer.new()
 	_mp.auth_callback = _on_auth
@@ -585,6 +703,9 @@ func _end(reason: String) -> void:
 		return
 	var was := role
 	var was_joined := _joined
+	_stop_probe()
+	_udp_lost = false
+	_tcp_answered_at = -1
 	if _mp != null:
 		_mp.multiplayer_peer = null
 	if _peer != null:
@@ -655,6 +776,7 @@ func _process(delta: float) -> void:
 	if role == Role.OFFLINE:
 		return
 	if role == Role.CLIENT and not _joined:
+		_find_transport()
 		_connect_timer -= delta
 		if _connect_timer <= 0.0:
 			_fail_join(END_NO_HOST)
@@ -695,9 +817,10 @@ func _heard(peer: int) -> void:
 
 
 ## Small messages (a key press) go out at once rather than waiting to be
-## bundled (Nagle's algorithm off on that connection's TCP socket).
+## bundled (Nagle's algorithm off on that connection's TCP socket; ENet never
+## waits).
 func _no_delay(peer: int) -> void:
-	var ws := _peer.get_peer(peer) if _peer else null
+	var ws := (_peer as WebSocketMultiplayerPeer).get_peer(peer) if _peer is WebSocketMultiplayerPeer else null
 	if ws:
 		ws.set_no_delay(true)
 
@@ -854,6 +977,9 @@ func _on_connected_to_server() -> void:
 
 
 func _on_connection_failed() -> void:
+	if transport == Transport.UDP and (_tcp_probe != null or _tcp_answered_at >= 0):
+		_udp_lost = true  # the probe may yet find, or has found, a TCP host
+		return
 	_fail_join(_end_reason if not _end_reason.is_empty() else END_NO_HOST)
 
 

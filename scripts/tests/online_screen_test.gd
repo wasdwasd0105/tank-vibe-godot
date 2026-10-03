@@ -134,6 +134,16 @@ func _fill_new(player_name: String, address: String, password: String) -> void:
 	_field(_screen._password_row).text = password
 
 
+## [method _wait], keeping [param server] (a host this test runs by hand) going.
+func _wait_serving(server: MultiplayerPeer, cond: Callable, limit: float) -> bool:
+	var waited := 0.0
+	while not cond.call() and waited < limit:
+		server.poll()
+		await get_tree().create_timer(0.02).timeout
+		waited += 0.02
+	return cond.call()
+
+
 ## A port nothing listens on.
 func _closed_port() -> int:
 	var server := TCPServer.new()
@@ -383,6 +393,36 @@ func _run() -> void:
 			"kicked: %s" % _screen._hint.text)
 	await _open()
 	check(_screen._hint.text == _screen.DEFAULT_HINT, "said once")
+
+	print("\n[L] TCP or UDP: a join finds out which the host takes")
+	var port := _closed_port()
+	var tcp_host := TCPServer.new()  # takes the connection, never answers: the join waits in its handshake
+	tcp_host.listen(port, "127.0.0.1")
+	Net.join("127.0.0.1", port, "SEAN")
+	check(Net.transport == Net.Transport.UDP and Net._tcp_probe != null, "both tried at once: UDP, and a TCP probe beside it")
+	check(await _wait(func() -> bool: return Net.transport == Net.Transport.TCP and Net._peer is WebSocketMultiplayerPeer, 3.0)
+		and Net._tcp_probe == null and Net.is_client(), "a TCP host: the join goes on over TCP")
+	Net.leave()
+	tcp_host.stop()
+	var udp_host := ENetMultiplayerPeer.new()
+	udp_host.create_server(port, 4, Net.UDP_CHANNELS)
+	Net.join("127.0.0.1", port, "SEAN")
+	check(await _wait_serving(udp_host, func() -> bool: return Net._peer != null \
+			and Net._peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED, 3.0)
+		and Net.transport == Net.Transport.UDP and Net._tcp_probe == null,
+		"a UDP host: the join goes on over UDP, the probe given up")
+	Net.leave()
+	udp_host.close()
+	tcp_host.listen(port, "127.0.0.1")
+	udp_host = ENetMultiplayerPeer.new()
+	udp_host.create_server(port, 4, Net.UDP_CHANNELS)
+	Net.join("127.0.0.1", port, "SEAN")
+	await _wait_serving(udp_host, func() -> bool: return false, 1.0)
+	check(Net.transport == Net.Transport.UDP and Net._peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED,
+		"a UDP host with something else on its TCP port: still UDP (TCP's answer waits for it)")
+	Net.leave()
+	udp_host.close()
+	tcp_host.stop()
 
 	Net.leave()
 	get_tree().root.remove_child(_screen)

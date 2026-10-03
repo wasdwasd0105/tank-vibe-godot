@@ -1,8 +1,10 @@
 extends Node
 ## Headless test for online play (docs/network_design.md). First the parts on
 ## their own: the snapshot encoding, names, seats and remote presses. Then a
-## real session over one TCP port on this machine: this process hosts, and a
-## second Godot process (online_client_test) joins as a player on a client.
+## real session over one port on this machine, TCP (online_test.tscn) or UDP
+## (online_udp_test.tscn): this process hosts, and a second Godot process
+## (online_client_test) joins as a player on a client, finding out by itself
+## which transport the host takes.
 ##
 ## Together they go through:
 ## - an offline game opened to others from its pause menu (SETTINGS, ONLINE),
@@ -20,6 +22,7 @@ extends Node
 ## The client's checks come back in its results file and count here.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/online_test.tscn
+##   Godot --headless res://scenes/test/online_udp_test.tscn
 
 const CLIENT_SCENE := "res://scenes/test/online_client_test.tscn"
 const CLIENT_RESULTS := "user://test_online_client.txt"
@@ -31,6 +34,9 @@ const HOST_MAP := "Online_Test_Map"
 const HOST_MAP_B := "Online_Test_Map_B"
 ## The game's password (online_client_test knows it too).
 const PASSWORD := "Tank 1.22"
+
+## The host takes its players over UDP (ENet) rather than TCP.
+@export var udp := false
 
 var _fail := 0
 var _port := 0
@@ -170,12 +176,20 @@ func _test_remote_presses() -> void:
 
 
 func _test_port_in_use() -> void:
-	var blocker := TCPServer.new()
 	var port := 40000 + randi() % 9000
-	if blocker.listen(port) != OK:
+	var tcp_blocker := TCPServer.new()
+	var udp_blocker := PacketPeerUDP.new()
+	var taken := udp_blocker.bind(port) if udp else tcp_blocker.listen(port)
+	if taken != OK:
 		return
-	check(Net.host(port, "SEAN") != OK and not Net.is_online(), "hosting on a port in use fails, and says so")
-	blocker.stop()
+	check(Net.host(port, "SEAN", "", Net.MAX_CLIENTS, _transport()) != OK and not Net.is_online(),
+		"hosting on a port in use fails, and says so")
+	tcp_blocker.stop()
+	udp_blocker.close()
+
+
+func _transport() -> Net.Transport:
+	return Net.Transport.UDP if udp else Net.Transport.TCP
 
 
 # =====================================================================
@@ -211,9 +225,12 @@ func _test_session() -> void:
 	var game := tree.current_scene
 	var menu = game.pause_menu
 	InputSettings.save_host_settings(_port, PASSWORD, 3)
+	InputSettings.save_host_port_type(Net.TRANSPORT_NAMES[_transport()])
 	menu._toggle_hosting()  # SETTINGS, ONLINE: ALLOW REMOTE PLAYERS
 	check(Net.is_host() and Net.port == _port and Net.has_password() and Net.max_clients == 3 and Net.local_name == "SEAN",
 		"ALLOW REMOTE PLAYERS: open on %d, with a password, as SEAN" % _port)
+	check(Net.transport == _transport() and (Net._peer is ENetMultiplayerPeer) == udp,
+		"over %s, as PORT TYPE says" % Net.TRANSPORT_NAMES[_transport()])
 	check(Net.host_screen == Net.SCREEN_GAME and game.has_node("NetHostWorld"), "the clients told: the game")
 	check(Net._host_map_info() == {"name": HOST_MAP, "hash": LevelData.bytes_hash(own_map), "size": own_map.size()},
 		"and the map set it's on, by name, hash and size")
@@ -239,7 +256,8 @@ func _test_session() -> void:
 			"none of them got in, and none is left half in")
 	_client_pid = OS.create_process(OS.get_executable_path(), PackedStringArray([
 			"--headless", "--path", ProjectSettings.globalize_path("res://"), CLIENT_SCENE,
-			"--", "--test-profile=online_client", "--online-test-port=%d" % _port]))
+			"--", "--test-profile=online_client", "--online-test-port=%d" % _port,
+			"--online-test-transport=%s" % Net.TRANSPORT_NAMES[_transport()]]))
 	check(_client_pid > 0, "a client process started")
 	check(await _wait(func() -> bool: return Net.client_ids().size() == 1, 40.0), "the client joined: %s" % str(Net.peers.values()))
 
@@ -378,8 +396,15 @@ func _knock(hello: Dictionary, password: String, challenges: Array = [], before_
 	multiplayer_api.peer_authenticating.connect(func(peer: int) -> void:
 		multiplayer_api.send_auth(peer, var_to_bytes(hello)))
 	get_tree().set_multiplayer(multiplayer_api, home.get_path())
-	var peer := WebSocketMultiplayerPeer.new()
-	peer.create_client("ws://127.0.0.1:%d" % _port)
+	var peer: MultiplayerPeer
+	if udp:
+		var enet := ENetMultiplayerPeer.new()
+		enet.create_client("127.0.0.1", _port, Net.UDP_CHANNELS)
+		peer = enet
+	else:
+		var socket := WebSocketMultiplayerPeer.new()
+		socket.create_client("ws://127.0.0.1:%d" % _port)
+		peer = socket
 	multiplayer_api.multiplayer_peer = peer
 	await _wait(func() -> bool: return answer["reason"] != "?", 5.0)
 	peer.close()
