@@ -167,8 +167,8 @@ func _run() -> void:
 	var corner := version.get_global_rect().end
 	var screen := get_viewport().get_visible_rect().size
 	check(version.text == "Ver. %s" % ProjectSettings.get_setting("application/config/version")
-		and _shown(version) == "Ver. 1.1.1" and corner.x > screen.x - 40 and corner.y > screen.y - 40,
-		"Ver. 1.1.1, the project's version, in the bottom-right corner, the same in Chinese (%s)" % str(corner))
+		and _shown(version) == "Ver. 1.1.2" and corner.x > screen.x - 40 and corner.y > screen.y - 40,
+		"Ver. 1.1.2, the project's version, in the bottom-right corner, the same in Chinese (%s)" % str(corner))
 	check(_shown(MenuRows.tab(_screen._tabs.strip, 0)) == "常规" and _shown(MenuRows.tab(_screen._tabs.strip, 1)) == "游戏",
 		"the settings' tabs: 常规, 游戏")
 	var difficulty_row: Button = _screen._game.difficulty_row
