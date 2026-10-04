@@ -120,6 +120,9 @@ func _ready() -> void:
 	_build_settings_tabs()
 	_build_host_page()
 	Net.session_changed.connect(_on_session_changed)
+	Net.peer_ping_changed.connect(func(_peer: int) -> void:
+		if visible and _page == Page.SETTINGS and _tabs.current == SettingsTab.ONLINE:
+			_refresh_player_lines())
 	SoundManager.attach_ui_sounds(self)
 
 
@@ -509,8 +512,15 @@ func _refresh_online_tab() -> void:
 	MenuRows.arrow(_max_row, "Left").disabled = most <= 1
 	MenuRows.arrow(_max_row, "Right").disabled = most >= Net.MAX_CLIENTS
 	MenuRows.value_label(_address_row).text = _address()
-	var clients := Net.client_ids()  # none unless hosting
-	_players_caption.text = tr("CONNECTED PLAYERS   %d / %d") % [clients.size(), most]
+	_players_caption.text = tr("CONNECTED PLAYERS   %d / %d") % [Net.client_ids().size(), most]
+	_refresh_player_lines()
+	if _online_note.text.is_empty() or not _online_note.has_theme_color_override(&"font_color"):
+		_set_online_note("")
+
+
+## A line for each player connected (none unless hosting).
+func _refresh_player_lines() -> void:
+	var clients := Net.client_ids()
 	for i in _player_lines.size():
 		var line := _player_lines[i]
 		line.remove_theme_color_override(&"font_color")
@@ -521,17 +531,22 @@ func _refresh_online_tab() -> void:
 			line.add_theme_color_override(&"font_color", Color(0.62, 0.62, 0.65))
 		else:
 			line.text = ""
-	if _online_note.text.is_empty() or not _online_note.has_theme_color_override(&"font_color"):
-		_set_online_note("")
 
 
-## "NAME   ·   DRIVING P2", or WATCHING.
+## "NAME   ·   DRIVING P2   ·   84 ms", or WATCHING; the trip to them and back
+## once they have timed it.
 func _player_line(peer: int) -> String:
+	var doing := tr("WATCHING")
 	for tank in 2:
 		var key: int = PlayerInput.seats[tank]
 		if key != PlayerInput.NO_SEAT and PlayerInput.controller_peer(key) == peer:
-			return "%s   ·   %s" % [Net.peer_name(peer), tr("DRIVING P%d") % (tank + 1)]
-	return "%s   ·   %s" % [Net.peer_name(peer), tr("WATCHING")]
+			doing = tr("DRIVING P%d") % (tank + 1)
+			break
+	var line := "%s   ·   %s" % [Net.peer_name(peer), doing]
+	var ping := Net.peer_ping(peer)
+	if ping > 0:
+		line += "   ·   %d ms" % ping
+	return line
 
 
 ## What others type to join: this machine's LAN address and the port.

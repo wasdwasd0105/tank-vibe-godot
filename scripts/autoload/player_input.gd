@@ -40,6 +40,15 @@ class RemotePad:
 	var seen_idle: Array[int] = [0, 0]
 	var just_physics: Array[bool] = [false, false]
 	var just_idle: Array[bool] = [false, false]
+	## Lag compensation: the client's own tank as it drives it there, ahead of
+	## the host by the trip across (PlayerTank._follow_client goes after it):
+	## where it is, its facing (an index into BaseTank.FACINGS), whether it
+	## drives, and the last correction it has taken (PlayerTank.net_override).
+	var has_report := false
+	var report_position := Vector2.ZERO
+	var report_facing := 0
+	var report_moving := false
+	var report_override := 0
 
 
 func _ready() -> void:
@@ -212,6 +221,36 @@ func set_remote(peer: int, slot: int, direction: int, held: Array, presses: Arra
 	for b in 2:
 		pad.held[b] = bool(held[b])
 		pad.presses[b] = int(presses[b]) & 0xff
+
+
+## Client [param peer]'s local player [param slot]'s tank, where it drives it on
+## the client ([param has] false: it doesn't drive one there just now).
+func set_remote_report(peer: int, slot: int, has: bool, position: Vector2, facing: int, moving: bool,
+		override: int) -> void:
+	var pad: RemotePad = _remote.get(controller_key(peer, slot))
+	if pad == null:
+		return
+	pad.has_report = has
+	pad.report_position = position
+	pad.report_facing = clampi(facing, 0, 3)
+	pad.report_moving = moving
+	pad.report_override = override & 0xff
+
+
+## True when a player on a client drives tank [param tank]: the host's copy of
+## it follows that client's own (PlayerTank._follow_client).
+func is_remote_seat(tank: int) -> bool:
+	var key := seats[tank]
+	return key != NO_SEAT and not is_local(key)
+
+
+## Where the client driving tank [param tank] has it: its pad with the report,
+## or null (no word of it yet, or not a client's tank).
+func remote_report(tank: int) -> RemotePad:
+	if not is_remote_seat(tank):
+		return null
+	var pad: RemotePad = _remote.get(seats[tank])
+	return pad if pad != null and pad.has_report else null
 
 
 ## Forgets client [param peer]'s controllers and frees the seats they held.

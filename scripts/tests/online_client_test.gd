@@ -303,12 +303,23 @@ func _compare_world(dump: Dictionary) -> void:
 	check(missing.is_empty(), "each of the host's %d entities shows here: missing %s" % [host_entities.size(), str(missing)])
 	check(extra.is_empty(), "and nothing else: %s" % str(extra))
 	check(wrong.is_empty(), "each exactly as the host has it: %s" % str(wrong.slice(0, 2)))
+	# My own tank drives here, ahead of the host (lag compensation), and my own
+	# shells are drawn ahead with it: standing still a while, it's where the
+	# host has it all the same.
 	var placed := true
+	var own_placed := true
+	var own := 0
 	for nid: int in world._nodes:
 		var state: Array = world._states[nid]
-		if (world._nodes[nid] as Node2D).global_position.distance_to(Vector2(state[0], state[1])) > 0.01:
+		var node := world._nodes[nid] as Node2D
+		var off := node.global_position.distance_to(Vector2(state[0], state[1]))
+		if node is PlayerTank and (node as PlayerTank).net_predicted:
+			own += 1
+			own_placed = own_placed and off < 0.5
+		elif not world._own_shells.has(nid) and off > 0.01:
 			placed = false
 	check(placed, "and drawn where it is")
+	check(own == 1 and own_placed, "my own tank too, standing still: driven here, followed there")
 	var lm: LevelManager = get_tree().current_scene.get_node("Playfield")
 	check(_same(lm.net_map(), dump["map"]), "the map is the host's, cell for cell")
 	var host_game: Dictionary = dump["game"]

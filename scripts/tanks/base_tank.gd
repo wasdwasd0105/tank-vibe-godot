@@ -358,7 +358,7 @@ func _opponent_ahead(group: String, direction: Vector2, distance: float) -> bool
 	var across := Vector2(-direction.y, direction.x)
 	for node in get_tree().get_nodes_in_group(group):
 		var other := node as BaseTank
-		if other == null or other == self or other.collision_layer == 0:
+		if other == null or other == self or not other.is_solid():
 			continue  # airborne or still materializing: nothing to bump into
 		var offset: Vector2 = other.global_position - global_position
 		var ahead: float = offset.dot(direction)
@@ -366,6 +366,13 @@ func _opponent_ahead(group: String, direction: Vector2, distance: float) -> bool
 				and absf(offset.dot(across)) < HITBOX_SIZE:
 			return true
 	return false
+
+## Something to bump into: not airborne, not still materializing. (A client's
+## tanks show the host's and touch nothing, so there their state tells.)
+func is_solid() -> bool:
+	if Net.is_client():
+		return not is_materializing and not is_flying
+	return collision_layer != 0
 
 func _update_sprite_direction() -> void:
 	if not sprite:
@@ -769,13 +776,14 @@ func net_state() -> Array:
 ## sit differently still), hidden while it materializes, the flight's size and
 ## tumble, the red hit flash and its health. Its own _process draws the rest.
 func net_apply(state: Array) -> void:
-	var facing: Vector2 = FACINGS[clampi(int(state[2]), 0, FACINGS.size() - 1)]
-	if facing != current_direction:
-		current_direction = facing
-		if not is_flying:
-			_update_sprite_direction()
 	var flags := int(state[3])
-	velocity = current_direction if flags & NET_MOVING else Vector2.ZERO
+	if not _net_drives_itself():
+		var facing: Vector2 = FACINGS[clampi(int(state[2]), 0, FACINGS.size() - 1)]
+		if facing != current_direction:
+			current_direction = facing
+			if not is_flying:
+				_update_sprite_direction()
+		velocity = current_direction if flags & NET_MOVING else Vector2.ZERO
 	var materializing := flags & NET_MATERIALIZING != 0
 	if materializing != is_materializing:
 		is_materializing = materializing
@@ -809,6 +817,11 @@ func net_apply(state: Array) -> void:
 ## The add-ons named by [param bits] (NET_ADDON_BITS), put on and taken off.
 func _net_apply_addons(_bits: int) -> void:
 	pass
+
+## A client's tank this machine drives itself (PlayerTank): its facing and
+## motion are its own, not the host's.
+func _net_drives_itself() -> bool:
+	return false
 
 ## Which add-on names [param bits] holds.
 static func net_addon_names(bits: int) -> Array[String]:

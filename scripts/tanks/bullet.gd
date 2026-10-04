@@ -428,13 +428,16 @@ func net_type() -> int:
 	return NetWorld.T_BULLET
 
 func net_spawn_args() -> Array:
-	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets)]
+	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets),
+			owner_player, speed, max_range, pierces]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
 
 ## A client's shell: flying [param args][0] (a BaseTank facing), drawn in style
-## [param args][1] on lanes [param args][2].
+## [param args][1] on lanes [param args][2]; then whose it is (a player, or -1),
+## how fast it set out, how far it goes and whether it drills through walls,
+## for drawing a shell of this machine's own ahead (NetClientWorld).
 func net_setup(args: Array) -> void:
 	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
 	visual_style = str(args[1])
@@ -443,6 +446,11 @@ func net_setup(args: Array) -> void:
 		lanes.append(float(lane))
 	visual_lane_offsets = lanes
 	collision_lane_offsets = lanes.duplicate()
+	if args.size() >= 7:
+		owner_player = clampi(int(args[3]), -1, 1)
+		speed = float(args[4])
+		max_range = float(args[5])
+		pierces = bool(args[6])
 
 func net_apply(_state: Array) -> void:
 	pass

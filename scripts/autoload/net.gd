@@ -31,13 +31,15 @@ signal map_progress(received: int, total: int)
 ## Client: a map download ended, saved as pool [param name], or failed ("") and
 ## [param error] says why.
 signal map_download_finished(name: String, error: String)
+## Host: client [param peer] timed its trip here and back again (peer_ping).
+signal peer_ping_changed(peer: int)
 
 enum Role { OFFLINE, HOST, CLIENT }
 ## How a host takes its players: TCP (a WebSocket) or UDP (ENet).
 enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 2
+const PROTOCOL := 3
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -48,6 +50,16 @@ const AUTH_TIMEOUT := 5.0
 ## Each side says something at least this often, and gives up on the other
 ## after SILENCE_LIMIT of nothing.
 const KEEPALIVE := 1.0
+## How often a client times a trip to the host and back (ping_ms), and how
+## many of the latest it goes by.
+const PING_EVERY := 1.0
+const PING_SAMPLES := 5
+## The input message: the newest snapshot (4 bytes), each local player's
+## controls (4 each), then each one's own tank as it drives here (12 each:
+## flags, facing, last correction taken, a spare, x and y as 32-bit floats).
+const INPUT_SIZE := 36
+const REPORT_AT := 12
+const REPORT_SIZE := 12
 const SILENCE_LIMIT := 10.0
 ## A rejected or kicked client gets this long to read why before it's cut off.
 const PARTING_DELAY := 0.5
@@ -160,6 +172,22 @@ var _sent_input := PackedByteArray()
 var _latest_snapshot := -1
 ## Client: while its own menu is open, it sends its players as idle.
 var input_blocked := false
+## Client: this machine's own tanks as they drive here, ahead of the host
+## (lag compensation: PlayerTank predicts them), by local slot: {"position",
+## "facing", "moving", "override", "frame"}, or {} for none. They go out with
+## the inputs, and the host's copies follow them.
+var _tank_reports: Array = [{}, {}]
+## Client: the trip to the host and back, ms: the middle one of the latest
+## PING_SAMPLES (a stall here, as when a stage loads, is one bad trip), 0 until
+## timed.
+var ping_ms := 0.0
+var _ping_timer := 0.0
+var _ping_samples: Array[float] = []
+## Tests: this client's line to the host is this many ms long each way
+## ("--net-lag-ms=N"): its inputs and pings go out, and the host's world and
+## answers come in, that much later. 0 normally.
+var sim_lag_ms := 0
+var _lagged: Array = []   # [due msec, Callable], oldest first
 ## Client: the same while the map question is on the screen (NetMapPrompt).
 var map_prompt_open := false
 
@@ -185,6 +213,9 @@ func _ready() -> void:
 	var toasts := NetToasts.new()
 	add_child(toasts)
 	notice_posted.connect(toasts.show_notice)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--net-lag-ms="):
+			sim_lag_ms = maxi(int(arg.trim_prefix("--net-lag-ms=")), 0)
 
 
 func _notification(what: int) -> void:
@@ -552,6 +583,7 @@ func join(address: String, p_port: int, p_name: String, password: String = "") -
 	_presses = [[0, 0], [0, 0]]
 	_sent_input = PackedByteArray()
 	_latest_snapshot = -1
+	_ping_timer = PING_EVERY  # the first once the host's screen has loaded here
 	return OK
 
 
@@ -723,6 +755,11 @@ func _end(reason: String) -> void:
 	host_name = ""
 	_joined = false
 	input_blocked = false
+	_tank_reports = [{}, {}]
+	ping_ms = 0.0
+	_ping_timer = 0.0
+	_ping_samples.clear()
+	_lagged.clear()
 	host_map = {}
 	_maps_asked.clear()
 	_map_download = {}
@@ -781,6 +818,16 @@ func _process(delta: float) -> void:
 		if _connect_timer <= 0.0:
 			_fail_join(END_NO_HOST)
 			return
+	_run_lagged()
+	if role == Role.CLIENT and _joined:
+		_ping_timer -= delta
+		if _ping_timer <= 0.0:
+			_ping_timer = PING_EVERY
+			var stamp := Time.get_ticks_msec()
+			var known := roundi(ping_ms)
+			_later(func() -> void:
+				if role == Role.CLIENT and _joined:
+					_c_ping.rpc_id(1, stamp, known))
 	var now := Time.get_ticks_msec()
 	if _session_dirty and role == Role.HOST:
 		_session_dirty = false
@@ -809,7 +856,39 @@ func _process(delta: float) -> void:
 
 func _physics_process(_delta: float) -> void:
 	if role == Role.CLIENT and _joined:
+		_run_lagged()
 		_send_input()
+
+
+## [param action] now, or (a test's long line, sim_lag_ms) that much later.
+func _later(action: Callable) -> void:
+	if sim_lag_ms <= 0:
+		action.call()
+		return
+	_lagged.append([Time.get_ticks_msec() + sim_lag_ms, action])
+
+
+func _run_lagged() -> void:
+	var now := Time.get_ticks_msec()
+	while not _lagged.is_empty() and int(_lagged[0][0]) <= now:
+		var action: Callable = _lagged.pop_front()[1]
+		action.call()
+
+
+## Client: local slot [param slot]'s tank, as it drives on this machine: at
+## [param position], facing [param facing] (an index into BaseTank.FACINGS),
+## driving or not, having taken correction [param override]. It goes to the host
+## with the next input message.
+func report_tank(slot: int, position: Vector2, facing: int, moving: bool, override: int) -> void:
+	if slot < 0 or slot > 1:
+		return
+	_tank_reports[slot] = {"position": position, "facing": facing, "moving": moving, "override": override,
+			"frame": Engine.get_physics_frames()}
+
+
+## Host: client [param peer]'s trip here and back, ms, as it last timed it (0 not yet).
+func peer_ping(peer: int) -> int:
+	return int(peers.get(peer, {}).get("ping", 0))
 
 
 func _heard(peer: int) -> void:
@@ -1138,6 +1217,12 @@ func _on_peer_packet(peer: int, packet: PackedByteArray) -> void:
 	if role != Role.CLIENT or peer != 1 or packet.size() < 4:
 		return  # only the host sends raw packets
 	_heard(1)
+	_later(_take_world_packet.bind(packet))
+
+
+func _take_world_packet(packet: PackedByteArray) -> void:
+	if role != Role.CLIENT:
+		return
 	_latest_snapshot = packet.decode_u32(0)
 	var body := packet.slice(4)
 	if world_sink.is_valid():
@@ -1164,13 +1249,16 @@ func _send_input() -> void:
 	if bytes == _sent_input:
 		return
 	_sent_input = bytes
-	_c_input.rpc_id(1, bytes)
+	_later(func() -> void:
+		if role == Role.CLIENT and _joined:
+			_c_input.rpc_id(1, bytes))
 	_last_sent = Time.get_ticks_msec()
 
 
-## The input message: the newest snapshot, then per local player the direction,
-## both fire buttons held and a press counter each. Idle while this machine's
-## menu or the map question has the keys.
+## The input message (INPUT_SIZE): the newest snapshot, then per local player
+## the direction, both fire buttons held and a press counter each, then per
+## local player its own tank as it drives here, if it drives one. Idle while
+## this machine's menu or the map question has the keys.
 func _input_message() -> PackedByteArray:
 	var blocked := input_blocked or map_prompt_open
 	for slot in 2:
@@ -1180,7 +1268,7 @@ func _input_message() -> PackedByteArray:
 				_presses[slot][b] = (int(_presses[slot][b]) + 1) & 0xff
 	var ack := _latest_snapshot
 	var bytes := PackedByteArray()
-	bytes.resize(12)
+	bytes.resize(INPUT_SIZE)
 	bytes.encode_s32(0, ack)
 	for slot in 2:
 		var at := 4 + slot * 4
@@ -1194,6 +1282,16 @@ func _input_message() -> PackedByteArray:
 		bytes[at + 1] = held
 		bytes[at + 2] = _presses[slot][0]
 		bytes[at + 3] = _presses[slot][1]
+		var report: Dictionary = _tank_reports[slot]
+		if report.is_empty() or Engine.get_physics_frames() - int(report["frame"]) > 2:
+			continue  # no tank of its own driving here
+		var where := REPORT_AT + slot * REPORT_SIZE
+		bytes[where] = 1 | (2 if report["moving"] else 0)
+		bytes[where + 1] = int(report["facing"])
+		bytes[where + 2] = int(report["override"]) & 0xff
+		var position: Vector2 = report["position"]
+		bytes.encode_float(where + 4, position.x)
+		bytes.encode_float(where + 8, position.y)
 	return bytes
 
 
@@ -1204,7 +1302,7 @@ func _input_message() -> PackedByteArray:
 @rpc("any_peer", "call_remote", "reliable")
 func _c_input(bytes: PackedByteArray) -> void:
 	var sender := multiplayer.get_remote_sender_id()
-	if role != Role.HOST or not peers.has(sender) or bytes.size() != 12:
+	if role != Role.HOST or not peers.has(sender) or bytes.size() != INPUT_SIZE:
 		return
 	_heard(sender)
 	acks[sender] = bytes.decode_s32(0)
@@ -1214,6 +1312,12 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var held := int(bytes[at + 1])
 		PlayerInput.set_remote(sender, slot, direction,
 				[held & 1 != 0, held & 2 != 0], [int(bytes[at + 2]), int(bytes[at + 3])])
+		var where := REPORT_AT + slot * REPORT_SIZE
+		var flags := int(bytes[where])
+		var position := Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8))
+		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
+		PlayerInput.set_remote_report(sender, slot, flags & 1 != 0 and sane, position, int(bytes[where + 1]),
+				flags & 2 != 0, int(bytes[where + 2]))
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -1348,6 +1452,41 @@ func _take_map_piece(digest: String, offset: int, total: int, bytes: PackedByteA
 		_finish_map_download(result["name"], "")
 	else:
 		_finish_map_download("", str(result.get("error", "")))
+
+
+## Client [param stamp] (its clock) times a trip here and back; [param client_ping]
+## is what it made of the last one, for the host's list of players.
+@rpc("any_peer", "call_remote", "reliable")
+func _c_ping(stamp: int, client_ping: int) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role != Role.HOST or not peers.has(sender):
+		return
+	_heard(sender)
+	var ping := clampi(client_ping, 0, 9999)
+	if int(peers[sender].get("ping", 0)) != ping:
+		peers[sender]["ping"] = ping
+		peer_ping_changed.emit(sender)
+	_h_pong.rpc_id(sender, stamp)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _h_pong(stamp: int) -> void:
+	if role != Role.CLIENT:
+		return
+	_heard(1)
+	_later(_take_pong.bind(stamp))
+
+
+func _take_pong(stamp: int) -> void:
+	var trip := float(Time.get_ticks_msec() - stamp)
+	if role != Role.CLIENT or trip < 0.0 or trip > 10000.0:
+		return
+	_ping_samples.append(trip)
+	if _ping_samples.size() > PING_SAMPLES:
+		_ping_samples.pop_front()
+	var sorted := _ping_samples.duplicate()
+	sorted.sort()
+	ping_ms = sorted[(sorted.size() - 1) / 2]  # with two, the shorter
 
 
 @rpc("authority", "call_remote", "reliable")

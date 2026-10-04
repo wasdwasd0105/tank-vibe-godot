@@ -39,6 +39,10 @@ var _started := false
 var _scenes: Dictionary = {}     # path -> loaded scene or script
 ## How many of each event (NetWorld.EV_*) have played here, for tests.
 var played: Dictionary = {}
+## Shells of this machine's own tanks, drawn ahead (_lead_shell): nid ->
+## {"velocity" px/s, "start" where it set out, "range" how far it goes (<= 0
+## no end), "pierces" drills through walls}.
+var _own_shells: Dictionary = {}
 
 
 func _init() -> void:
@@ -136,6 +140,7 @@ func _process(delta: float) -> void:
 		if next["time"] > render and _started and _buffer.size() <= MAX_BUFFERED:
 			break
 		_apply(_buffer.pop_front())
+	_take_own_tanks()
 	_glide(render)
 
 
@@ -158,7 +163,9 @@ func _glide(render: float) -> void:
 		if change.has(0) or change.has(1):
 			var from := Vector2(state[0], state[1])
 			var to := Vector2(change.get(0, state[0]), change.get(1, state[1]))
-			(node as Node2D).global_position = from.lerp(to, weight)
+			if span > 0.0 and _own_shells.has(nid):
+				_own_shells[nid]["velocity"] = (to - from) * 1000.0 / span
+			_place(nid, node as Node2D, from.lerp(to, weight))
 		if not glides.is_empty():
 			var shown := state.duplicate()
 			var moved := false
@@ -195,7 +202,7 @@ func _apply(snapshot: Dictionary) -> void:
 			state[i] = change[i]
 		var node: Node = _nodes.get(nid)
 		if is_instance_valid(node):
-			(node as Node2D).global_position = Vector2(state[0], state[1])
+			_place(nid, node as Node2D, Vector2(state[0], state[1]))
 			node.net_apply(state)
 	for nid: int in snapshot["removed"]:
 		_despawn(nid)
@@ -224,11 +231,15 @@ func _spawn(nid: int, type: int, args: Array, state: Array) -> void:
 	node.net_setup(args)
 	parent.add_child(node)
 	_strip_physics(node)
-	(node as Node2D).global_position = Vector2(state[0], state[1])
 	var shown := state.duplicate()
 	_states[nid] = shown
 	_types[nid] = type
 	_nodes[nid] = node
+	var shell := node as Bullet
+	if shell and shell.owner_player >= 0 and Net.is_my_seat(shell.owner_player):
+		_own_shells[nid] = {"velocity": shell.direction * shell.speed, "start": Vector2(state[0], state[1]),
+				"range": shell.max_range, "pierces": shell.pierces}
+	_place(nid, node as Node2D, Vector2(state[0], state[1]))
 	if not _glides.has(type):
 		var glides: Variant = node.get(&"NET_GLIDES")
 		_glides[type] = glides if glides is Array else []
@@ -242,12 +253,89 @@ func _despawn(nid: int) -> void:
 	_nodes.erase(nid)
 	_states.erase(nid)
 	_types.erase(nid)
+	_own_shells.erase(nid)
 
 
 func _clear() -> void:
 	for nid: int in _nodes.keys():
 		_despawn(nid)
 	_game.clear()
+
+
+## Puts [param node], showing [param nid], at [param at]: where the host had it
+## at the time shown. This machine's own tanks drive themselves, though, and
+## its own shells are drawn ahead (_lead_shell).
+func _place(nid: int, node: Node2D, at: Vector2) -> void:
+	if node is PlayerTank and (node as PlayerTank).is_net_driving():
+		return
+	if _own_shells.has(nid):
+		at = _lead_shell(nid, node, at)
+	node.global_position = at
+
+
+# =====================================================================
+# Lag compensation (docs/network_design.md section 7)
+# =====================================================================
+
+## This machine's own tanks drive here at once (PlayerTank predicts them),
+## each with the local controls in its seat; the others show the host's.
+func _take_own_tanks() -> void:
+	for node: Node in _nodes.values():
+		if is_instance_valid(node) and node is PlayerTank:
+			var tank := node as PlayerTank
+			var key: int = PlayerInput.seats[tank.player_id]
+			tank.set_net_predicted(Net.is_my_seat(tank.player_id), PlayerInput.controller_slot(key))
+
+
+## A shell of this machine's own tank: that tank drives ahead of the world shown
+## here, by the trip to the host and back and DELAY_MS, so the shell is drawn
+## that far ahead on its way too, coming out of the barrel where the tank is
+## now. One that would be past a wall, an enemy, the end of its range or the
+## field by then is hidden: the host's word of its hit is on its way.
+func _lead_shell(nid: int, shell: Node2D, at: Vector2) -> Vector2:
+	var info: Dictionary = _own_shells[nid]
+	var ahead: Vector2 = info["velocity"] * (Net.ping_ms + DELAY_MS) / 1000.0
+	var clear := _shell_way_clear(shell as Bullet, at, at + ahead, info)
+	shell.visible = clear
+	return at + ahead if clear else at
+
+
+## True if nothing stops [param shell] going from [param from] to [param to].
+func _shell_way_clear(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) -> bool:
+	if to.x < 144.0 or to.x > 1456.0 or to.y < 0.0 or to.y > 992.0:
+		return false
+	var reach: float = info["range"]
+	if reach > 0.0 and to.distance_to(info["start"]) > reach:
+		return false
+	if shell == null:
+		return true
+	var direction := shell.direction
+	var length := (to - from).dot(direction)
+	if length <= 0.0:
+		return true
+	# Its lanes lie across its way as Bullet._check_tile_collision has them.
+	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
+	var lanes: Array[float] = shell.collision_lane_offsets
+	if level_manager and not info["pierces"]:
+		var done := 0.0
+		while done < length:
+			done = minf(done + 8.0, length)
+			for lane: float in lanes:
+				var cell := level_manager.world_to_tile(from + direction * done + across * lane)
+				var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
+				if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
+					return false
+	var half := BaseTank.HITBOX_SIZE * 0.5
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var tank := node as BaseTank
+		if tank == null or not tank.is_solid():
+			continue
+		var offset := tank.global_position - from
+		var ahead := offset.dot(direction)
+		for lane: float in lanes:
+			if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half:
+				return false
+	return true
 
 
 ## A shown entity touches nothing: no layers, no masks, no monitoring. It can't

@@ -102,9 +102,33 @@ var _regular_fire_step: int = 0
 var _rapid_special_fire_step: int = 0
 var _rapid_special_ammo_progress: int = 0
 
+# --- Online: lag compensation (docs/network_design.md section 7) ---
+
+## Host: a client's tank's copy here catches up at up to this many times its own
+## speed. Held up this far behind it for this long (by what the client didn't
+## see in time), the client is told to start again from the host's position.
+const FOLLOW_SPEED := 2.0
+const APART_DISTANCE := 24.0
+const APART_TIME := 0.3
+
+## Host: changes whenever the host, not the client driving this tank, says
+## where it is: a correction, or a spell the host drives (materializing, a
+## mine's flight, a hold). The client starts again from the host's position,
+## and only reports that have taken the change are followed.
+var net_override := 0
+var _host_drives := false
+var _apart_time := 0.0
+## Client: this machine drives this tank (its own seat), with local slot
+## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
+## host by the trip there, and the host's copy follows it.
+var net_predicted := false
+var net_slot := 0
+var _override_seen := 0
+
 func _ready() -> void:
 	super._ready()
 	add_to_group("players")
+	net_override = randi() % 256  # no report about an earlier tank can match it
 
 	# Load persisted stats from GameManager
 	speed_level = GameManager.get_speed_level(player_id)
@@ -146,12 +170,16 @@ func _ready() -> void:
 
 func _physics_process(delta: float) -> void:
 	if Net.is_client():
-		return  # the host drives every tank; this one only shows it
+		if is_net_driving():
+			_predict()
+		return  # the host drives every other tank; this one only shows it
 	if is_materializing:
 		velocity = Vector2.ZERO
+		_take_over()
 		return
 	if is_flying:
 		_update_flying(delta)
+		_take_over()
 		return
 	if is_invincible:
 		invincible_timer -= delta
@@ -161,27 +189,13 @@ func _physics_process(delta: float) -> void:
 			_sync_wreath()
 	if GameManager.players_frozen:
 		glide_while_held("enemies")  # an enemy took "Hold Enemy"
+		_take_over()
 		return
 
-	var input_dir := _read_move_direction()
-
-	# Check for ice under tank
-	_check_ice()
-	if has_anti_ice:
-		is_on_ice = false
-
-	if input_dir != Vector2.ZERO:
-		try_move(input_dir)
+	if PlayerInput.is_remote_seat(player_id):
+		_follow_client(delta)
 	else:
-		if not is_on_ice:
-			stop_moving()
-
-	# Stop movement when an enemy is immediately ahead, but don't let physics contact push the player.
-	var enemy_blocking := velocity != Vector2.ZERO and _is_enemy_ahead()
-	if enemy_blocking:
-		velocity = Vector2.ZERO
-	move_and_slide()
-	clamp_to_playfield()
+		_drive(_read_move_direction())
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
@@ -190,6 +204,120 @@ func _physics_process(delta: float) -> void:
 	var auto_secondary_held := secondary_weapon_type in ["rapid", "fire", "explosion", "ap"] and PlayerInput.is_held(player_id, 1)
 	if auto_secondary_held or PlayerInput.is_just_pressed(player_id, 1):
 		shoot_secondary()
+
+## One step of driving with [param input_dir] pushed: the turn, ice, an enemy
+## in the way, the walls. The host's own players drive this way, and so does
+## a client's own tank on the client (_predict).
+func _drive(input_dir: Vector2) -> void:
+	_check_ice()
+	if has_anti_ice:
+		is_on_ice = false
+	if input_dir != Vector2.ZERO:
+		try_move(input_dir)
+	elif not is_on_ice:
+		stop_moving()
+	# Stop movement when an enemy is immediately ahead, but don't let physics contact push the player.
+	if velocity != Vector2.ZERO and _is_enemy_ahead():
+		velocity = Vector2.ZERO
+	move_and_slide()
+	clamp_to_playfield()
+
+## Host: this tank's driver is on a client, which drives its own copy at once
+## and reports where it is (lag compensation). This copy goes after it, at up
+## to FOLLOW_SPEED times its speed, stopped by the walls, water and enemies
+## this machine has. Held up for too long, it tells the client to start again
+## from here (net_override); until the client has, this copy waits.
+func _follow_client(delta: float) -> void:
+	_host_drives = false
+	var report := PlayerInput.remote_report(player_id)
+	if report == null or report.report_override != net_override:
+		stop_moving()
+		_apart_time = 0.0
+		return
+	var speed := move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0)
+	var way: Vector2 = report.report_position - global_position
+	# Across the way it faces now first: the rest of the way it went before
+	# it turned. Within half a tile, that's the turn's own snap to the grid
+	# (try_move), taken at once as the client did.
+	var facing: Vector2 = FACINGS[report.report_facing]
+	var across := way * Vector2(absf(facing.y), absf(facing.x))
+	if across.length() > HALF_TILE:
+		way = across
+	else:
+		position += across
+		way -= across
+	var step := way.limit_length(speed * FOLLOW_SPEED * delta)
+	var moved := 0.0
+	if step != Vector2.ZERO:
+		facing = step.normalized()
+		if not _opponent_ahead("enemies", facing, maxf(step.length(), 2.0)):
+			var before := global_position
+			move_and_collide(step)
+			clamp_to_playfield()
+			moved = global_position.distance_to(before)
+	if facing != current_direction:
+		current_direction = facing
+		_update_sprite_direction()
+	is_moving = report.report_moving or moved > 0.0
+	velocity = current_direction * speed if is_moving else Vector2.ZERO
+	if global_position.distance_to(report.report_position) > APART_DISTANCE and moved < step.length() * 0.5:
+		_apart_time += delta
+		if _apart_time >= APART_TIME:
+			_correct_client()
+	else:
+		_apart_time = 0.0
+
+## Host: the host drives this tank itself just now (a spell): the client
+## driving it starts again from wherever it ends up.
+func _take_over() -> void:
+	if not _host_drives:
+		_host_drives = true
+		_correct_client()
+
+## Host: the client driving this tank is to start again from where it is here.
+func _correct_client() -> void:
+	net_override = (net_override + 1) % 256
+	_apart_time = 0.0
+
+## Client: this machine drives this tank here (see net_predicted), unless the
+## host moves it itself just now: materializing, a mine's flight, a hold.
+func is_net_driving() -> bool:
+	return net_predicted and not is_materializing and not is_flying and not GameManager.players_frozen
+
+func _net_drives_itself() -> bool:
+	return is_net_driving()
+
+## Client: this machine takes over this tank, with local slot [param slot]'s
+## controls ([param on]), or stops. Driving it, it bumps into the walls, water
+## and the base here as it would on the host.
+func set_net_predicted(on: bool, slot: int) -> void:
+	net_slot = slot
+	if on == net_predicted:
+		return
+	net_predicted = on
+	collision_layer = 0
+	collision_mask = 0
+	if on:
+		set_collision_layer_value(3, true)  # player_tanks
+		for layer: int in [1, 2, 8]:        # walls, water, the base
+			set_collision_mask_value(layer, true)
+		if has_boat:
+			set_collision_mask_value(2, false)
+	else:
+		velocity = Vector2.ZERO
+
+## Client: one step of this machine's own tank, as the host would drive it, at
+## once: the keys don't wait for the trip to the host and back. Where it is goes
+## to the host with the next input message, and the host's copy follows.
+func _predict() -> void:
+	speed_level = int(GameManager.player_speed_levels[player_id])
+	_apply_speed_upgrade()
+	var input_dir := Vector2.ZERO
+	if not Net.input_blocked and not Net.map_prompt_open:
+		input_dir = PlayerInput.local_direction(net_slot)
+	_drive(input_dir)
+	Net.report_tank(net_slot, global_position, maxi(FACINGS.find(current_direction), 0),
+			velocity != Vector2.ZERO, _override_seen)
 
 # --- Speed & weapon upgrade application ---
 
@@ -694,9 +822,13 @@ func _rumble(pattern: Array[float]) -> void:
 
 # --- Online (see BaseTank's net_state) ---
 
-## Past the base's flags: invincible (it blinks), and showing the helmet's wreath.
+## Past the base's flags: invincible (it blinks), showing the helmet's wreath,
+## and slowed by a mine (a client driving it drives slow too).
 const NET_INVINCIBLE := NET_OWN_FLAGS
 const NET_WREATH := NET_OWN_FLAGS << 1
+const NET_SLOWED := NET_OWN_FLAGS << 2
+## Past the base's state: the host's net_override.
+const NET_OVERRIDE_AT := 9
 
 func net_type() -> int:
 	return NetWorld.T_PLAYER
@@ -715,7 +847,10 @@ func net_state() -> Array:
 		flags |= NET_INVINCIBLE
 	if is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT:
 		flags |= NET_WREATH
+	if is_mine_slowed:
+		flags |= NET_SLOWED
 	state[3] = flags
+	state.append(net_override)
 	return state
 
 func net_apply(state: Array) -> void:
@@ -726,6 +861,17 @@ func net_apply(state: Array) -> void:
 	# when, so the clock here only has to sit on the right side of it.
 	_helmet_invincible = flags & NET_WREATH != 0
 	invincible_timer = WREATH_MIN_LEFT + 1.0 if _helmet_invincible else (1.0 if is_invincible else 0.0)
+	is_mine_slowed = flags & NET_SLOWED != 0
+	# The host's correction: this machine's tank starts again from the host's
+	# position. (While the host drives it, it's already there: NetClientWorld.)
+	var override := int(state[NET_OVERRIDE_AT]) if state.size() > NET_OVERRIDE_AT else 0
+	if override != _override_seen:
+		_override_seen = override
+		if is_net_driving():
+			global_position = Vector2(state[0], state[1])
+			current_direction = FACINGS[clampi(int(state[2]), 0, FACINGS.size() - 1)]
+			_update_sprite_direction()
+			velocity = Vector2.ZERO
 
 func _net_apply_addons(bits: int) -> void:
 	var wanted := BaseTank.net_addon_names(bits)
