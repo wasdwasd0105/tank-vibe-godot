@@ -191,8 +191,11 @@ var _ping_timer := 0.0
 var _ping_samples: Array[float] = []
 ## Tests: this client's line to the host is this many ms long each way
 ## ("--net-lag-ms=N"): its inputs and pings go out, and the host's world and
-## answers come in, that much later. 0 normally.
+## answers come in, that much later; and each comes up to sim_jitter_ms later
+## still, at random, never overtaking the one before, as over TCP
+## ("--net-jitter-ms=N"). 0 normally.
 var sim_lag_ms := 0
+var sim_jitter_ms := 0
 var _lagged: Array = []   # [due msec, Callable], oldest first
 ## Client: the same while the map question is on the screen (NetMapPrompt).
 var map_prompt_open := false
@@ -222,6 +225,8 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--net-lag-ms="):
 			sim_lag_ms = maxi(int(arg.trim_prefix("--net-lag-ms=")), 0)
+		elif arg.begins_with("--net-jitter-ms="):
+			sim_jitter_ms = maxi(int(arg.trim_prefix("--net-jitter-ms=")), 0)
 
 
 func _notification(what: int) -> void:
@@ -866,12 +871,16 @@ func _physics_process(_delta: float) -> void:
 		_send_input()
 
 
-## [param action] now, or (a test's long line, sim_lag_ms) that much later.
+## [param action] now, or (a test's long line, sim_lag_ms and sim_jitter_ms)
+## that much later, in order.
 func _later(action: Callable) -> void:
-	if sim_lag_ms <= 0:
+	if sim_lag_ms <= 0 and sim_jitter_ms <= 0:
 		action.call()
 		return
-	_lagged.append([Time.get_ticks_msec() + sim_lag_ms, action])
+	var due := Time.get_ticks_msec() + sim_lag_ms + randi_range(0, sim_jitter_ms)
+	if not _lagged.is_empty():
+		due = maxi(due, int(_lagged[-1][0]))
+	_lagged.append([due, action])
 
 
 func _run_lagged() -> void:

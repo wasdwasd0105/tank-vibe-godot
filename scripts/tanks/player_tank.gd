@@ -113,16 +113,21 @@ var _rapid_special_ammo_progress: int = 0
 const FOLLOW_SPEED := 2.0
 const APART_DISTANCE := 24.0
 const APART_TIME := 0.3
-## Host: the client's reports are played back steadily, one of its frames a frame
-## here, this many frames behind the newest, so its tank moves here as smoothly
-## as it drove however unevenly the network brings them: more after one came
-## too late, less after PLAY_STEADY_FRAMES with none. Further behind than
-## PLAY_JUMP frames past that (a stall), it jumps ahead.
-const PLAY_LAG_START := 2
-const PLAY_LAG_MIN := 1
-const PLAY_LAG_MAX := 8
-const PLAY_STEADY_FRAMES := 120
-const PLAY_JUMP := 12
+## Host: the client's reports are played back steadily, a frame of its own a
+## frame here, as far behind as they need: how late 98 in 100 of the latest
+## came (PlayerInput's LATE_REPORTS) plus PLAY_SPARE, in frames, between these
+## bounds; PLAY_DELAY_START until it has seen 30 come. So its tank moves here as
+## smoothly as it drove, however unevenly the network brings them. The delay
+## follows its aim at these rates, frames a second: quickly up, slowly down.
+const PLAY_DELAY_START := 3.0
+const PLAY_DELAY_MIN := 1.0
+const PLAY_DELAY_MAX := 15.0
+const PLAY_SPARE := 1.0
+const PLAY_DELAY_UP := 6.0
+const PLAY_DELAY_DOWN := 0.6
+## Played past the newest report (a late one), a moving tank carries on its way
+## at most this many frames, rather than stopping.
+const PLAY_CARRY := 2.0
 
 ## Host: changes whenever the host, not the client driving this tank, says
 ## where it is: a correction, or a spell the host drives (materializing, a
@@ -134,14 +139,12 @@ var _host_drives := false
 ## move it here: should it turn it on, it starts again from here.
 var _host_moved_it := false
 var _apart_time := 0.0
-## Host: playing back the client's reports (PLAY_LAG_START): whose they are,
-## whether under way, the client's frame being played, how far behind the
-## newest, frames since one came late, and the report being followed ([] none).
+## Host: playing back the client's reports (PLAY_DELAY_START): whose they are,
+## how far behind, the reports' clock as last seen, and what's being followed
+## ([frame, position, facing, moving, override], [] none).
 var _play_key := PlayerInput.NO_SEAT
-var _playing := false
-var _play_frame := 0
-var _play_lag := PLAY_LAG_START
-var _play_steady := 0
+var _play_delay := PLAY_DELAY_START
+var _play_clock := 0.0
 var _played: Array = []
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
@@ -226,7 +229,9 @@ func _physics_process(delta: float) -> void:
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
-	if PlayerInput.is_held(player_id, 0):
+	# Held, or a tap between two frames: a client's press and release can come
+	# in one bunch, and its counter still says it pressed.
+	if PlayerInput.is_held(player_id, 0) or PlayerInput.is_just_pressed(player_id, 0):
 		shoot_regular()
 	var auto_secondary_held := secondary_weapon_type in AUTO_SECONDARY and PlayerInput.is_held(player_id, 1)
 	if auto_secondary_held or PlayerInput.is_just_pressed(player_id, 1):
@@ -259,7 +264,7 @@ func _follow_client(delta: float) -> void:
 	if _host_moved_it:
 		_host_moved_it = false
 		_correct_client()  # its keys moved it here meanwhile (_drive_for_client)
-	var report := _play_reports()
+	var report := _play_reports(delta)
 	if report.is_empty() or int(report[4]) != net_override:
 		stop_moving()
 		_apart_time = 0.0
@@ -299,35 +304,53 @@ func _follow_client(delta: float) -> void:
 	else:
 		_apart_time = 0.0
 
-## Host: the client's report this copy follows now, played back steadily: one
-## of the client's frames a frame here, _play_lag frames behind its newest
-## (PLAY_LAG_START). [] while there's none to follow.
-func _play_reports() -> Array:
+## Host: where the client's tank is to be shown now, from its reports: played
+## back steadily a frame of its own a frame here, _play_delay behind the
+## quickest they have come, so however unevenly the network brings them, the
+## copy goes on as evenly as the client's tank did. Between two reports, the
+## way between them; past the newest, a little further on its way. [] while
+## there's none to follow.
+func _play_reports(delta: float) -> Array:
 	var key: int = PlayerInput.seats[player_id]
-	var newest := PlayerInput.remote_report_frame(player_id)
-	if key != _play_key or newest < 0:
+	if key != _play_key:
 		_play_key = key
-		_playing = false
 		_played = []
-		if newest < 0:
-			return _played
-	if not _playing or newest < _play_frame - 1 or newest - _play_frame > _play_lag + PLAY_JUMP:
-		_playing = true
-		_play_frame = newest - _play_lag  # a start, a fresh run of them, or far behind after a stall
-	else:
-		_play_frame += 2 if newest - _play_frame > _play_lag + 2 else 1  # a little behind: catch up
-	if _play_frame > newest:
-		_play_frame = newest  # ran dry, one came late: play further behind from now
-		_play_lag = mini(_play_lag + 1, PLAY_LAG_MAX)
-		_play_steady = 0
-	else:
-		_play_steady += 1
-		if _play_steady >= PLAY_STEADY_FRAMES and _play_lag > PLAY_LAG_MIN:
-			_play_lag -= 1
-			_play_steady = 0
-	var taken := PlayerInput.take_remote_reports(player_id, _play_frame)
-	if not taken.is_empty():
-		_played = taken
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.report_frame < 0:
+		_played = []
+		return _played
+	# A report quicker than any before moves the reports' clock on: take that
+	# into the delay, so what's shown goes on evenly rather than jumping.
+	if not _played.is_empty() and pad.report_clock > _play_clock:
+		_play_delay += pad.report_clock - _play_clock
+	_play_clock = pad.report_clock
+	var aim := PLAY_DELAY_START
+	if pad.report_late.size() >= 30:
+		var sorted := pad.report_late.duplicate()
+		sorted.sort()
+		aim = clampf(sorted[int(sorted.size() * 0.98)] + PLAY_SPARE, PLAY_DELAY_MIN, PLAY_DELAY_MAX)
+	_play_delay = move_toward(_play_delay, aim, (PLAY_DELAY_UP if aim > _play_delay else PLAY_DELAY_DOWN) * delta)
+	var play := Engine.get_physics_frames() + pad.report_clock - _play_delay
+	var reports := pad.reports
+	while reports.size() >= 2 and float(reports[1][0]) <= play:
+		reports.pop_front()
+	if reports.is_empty() or play < float(reports[0][0]):
+		return _played  # nothing due yet: as it was
+	var a: Array = reports[0]
+	if reports.size() >= 2:
+		var b: Array = reports[1]
+		var t := (play - float(a[0])) / float(int(b[0]) - int(a[0]))
+		if a[2] != b[2] or a[4] != b[4]:
+			_played = a if t < 0.5 else b  # a turn's snap, or a correction taken: no halfway
+		else:
+			_played = [play, (a[1] as Vector2).lerp(b[1], t), a[2], a[3], a[4]]
+		return _played
+	var on_its_way: Vector2 = a[1]
+	if a[3]:
+		var carry := minf(play - float(a[0]), PLAY_CARRY)
+		on_its_way += FACINGS[int(a[2])] * move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0) \
+				* carry * get_physics_process_delta_time()
+	_played = [play, on_its_way, a[2], a[3], a[4]]
 	return _played
 
 ## Host: the client driving this tank doesn't run it ahead (its lag
@@ -398,7 +421,8 @@ func _predict() -> void:
 func _predict_fire() -> void:
 	_take_host_weapons()
 	var prefix := PlayerInput.action_prefix(net_slot)
-	if Input.is_action_pressed(prefix + PlayerInput.BUTTONS[0]):
+	var fire := prefix + PlayerInput.BUTTONS[0]
+	if Input.is_action_pressed(fire) or Input.is_action_just_pressed(fire):
 		shoot_regular()
 	if secondary_weapon_type == "mine":
 		return

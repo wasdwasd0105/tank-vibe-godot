@@ -20,8 +20,13 @@ const NO_SEAT := -1
 const LOCAL_P1 := 2  # peer 1, slot 0
 const LOCAL_P2 := 3  # peer 1, slot 1
 ## The most reports of a client's tank kept for the host's copy to play back
-## (two seconds of them).
+## (two seconds of them), and how many of the latest it goes by to see how late
+## they come (five seconds of them).
 const MAX_QUEUED_REPORTS := 120
+const LATE_REPORTS := 300
+## How far the reports' clock eases down each physics frame, in frames (a
+## millisecond a second), after any drift between the two machines' clocks.
+const REPORT_CLOCK_SETTLE := 0.001
 
 signal seats_changed
 
@@ -54,6 +59,12 @@ class RemotePad:
 	## The newest report's frame, counted on from the 0-255 the client sends,
 	## or -1: none since it last drove its tank there.
 	var report_frame := -1
+	## The client's frames against this machine's: how far ahead of this
+	## machine's physics frames a report's frame was as it came, at most (the
+	## quickest comes closest to the truth), and how many frames later than that
+	## each of the latest LATE_REPORTS came (PlayerTank._play_reports).
+	var report_clock := 0.0
+	var report_late: Array[float] = []
 
 
 func _ready() -> void:
@@ -75,6 +86,7 @@ func _physics_process(_delta: float) -> void:
 		for b in 2:
 			pad.just_physics[b] = pad.presses[b] != pad.seen_physics[b]
 			pad.seen_physics[b] = pad.presses[b]
+		pad.report_clock -= REPORT_CLOCK_SETTLE
 
 
 # =====================================================================
@@ -242,13 +254,23 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	if not has:
 		pad.reports.clear()
 		pad.report_frame = -1
+		pad.report_late.clear()
 		return
 	frame &= 0xff
-	if pad.report_frame >= 0:
+	var fresh := pad.report_frame < 0
+	if not fresh:
 		var ahead := (frame - pad.report_frame) & 0xff
 		if ahead == 0 or ahead >= 128:
 			return  # that report again (the message went for something else), or an old one
 		frame = pad.report_frame + ahead
+	# How far ahead of this machine's clock (its physics frame, and how far
+	# into the next) the report's frame is, as it comes.
+	var ahead_here := frame - (Engine.get_physics_frames() + Engine.get_physics_interpolation_fraction())
+	if fresh or ahead_here > pad.report_clock:
+		pad.report_clock = ahead_here
+	pad.report_late.append(pad.report_clock - ahead_here)
+	if pad.report_late.size() > LATE_REPORTS:
+		pad.report_late.pop_front()
 	pad.report_frame = frame
 	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
 	if pad.reports.size() > MAX_QUEUED_REPORTS:
@@ -281,17 +303,12 @@ func remote_report_frame(tank: int) -> int:
 	return pad.report_frame if pad != null else -1
 
 
-## Takes the reports up to frame [param frame] from the client driving tank
-## [param tank] off its queue, and returns the last of them ([frame, position,
-## facing, moving, override]), or [] if none had come by then.
-func take_remote_reports(tank: int, frame: int) -> Array:
+## The pad of the client driving tank [param tank], with its reports, or null
+## (not a client's tank, or nothing heard from it yet).
+func remote_pad(tank: int) -> RemotePad:
 	if not is_remote_seat(tank):
-		return []
-	var pad: RemotePad = _remote.get(seats[tank])
-	var taken: Array = []
-	while pad != null and not pad.reports.is_empty() and int(pad.reports[0][0]) <= frame:
-		taken = pad.reports.pop_front()
-	return taken
+		return null
+	return _remote.get(seats[tank])
 
 
 ## Forgets client [param peer]'s controllers and frees the seats they held.

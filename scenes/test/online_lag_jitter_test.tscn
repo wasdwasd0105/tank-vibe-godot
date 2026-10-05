@@ -1,0 +1,9 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/online_lag_test.gd" id="1_online_lag"]
+
+[node name="OnlineLagJitterTest" type="Node"]
+script = ExtResource("1_online_lag")
+jitter_ms = 40
+host_fps = 120
+client_fps = 60

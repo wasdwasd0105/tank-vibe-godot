@@ -12,10 +12,16 @@ extends Node
 ## to drive on from there; and with LAG COMPENSATION off, the client's keys
 ## drive the host's tank as they come, as before, until it's on again.
 ##
+## online_lag_jitter_test.tscn does it all again with the line jittering too
+## ("--net-jitter-ms": each message up to jitter_ms later still, never
+## overtaking the one before, as TCP bunches them up), as a busy LAN or the
+## internet would.
+##
 ## The client's checks come back in its results file and count here. The parts
 ## on their own are net_follow_test's.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/online_lag_test.tscn
+##   Godot --headless res://scenes/test/online_lag_jitter_test.tscn
 
 const SCENE := "res://scenes/test/online_lag_test.tscn"
 ## The client's line to the host, each way.
@@ -27,6 +33,13 @@ const DRIVEN := "user://test_online_lag_driven.txt"
 const CORRECTED := "user://test_online_lag_corrected.txt"
 ## The client gives up well before the host does.
 const CLIENT_TIME_LIMIT := 100.0
+
+## The client's line jitters by up to this many ms each way, too.
+@export var jitter_ms := 0
+## Frames a second, as a window's display paces them (0: as fast as they go,
+## headless): the host's, and the client's ("--max-fps").
+@export var host_fps := 0
+@export var client_fps := 0
 
 var _fail := 0
 var _lines: PackedStringArray = []
@@ -56,6 +69,10 @@ func _ready() -> void:
 			_is_client = true
 		elif arg.begins_with("--online-test-port="):
 			_port = int(arg.get_slice("=", 1))
+		elif arg.begins_with("--max-fps="):
+			Engine.max_fps = int(arg.get_slice("=", 1))
+	if not _is_client:
+		Engine.max_fps = host_fps
 	if _is_client:
 		get_tree().create_timer(CLIENT_TIME_LIMIT).timeout.connect(_finish_client)
 		_run_client.call_deferred()
@@ -142,7 +159,7 @@ func _run_host() -> void:
 	_client_pid = OS.create_process(OS.get_executable_path(), PackedStringArray([
 			"--headless", "--path", ProjectSettings.globalize_path("res://"), SCENE,
 			"--", "--test-profile=online_lag_client", "--online-lag-client", "--online-test-port=%d" % _port,
-			"--net-lag-ms=%d" % LAG_MS]))
+			"--net-lag-ms=%d" % LAG_MS, "--net-jitter-ms=%d" % jitter_ms, "--max-fps=%d" % client_fps]))
 	check(_client_pid > 0, "a client started, %d ms from here each way" % LAG_MS)
 	check(await _wait(func() -> bool: return Net.client_ids().size() == 1, 40.0), "it joined")
 	check(await _wait(func() -> bool: return PlayerInput.seats[1] != PlayerInput.NO_SEAT, 30.0), "and took tank 2")
@@ -183,7 +200,7 @@ func _run_host() -> void:
 	check(await _wait(func() -> bool: return FileAccess.file_exists(DRIVEN), 30.0), "the client drove and fired")
 	check(copy.net_override == override, "never once held up in open ground: no corrections")
 	var ping := Net.peer_ping(client)
-	check(ping >= 2 * LAG_MS and ping < 2 * LAG_MS + 80, "the client's ping: %d ms" % ping)
+	check(ping >= 2 * LAG_MS and ping < 2 * LAG_MS + 80 + 2 * jitter_ms, "the client's ping: %d ms" % ping)
 	var line: String = menu._player_line(client)
 	check(line == "LAGGY   ·   DRIVING P2   ·   %d ms" % ping, "and my list of players says so: %s" % line)
 
@@ -254,6 +271,16 @@ func _host_has(tank: PlayerTank) -> Vector2:
 	return Vector2.INF
 
 
+## Drives the way [param action] says for [param seconds], from the very frame
+## the last way's key goes up: no frame without one.
+func _drive_on(action: String, seconds: float) -> void:
+	for way: String in ["p1_up", "p1_down", "p1_left", "p1_right"]:
+		if way != action:
+			Input.action_release(way)
+	Input.action_press(action)
+	await get_tree().create_timer(seconds).timeout
+
+
 ## Holds [param action] for [param seconds].
 func _drive(action: String, seconds: float) -> void:
 	Input.action_press(action)
@@ -276,10 +303,11 @@ func _run_client() -> void:
 		_finish_client()
 		return
 	check(await _wait(func() -> bool: return Net._ping_samples.size() >= 2, 6.0), "timed the trip to the host and back")
-	check(Net.ping_ms >= 2 * LAG_MS and Net.ping_ms < 2 * LAG_MS + 80, "ping %.0f ms" % Net.ping_ms)
+	check(Net.ping_ms >= 2 * LAG_MS and Net.ping_ms < 2 * LAG_MS + 80 + 2 * Net.sim_jitter_ms, "ping %.0f ms" % Net.ping_ms)
 	var world := _world()
-	check(await _wait(func() -> bool: return world.render_delay() < 75.0, 10.0),
-		"AUTO smoothing settles low on this steady line: %.0f ms behind the host, aiming at %.0f" % [
+	var settled := 75.0 + 1.5 * Net.sim_jitter_ms
+	check(await _wait(func() -> bool: return world.render_delay() < settled, 10.0),
+		"AUTO smoothing settles as low as this line lets it: %.0f ms behind the host, aiming at %.0f" % [
 			world.render_delay(), world._aimed_delay()])
 
 	# The keys move the tank at once, however far the host is.
@@ -291,9 +319,13 @@ func _run_client() -> void:
 	var moved := from.distance_to(tank.global_position)
 	check(moved >= 2.0, "it answers my keys at once: %.1f px in 3 frames, %d ms from the host" % [moved, 2 * LAG_MS])
 	await tree.create_timer(0.4).timeout
+	# On without a break for five seconds, turning and turning back, so the host
+	# can see how evenly its copy goes.
+	await _drive_on("p1_right", 0.5)
+	await _drive_on("p1_up", 1.8)
+	await _drive_on("p1_down", 1.5)
+	await _drive_on("p1_up", 1.0)
 	Input.action_release("p1_up")
-	await _drive("p1_right", 0.5)
-	await _drive("p1_up", 0.3)
 	await tree.create_timer(0.8).timeout
 	var host_has := _host_has(tank)
 	check(host_has.distance_to(tank.global_position) < 0.5,

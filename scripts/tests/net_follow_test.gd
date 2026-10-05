@@ -20,8 +20,17 @@ var _fail := 0
 var _game: Node
 var _lm: LevelManager
 var _player: PlayerTank
-## The client's physics frame its reports come from (_report).
+## The client as the host hears of it: a report each of its frames while
+## _feeding (_physics_process), of its tank as _report last put it, or that it
+## doesn't drive one there (_client_has off); _client_frame counts its frames.
+var _feeding := false
 var _client_frame := 0
+var _client_has := true
+var _client_predicts := true
+var _client_at := Vector2.ZERO
+var _client_facing := Vector2.UP
+var _client_moving := false
+var _client_override := 0
 
 
 func check(cond: bool, msg: String) -> void:
@@ -43,13 +52,30 @@ func _wait_frames(count: int) -> void:
 		await get_tree().physics_frame
 
 
-## The client says its tank is at [param local], facing [param facing], having
-## taken correction [param override] (the host's latest unless given): its next
-## physics frame's report.
+## From now the client says its tank is at [param local], facing
+## [param facing], having taken correction [param override] (the host's latest
+## unless given): its report every frame (_physics_process), as a client sends.
 func _report(local: Vector2, facing: Vector2, moving: bool = true, override: int = -1) -> void:
+	_feeding = true
+	_client_has = true
+	_client_predicts = true
+	_client_at = local
+	_client_facing = facing
+	_client_moving = moving
+	_client_override = _player.net_override if override < 0 else override
+
+
+## One report from the client, its next frame's, as it comes in.
+func _send_report(local: Vector2, facing: Vector2, moving: bool, override: int) -> void:
 	_client_frame += 1
-	PlayerInput.set_remote_report(PEER, 0, true, true, _at(local), BaseTank.FACINGS.find(facing), moving,
-			_player.net_override if override < 0 else override, _client_frame & 0xff)
+	PlayerInput.set_remote_report(PEER, 0, _client_has, _client_predicts, _at(local), BaseTank.FACINGS.find(facing),
+			moving, override, _client_frame & 0xff)
+
+
+## The client's report each frame, ahead of the tanks' (this node comes first).
+func _physics_process(_delta: float) -> void:
+	if _feeding:
+		_send_report(_client_at, _client_facing, _client_moving, _client_override)
 
 
 ## Fires as the client's own tank would on a client: its shot predicted here.
@@ -130,7 +156,7 @@ func _run() -> void:
 	_report(target, Vector2.RIGHT)
 	var biggest := 0.0
 	var last := _player.global_position
-	for i in 45:
+	for i in 55:
 		await tree.physics_frame
 		biggest = maxf(biggest, last.distance_to(_player.global_position))
 		last = _player.global_position
@@ -160,7 +186,10 @@ func _run() -> void:
 	# A turn's own snap to the half-tile grid comes at once.
 	var snapped := turned + Vector2(20, -6)
 	_report(snapped, Vector2.RIGHT)
-	await _wait_frames(1)
+	for i in 20:
+		await tree.physics_frame
+		if _player.current_direction == Vector2.RIGHT:
+			break
 	var now := _player.global_position - _lm.global_position
 	check(absf(now.y - snapped.y) < 0.01 and _player.current_direction == Vector2.RIGHT,
 		"a turn's snap across its way comes at once, as the client's did")
@@ -168,7 +197,7 @@ func _run() -> void:
 	check(_player.global_position.distance_to(_at(snapped)) < 0.01, "and on to it")
 	var stand := snapped
 	_report(stand, Vector2.RIGHT, false)
-	await _wait_frames(2)
+	await _wait_frames(int(PlayerTank.PLAY_DELAY_START) + 3)
 	check(not _player.is_moving and _player.velocity == Vector2.ZERO and _player.net_state()[3] & BaseTank.NET_MOVING == 0,
 		"the client's tank stands still: so does the copy, for everyone to see")
 	# The client drives on at its speed, a report every frame of its own, but
@@ -178,36 +207,101 @@ func _run() -> void:
 	var driving := stand
 	var last_at := _player.global_position
 	var steps: Array[float] = []
+	_feeding = false  # (the reports come here as these patterns say)
 	for pass_number in 3:
 		for count: int in arrivals:
 			for i in count:
 				driving += Vector2.RIGHT * stride
-				_report(driving, Vector2.RIGHT)
+				_send_report(driving, Vector2.RIGHT, true, _player.net_override)
 			await tree.physics_frame
 			steps.append(_player.global_position.distance_to(last_at))
 			last_at = _player.global_position
 	var settled := steps.slice(arrivals.size())
 	var worst: float = settled.map(func(step: float) -> float: return absf(step - stride)).max()
-	check(worst < 0.01, "they come unevenly: the copy plays them back a frame's way every frame, %.2f px (%.3f px off at most)" % [
+	check(worst < stride * 0.25, "they come unevenly: the copy goes on a frame's way every frame, %.2f px (%.2f px off at most)" % [
 		stride, worst])
 	# A connection that stalls 80 ms now and then and makes up for it: from
-	# the shortest wait, the playback learns to sit far enough behind.
+	# the shortest wait, the playback learns to sit far enough behind. (Back
+	# the other way, to stay on the open ground.)
 	var stalling: Array[int] = [0, 0, 0, 0, 0, 6, 1, 1, 1, 1, 1, 1]
-	_player._play_lag = PlayerTank.PLAY_LAG_START
+	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
 	steps.clear()
-	for pass_number in 6:
+	for pass_number in 8:
 		for count: int in stalling:
 			for i in count:
-				driving += Vector2.RIGHT * stride
-				_report(driving, Vector2.RIGHT)
+				driving += Vector2.LEFT * stride
+				_send_report(driving, Vector2.LEFT, true, _player.net_override)
 			await tree.physics_frame
 			steps.append(_player.global_position.distance_to(last_at))
 			last_at = _player.global_position
 	worst = steps.slice(steps.size() - stalling.size()).map(func(step: float) -> float: return absf(step - stride)).max()
-	check(worst < 0.01, "they stall and catch up: after a few times it waits far enough behind, steady again (%.3f px off, %d frames behind)" % [
-		worst, _player._play_lag])
+	check(worst < stride * 0.25, "they stall and catch up: it learns to wait far enough behind, steady again (%.2f px off, %.1f frames behind)" % [
+		worst, _player._play_delay])
+	# The client's line gets quicker by three frames: its reports come three
+	# frames sooner from then on. That moves the reports' clock on, but what's
+	# shown goes on evenly, without a jump.
+	steps.clear()
+	for i in 60:
+		var count := 4 if i == 30 else 1
+		for c in count:
+			driving += Vector2.RIGHT * stride
+			_send_report(driving, Vector2.RIGHT, true, _player.net_override)
+		await tree.physics_frame
+		if i >= 15:  # (turned round and going again)
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	worst = steps.map(func(step: float) -> float: return absf(step - stride)).max()
+	check(worst < stride * 0.25, "its reports come three frames sooner from then on: no jump (%.2f px off at most)" % worst)
+	# Settled on a steady line a frame behind, then its reports start coming
+	# later: while the delay grows (towards six frames), what's shown goes on a
+	# little slower, evenly, the way between reports.
+	var late_seen := PlayerInput.remote_pad(0).report_late
+	late_seen.clear()
+	for i in 40:
+		late_seen.append(0.0)
+	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
+	steps.clear()
+	for i in 50:
+		if i == 20:
+			for j in 40:
+				late_seen.append(5.0)
+		driving += Vector2.LEFT * stride
+		_send_report(driving, Vector2.LEFT, true, _player.net_override)
+		await tree.physics_frame
+		if i >= 22:
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	var slowest: float = steps.min()
+	var fastest: float = steps.max()
+	check(fastest - slowest < stride * 0.05 and fastest < stride and _player._play_delay > PlayerTank.PLAY_DELAY_MIN + 2.0,
+		"the delay growing: it goes on evenly, a little slower, %.2f to %.2f px a frame" % [slowest, fastest])
+	# On a steady line it plays only a frame behind; then three reports come
+	# late at once. Past the newest meanwhile, the copy carries on its way
+	# rather than stopping, and goes on evenly when they come.
+	var pad := PlayerInput.remote_pad(0)
+	pad.report_late.clear()
+	for i in 40:
+		pad.report_late.append(0.0)  # all on time so far: a frame behind is enough
+	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
+	steps.clear()
+	var held_back: Array[Vector2] = []
+	for i in 70:
+		driving += Vector2.RIGHT * stride
+		if i >= 50 and i < 53:
+			held_back.append(driving)
+		else:
+			for late: Vector2 in held_back:
+				_send_report(late, Vector2.RIGHT, true, _player.net_override)
+			held_back.clear()
+			_send_report(driving, Vector2.RIGHT, true, _player.net_override)
+		await tree.physics_frame
+		if i >= 40:
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	var stalled := steps.filter(func(step: float) -> bool: return step < stride * 0.5).size()
+	check(stalled == 0, "three reports late at once: it carries on its way meanwhile, no stall (%d)" % stalled)
 	_report(driving, Vector2.RIGHT, false)
-	await _wait_frames(PlayerTank.PLAY_LAG_MAX + 2)
+	await _wait_frames(int(PlayerTank.PLAY_DELAY_MAX) + 2)
 
 	print("\n[B] Held up by what the client didn't see in time: the client starts again")
 	_place(home, Vector2.RIGHT)
@@ -266,7 +360,7 @@ func _run() -> void:
 		"landed: no more corrections, and the old word is left alone")
 	var facing_now := _player.current_direction
 	_report(landed + facing_now * 30.0, facing_now)
-	await _wait_frames(10)
+	await _wait_frames(20)
 	check(_player.global_position.distance_to(_at(landed + facing_now * 30.0)) < 0.01,
 		"the client drives on from where it landed: followed")
 	override = _player.net_override
@@ -293,6 +387,16 @@ func _run() -> void:
 	check(shell != null and shell.direction == Vector2.RIGHT and (shell.global_position - _player.global_position).x > 20.0
 		and absf((shell.global_position - _player.global_position).y) < 20.0,
 		"the client's fire: a shell out of the copy's barrel, where the copy is")
+	# A tap that came and went between two frames here (its press and release in
+	# one bunch): its press counter says it, and the copy fires all the same.
+	var shells_before := tree.get_nodes_in_group(NetWorld.GROUP).filter(
+			func(node: Node) -> bool: return node is Bullet and node.owner_player == 0).size()
+	_player.can_shoot = true
+	PlayerInput.set_remote(PEER, 0, -1, [false, false], [2, 0])
+	await _wait_frames(2)
+	var shells_after := tree.get_nodes_in_group(NetWorld.GROUP).filter(
+			func(node: Node) -> bool: return node is Bullet and node.owner_player == 0).size()
+	check(shells_after == shells_before + 1, "a tap between two frames fires too: %d shell(s) more" % (shells_after - shells_before))
 	var args := shell.net_spawn_args() if shell else []
 	check(args.size() == 9 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed),
 		"the clients learn whose shell it is and how it flies: %s" % str(args))
@@ -307,7 +411,8 @@ func _run() -> void:
 
 	print("\n[E] A client with its lag compensation off: its keys drive the copy, as before")
 	_place(home, Vector2.RIGHT)
-	PlayerInput.set_remote_report(PEER, 0, false, false, Vector2.ZERO, 0, false, 0, 0)
+	_client_has = false  # it tells the host it doesn't run its tank itself
+	_client_predicts = false
 	PlayerInput.set_remote(PEER, 0, PlayerInput.DIRECTIONS.find(Vector2.RIGHT), [false, false], [1, 0])
 	override = _player.net_override
 	await _wait_frames(10)
@@ -324,10 +429,11 @@ func _run() -> void:
 	check(_player.net_override == (override + 1) % 256 and _player.global_position.distance_to(_at(held_at)) < 0.01,
 		"it turns lag compensation on: its keys moved the copy, so a correction first, and the copy waits")
 	_report(held_at + Vector2(30, 0), Vector2.RIGHT)
-	await _wait_frames(PlayerTank.PLAY_LAG_MAX + 10)
+	await _wait_frames(int(PlayerTank.PLAY_DELAY_MAX) + 10)
 	check(_player.global_position.distance_to(_at(held_at + Vector2(30, 0))) < 0.01, "taken: followed")
 
 	print("\n[F] The client's side: its own tank, driven at once")
+	_feeding = false
 	PlayerInput.reset_to_local()
 	_player.set_physics_process(false)
 	_place(home, Vector2.UP)
@@ -569,6 +675,8 @@ func _run() -> void:
 	check(world._ghosts.is_empty() and ghost.is_queued_for_deletion(), "then goes: a shot the host didn't fire")
 
 	# Its secondary weapon as the host has it; mines left to the host.
+	for i in 2:
+		await tree.physics_frame  # (a press between two physics frames counts in the next one)
 	var kind: String = GameManager.player_secondary_weapon_types[0]
 	var count: int = GameManager.player_secondary_weapon_counts[0]
 	GameManager.player_secondary_weapon_types[0] = "ap"
