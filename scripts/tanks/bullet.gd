@@ -54,6 +54,10 @@ var net_ghost := false
 ## on its ghost there and on the host's shell for it, so the one takes over
 ## from the other; -1 for any other shell.
 var net_shot := -1
+## A ghost's: where it left, and for an AP shell how far its drilling has been
+## worked out (NetClientWorld.ap_walk).
+var net_origin := Vector2.ZERO
+var net_walk: Dictionary = {}
 static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
@@ -193,11 +197,16 @@ func _fly_ghost(delta: float) -> void:
 	var movement: Vector2 = direction * speed * delta
 	position += movement
 	_traveled += movement.length()
-	if (max_range > 0.0 and _traveled >= max_range) \
+	# An AP shell drills on through walls and tanks while its pool lasts, as
+	# the host's does; any other stops at the first.
+	var world := NetClientWorld.of(get_tree())
+	var drilled_to := world.ap_walk(self, net_origin, _traveled, net_walk) if pierces and world else -1.0
+	if drilled_to >= 0.0:
+		global_position = net_origin + direction * drilled_to
+	if drilled_to >= 0.0 or (max_range > 0.0 and _traveled >= max_range) \
 			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
-			or (not pierces and not _solid_tiles_touched().is_empty()) or _meets_enemy():
+			or (not pierces and (not _solid_tiles_touched().is_empty() or _meets_enemy())):
 		visible = false
-		var world := NetClientWorld.of(get_tree())
 		if world:
 			world.predict_hit(self, global_position)  # its end, shown at once
 

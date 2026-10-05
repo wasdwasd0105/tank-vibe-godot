@@ -1015,6 +1015,73 @@ func _run() -> void:
 	for entry: Dictionary in world._ghosts:
 		entry["node"].queue_free()
 	world._ghosts.clear()
+	# An AP shell drills on through a line of tanks while its pool lasts, as the
+	# host's does: through one with 1 HP and one with 2, it stops in one with 9
+	# (its pool of 8 spent), its end shown there at once.
+	var line: Array[EnemyTank] = []
+	for at: float in [80.0, 150.0, 220.0]:
+		line.append(_spawn_enemy(home + Vector2.UP * (BaseTank.TANK_SIZE * 0.5 + at)))
+	line[0].health = 1
+	line[1].health = 2
+	line[2].health = 9
+	world._predicted_hits.clear()
+	var heard_before := SoundManager._predicted.duplicate()
+	_player.active_ap_bullets = 0
+	_player.can_shoot = true
+	Input.action_press("p1_shoot2")
+	_fire_here()
+	Input.action_release("p1_shoot2")
+	var drill: Bullet = world._ghosts[0]["node"] if world._ghosts.size() == 1 else null
+	var seen_past: Array[bool] = [false, false]
+	if drill:
+		drill.set_physics_process(false)
+		for i in 120:
+			drill._fly_ghost(1.0 / 60.0)
+			if not drill.visible:
+				break
+			for t in 2:
+				seen_past[t] = seen_past[t] or drill.global_position.y < line[t].global_position.y
+	var near_edge := line[2].global_position.y + BaseTank.HITBOX_SIZE * 0.5
+	check(drill != null and drill.pierces and seen_past == [true, true] and not drill.visible
+		and drill.global_position.y <= near_edge and drill.global_position.y > near_edge - 8.0,
+		"an AP shell drills on through tanks of 1 and 2 HP, seen past them, and stops in one of 9 (its pool of 8): %s" % str(
+			drill.global_position - _lm.global_position if drill else "none"))
+	check(world._predicted_hits.size() == 1 and (world._predicted_hits[0][1] as Vector2).distance_to(drill.global_position) < 0.01,
+		"its end shown there at once")
+	# The host's shell for it takes over its drilling as far as the ghost had got.
+	world._spawn(94, NetWorld.T_BULLET, drill.net_spawn_args(), [muzzle.x, muzzle.y])
+	var drilled := world.node_for(94) as Bullet
+	drilled.set_physics_process(false)
+	world._own_shells[94]["born"] -= 2000
+	world._place(94, drilled, muzzle)
+	check(not drilled.visible and world._own_shells[94].get("walk", {}).get("stop", -1.0) > 0.0 and world._predicted_hits.size() == 1,
+		"the host's shell for it takes over its drilling: hidden where it stopped, its end not shown twice")
+	world._despawn(94)
+	# A moon shield's front stops it, as on the host.
+	line[0].has_moon_shield = true
+	line[0].current_direction = Vector2.DOWN
+	_player.active_ap_bullets = 0
+	_player.can_shoot = true
+	Input.action_press("p1_shoot2")
+	_fire_here()
+	Input.action_release("p1_shoot2")
+	drill = world._ghosts[-1]["node"] if not world._ghosts.is_empty() else null
+	if drill:
+		drill.set_physics_process(false)
+		for i in 120:
+			drill._fly_ghost(1.0 / 60.0)
+			if not drill.visible:
+				break
+	check(drill != null and not drill.visible and drill.global_position.y > line[0].global_position.y,
+		"a tank's moon shield, facing it, stops it at once")
+	for enemy in line:
+		enemy.queue_free()
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._predicted_hits.clear()
+	SoundManager._predicted = heard_before
+	_player.active_ap_bullets = 0
 	Net.role = Net.Role.CLIENT
 	GameManager.set_secondary_weapon(0, "rapid", 1)
 	Net.role = Net.Role.OFFLINE

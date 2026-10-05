@@ -34,6 +34,8 @@ const HANDOFF_MS := 150.0
 ## and PREDICTED_HIT_MS, this close to it, isn't shown again.
 const PREDICTED_HIT_MS := 500.0
 const PREDICTED_HIT_NEAR := 28.0
+## How finely an AP shell's way is worked out (ap_walk), px.
+const AP_STEP := 4.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -379,6 +381,9 @@ func add_ghost(shell: Bullet) -> void:
 		shell.free()
 		return
 	shell.net_ghost = true
+	shell.net_origin = shell.global_position
+	if shell.pierces:
+		shell.net_walk = {"pool": shell.damage}
 	shell.collision_layer = 0
 	shell.collision_mask = 0
 	parent.add_child(shell)
@@ -421,6 +426,8 @@ func _take_over_ghost(shell: Bullet, info: Dictionary) -> void:
 			info["start"] = left
 			info["born"] = int(_ghosts[i]["born"])
 			info["speed0"] = float(_ghosts[i]["speed0"])
+			if shell.pierces and not ghost.net_walk.is_empty():
+				info["walk"] = ghost.net_walk  # its drilling, worked out as far as the ghost went
 		info["offset"] = (ghost as Node2D).global_position - _shell_now(shell, info)
 		info["offset_at"] = Time.get_ticks_msec()
 		info["hidden"] = not (ghost as Node2D).visible
@@ -519,7 +526,16 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 	var reach: float = info["range"]
 	if reach > 0.0 and to.distance_to(info["start"]) > reach:
 		stop = minf(stop, maxf(reach - (from - info["start"]).dot(direction), 0.0))
-	if length > 0.0:
+	if info["pierces"]:
+		# An AP shell drills on through walls and tanks while its pool lasts.
+		if not info.has("walk"):
+			var level := int(GameManager.player_weapon_levels[clampi(shell.owner_player, 0, 1)])
+			info["walk"] = {"pool": int(CookieData.get_weapon_fire_config("ap", level).get("damage", 8))}
+		var start: Vector2 = info["start"]
+		var drilled_to := ap_walk(shell, start, (to - start).dot(direction), info["walk"])
+		if drilled_to >= 0.0:
+			stop = minf(stop, maxf(drilled_to - (from - start).dot(direction), 0.0))
+	elif length > 0.0:
 		# Its lanes lie across its way as Bullet._check_tile_collision has them.
 		var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
 		var lanes: Array[float] = shell.collision_lane_offsets
@@ -545,14 +561,94 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 	return stop if stop < INF else -1.0
 
 
+## How far an AP shell of this machine's own gets, drilling on as the host's
+## does (Bullet._ap_on_body, LevelManager.ap_drill_tiles): from
+## [param origin], its pool is spent on each strip of wall it reaches and on
+## each enemy, from what this machine shows of them (a tank's health, its moon
+## shield's front, super-steel stopping it), worked out as far as
+## [param distance] along its way. [param walk] carries the pool left ("pool"),
+## how far it's worked out ("done"), the strips and tanks spent on already,
+## and where it stopped ("stop"). Returns that, its distance from origin, or
+## -1 while it drills on.
+func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) -> float:
+	if walk.has("stop"):
+		return walk["stop"]
+	var direction := shell.direction
+	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
+	var on_rows := direction.x == 0.0  # its strips are rows of tiles going up or down
+	var tile_lanes: Array[float] = shell.tile_lane_offsets if not shell.tile_lane_offsets.is_empty() else shell.collision_lane_offsets
+	var half := BaseTank.HITBOX_SIZE * 0.5
+	var done: float = walk.get("done", 0.0)
+	var pool: int = walk.get("pool", 0)
+	var strips: Dictionary = walk.get("strips", {})
+	var tanks: Dictionary = walk.get("tanks", {})
+	var stop := -1.0
+	while done < distance and stop < 0.0:
+		done = minf(done + AP_STEP, distance)
+		var at := origin + direction * done
+		# The walls it reaches (as Bullet._solid_tiles_touched), a strip at a time.
+		if level_manager:
+			var reached: Dictionary = {}
+			for ahead: float in [0.0, 6.0]:
+				for lane: float in tile_lanes:
+					var cell := level_manager.world_to_tile(at + direction * ahead + across * lane)
+					var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
+					if tile.is_empty() or not LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
+						continue
+					var key: int = cell.y if on_rows else cell.x
+					if not strips.has(key):
+						if not reached.has(key):
+							reached[key] = []
+						reached[key].append(cell)
+			var keys := reached.keys()
+			keys.sort()
+			if (direction.y if on_rows else direction.x) < 0.0:
+				keys.reverse()
+			for key: int in keys:
+				strips[key] = true
+				var cost := level_manager.ap_strip_cost(reached[key])
+				pool = 0 if cost < 0 else pool - cost
+				if pool <= 0:
+					stop = done
+					break
+		if stop >= 0.0:
+			break
+		# The enemies it reaches (as Bullet._meets_enemy).
+		for node in get_tree().get_nodes_in_group("enemies"):
+			var tank := node as BaseTank
+			if tank == null or not tank.is_solid() or tanks.has(tank.get_instance_id()):
+				continue
+			var offset := tank.global_position - at
+			var meets := false
+			for lane: float in shell.collision_lane_offsets:
+				meets = meets or (absf(offset.dot(direction)) < half and absf(offset.dot(across) - lane) < half)
+			if not meets:
+				continue
+			tanks[tank.get_instance_id()] = true
+			if tank.is_bullet_blocked(direction):
+				pool = 0
+			else:
+				pool -= mini(pool, tank.health)
+			if pool <= 0:
+				stop = done
+				break
+	walk["done"] = done
+	walk["pool"] = pool
+	walk["strips"] = strips
+	walk["tanks"] = tanks
+	if stop >= 0.0:
+		walk["stop"] = stop
+	return stop
+
+
 ## The end of [param shell], a shell of this machine's own, seen here at
 ## [param at] (a ghost's, or one drawn ahead of the host's): shown at once as
 ## the host will show it (Bullet._destroy's look: its theme's hit picture, or
 ## the flash on each of its lanes), rather than a trip and the delay later.
 ## The host's picture of the same end, when it comes, isn't shown again
-## (_seen_here). (An AP shell drills on through tanks: the host shows its end.)
+## (_seen_here).
 func predict_hit(shell: Bullet, at: Vector2) -> void:
-	if shell.pierces or effects == null:
+	if effects == null:
 		return
 	var frames: Array = ThemeManager.get_hit_frames(shell.visual_style)
 	if not frames.is_empty():
