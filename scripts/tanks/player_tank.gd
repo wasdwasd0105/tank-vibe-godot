@@ -117,16 +117,25 @@ const APART_TIME := 0.3
 ## frame here, as far behind as they need: how late 98 in 100 of the latest
 ## came (PlayerInput's LATE_REPORTS) plus PLAY_SPARE, in frames, between these
 ## bounds; PLAY_DELAY_START until it has seen 30 come. So its tank moves here as
-## smoothly as it drove, however unevenly the network brings them. The delay
-## follows its aim at these rates, frames a second: quickly up, slowly down.
+## smoothly as it drove, however unevenly the network brings them.
 const PLAY_DELAY_START := 3.0
 const PLAY_DELAY_MIN := 1.0
 const PLAY_DELAY_MAX := 15.0
 const PLAY_SPARE := 1.0
-const PLAY_DELAY_UP := 6.0
-const PLAY_DELAY_DOWN := 0.6
-## Played past the newest report (a late one), a moving tank carries on its way
-## at most this many frames, rather than stopping.
+## Off that place (the delay changed, or either machine's frames slipped
+## against the other's), the playback gets back to it by running slower or
+## faster, never by going back: a tenth slower when it's too close behind the
+## newest report, and faster by a sixtieth for each frame it's too far behind,
+## from a hundredth to a tenth faster.
+const PLAY_SLOWER := 0.1
+const PLAY_FASTER_PER_FRAME := 1.0 / 60.0
+const PLAY_FASTER_MIN := 0.01
+const PLAY_FASTER_MAX := 0.1
+## Whatever the two machines' clocks make of each other, what's played is never
+## further behind the newest report than PLAY_BEHIND_MAX frames, nor further
+## past it than PLAY_CARRY: there (a late one), a moving tank carries on its
+## way that far rather than stopping.
+const PLAY_BEHIND_MAX := 18.0
 const PLAY_CARRY := 2.0
 
 ## Host: changes whenever the host, not the client driving this tank, says
@@ -139,12 +148,14 @@ var _host_drives := false
 ## move it here: should it turn it on, it starts again from here.
 var _host_moved_it := false
 var _apart_time := 0.0
-## Host: playing back the client's reports (PLAY_DELAY_START): whose they are,
-## how far behind, the reports' clock as last seen, and what's being followed
-## ([frame, position, facing, moving, override], [] none).
+## Host: playing back the client's reports (PLAY_DELAY_START): whose they are
+## and which run of them, the client's frame being shown, this machine's
+## physics frame it was last shown at (-1: not under way), and what's being
+## followed ([frame, position, facing, moving, override], [] none).
 var _play_key := PlayerInput.NO_SEAT
-var _play_delay := PLAY_DELAY_START
-var _play_clock := 0.0
+var _play_run := 0
+var _play_at := 0.0
+var _play_seen := -1
 var _played: Array = []
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
@@ -264,7 +275,7 @@ func _follow_client(delta: float) -> void:
 	if _host_moved_it:
 		_host_moved_it = false
 		_correct_client()  # its keys moved it here meanwhile (_drive_for_client)
-	var report := _play_reports(delta)
+	var report := _play_reports()
 	if report.is_empty() or int(report[4]) != net_override:
 		stop_moving()
 		_apart_time = 0.0
@@ -305,32 +316,44 @@ func _follow_client(delta: float) -> void:
 		_apart_time = 0.0
 
 ## Host: where the client's tank is to be shown now, from its reports: played
-## back steadily a frame of its own a frame here, _play_delay behind the
-## quickest they have come, so however unevenly the network brings them, the
-## copy goes on as evenly as the client's tank did. Between two reports, the
-## way between them; past the newest, a little further on its way. [] while
-## there's none to follow.
-func _play_reports(delta: float) -> Array:
+## back steadily a frame of its own a frame here, its delay (PLAY_DELAY_START)
+## behind the quickest they have come lately, so however unevenly the network
+## brings them, the copy goes on as evenly as the client's tank did. Between
+## two reports, the way between them; past the newest, a little further on its
+## way. [] while there's none to follow.
+func _play_reports() -> Array:
 	var key: int = PlayerInput.seats[player_id]
 	if key != _play_key:
 		_play_key = key
+		_play_seen = -1
 		_played = []
 	var pad := PlayerInput.remote_pad(player_id)
 	if pad == null or pad.report_frame < 0:
+		_play_seen = -1
 		_played = []
 		return _played
-	# A report quicker than any before moves the reports' clock on: take that
-	# into the delay, so what's shown goes on evenly rather than jumping.
-	if not _played.is_empty() and pad.report_clock > _play_clock:
-		_play_delay += pad.report_clock - _play_clock
-	_play_clock = pad.report_clock
-	var aim := PLAY_DELAY_START
+	var delay := PLAY_DELAY_START
 	if pad.report_late.size() >= 30:
 		var sorted := pad.report_late.duplicate()
 		sorted.sort()
-		aim = clampf(sorted[int(sorted.size() * 0.98)] + PLAY_SPARE, PLAY_DELAY_MIN, PLAY_DELAY_MAX)
-	_play_delay = move_toward(_play_delay, aim, (PLAY_DELAY_UP if aim > _play_delay else PLAY_DELAY_DOWN) * delta)
-	var play := Engine.get_physics_frames() + pad.report_clock - _play_delay
+		delay = clampf(sorted[int(sorted.size() * 0.98)] + PLAY_SPARE, PLAY_DELAY_MIN, PLAY_DELAY_MAX)
+	var now := Engine.get_physics_frames()
+	var place := now + pad.report_clock - delay  # where the playback belongs
+	if _play_seen != now - 1 or pad.report_run != _play_run:
+		_play_run = pad.report_run
+		_play_at = place  # a start, a fresh run, or on again after the host drove it a spell
+	else:
+		_play_at += 1.0
+		var off := place - _play_at
+		if off < 0.0:
+			_play_at -= minf(-off, PLAY_SLOWER)
+		else:
+			_play_at += minf(off, clampf(off * PLAY_FASTER_PER_FRAME, PLAY_FASTER_MIN, PLAY_FASTER_MAX))
+	_play_seen = now
+	# The two machines' clocks aside: no further from the newest than this.
+	var newest := float(pad.report_frame)
+	_play_at = clampf(_play_at, newest - PLAY_BEHIND_MAX, newest + PLAY_CARRY)
+	var play := _play_at
 	var reports := pad.reports
 	while reports.size() >= 2 and float(reports[1][0]) <= play:
 		reports.pop_front()
@@ -347,9 +370,8 @@ func _play_reports(delta: float) -> Array:
 		return _played
 	var on_its_way: Vector2 = a[1]
 	if a[3]:
-		var carry := minf(play - float(a[0]), PLAY_CARRY)
 		on_its_way += FACINGS[int(a[2])] * move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0) \
-				* carry * get_physics_process_delta_time()
+				* (play - float(a[0])) * get_physics_process_delta_time()
 	_played = [play, on_its_way, a[2], a[3], a[4]]
 	return _played
 

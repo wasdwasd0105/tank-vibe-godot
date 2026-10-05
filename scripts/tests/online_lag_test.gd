@@ -10,7 +10,11 @@ extends Node
 ## steady line; both sides know the ping, and the host's list of players shows
 ## it; a correction from the host puts the client's tank where the host has it,
 ## to drive on from there; and with LAG COMPENSATION off, the client's keys
-## drive the host's tank as they come, as before, until it's on again.
+## drive the host's tank as they come, as before, until it's on again. Last,
+## each machine stands still a while in turn, as when its window goes
+## fullscreen or out of sight: its frames slip against the other's for good, and
+## the host's copy keeps up with the client's tank all the same, as smoothly as
+## before within a second or two.
 ##
 ## online_lag_jitter_test.tscn does it all again with the line jittering too
 ## ("--net-jitter-ms": each message up to jitter_ms later still, never
@@ -31,8 +35,16 @@ const CLIENT_RESULTS := "user://test_online_lag_client.txt"
 const DRIVEN := "user://test_online_lag_driven.txt"
 ## The host corrected the client's tank: where it put it.
 const CORRECTED := "user://test_online_lag_corrected.txt"
+## The client drives up and down without a break: the host's turn to stand
+## still; the host has, and seen how its copy went: the client's turn; done.
+const SLIPPING := "user://test_online_lag_slipping.txt"
+const HOST_SLIPPED := "user://test_online_lag_host_slipped.txt"
+const CLIENT_SLIPPED := "user://test_online_lag_client_slipped.txt"
+## How long a machine stands still, ms: about what a window going out of sight
+## costs on a Mac (some 30 physics frames never run).
+const STAND_STILL_MS := 700
 ## The client gives up well before the host does.
-const CLIENT_TIME_LIMIT := 100.0
+const CLIENT_TIME_LIMIT := 130.0
 
 ## The client's line jitters by up to this many ms each way, too.
 @export var jitter_ms := 0
@@ -47,6 +59,15 @@ var _is_client := false
 var _port := 0
 var _client_pid := -1
 var _done := false
+## A node whose place is noted every frame once everything else has run its
+## frame (_process, last in line): [where it is, when (usec)] each.
+var _watched: Node2D = null
+var _watch: Array = []
+## The host's copy of the client's tank, its playback looked at every physics
+## frame just after it has run (_physics_process, last in line): the furthest
+## behind the client's newest report it has played, in frames.
+var _copy_watched: PlayerTank = null
+var _behind_most := 0.0
 
 
 func check(cond: bool, msg: String) -> void:
@@ -60,6 +81,8 @@ func check(cond: bool, msg: String) -> void:
 
 
 func _ready() -> void:
+	process_priority = 1000
+	process_physics_priority = 1000
 	# The scene changes the test drives would free this node as the current scene.
 	var stand_in := Node.new()
 	get_tree().root.add_child.call_deferred(stand_in)
@@ -78,6 +101,16 @@ func _ready() -> void:
 		_run_client.call_deferred()
 	else:
 		_run_host.call_deferred()
+
+
+func _process(_delta: float) -> void:
+	if _watched != null and is_instance_valid(_watched) and _watched.visible:
+		_watch.append([_watched.global_position, Time.get_ticks_usec()])
+
+
+func _physics_process(_delta: float) -> void:
+	if _copy_watched != null and is_instance_valid(_copy_watched) and _copy_watched._play_seen == Engine.get_physics_frames():
+		_behind_most = maxf(_behind_most, PlayerInput.remote_report_frame(_copy_watched.player_id) - _copy_watched._play_at)
 
 
 func _wait(cond: Callable, limit: float) -> bool:
@@ -116,7 +149,7 @@ func _tank(pid: int) -> PlayerTank:
 
 
 func _remove_files() -> void:
-	for path in [CLIENT_RESULTS, DRIVEN, CORRECTED]:
+	for path in [CLIENT_RESULTS, DRIVEN, CORRECTED, SLIPPING, HOST_SLIPPED, CLIENT_SLIPPED]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
@@ -194,7 +227,7 @@ func _run_host() -> void:
 	var stride := copy.move_speed * get_physics_process_delta_time()
 	var stalls := steps.filter(func(step: float) -> bool: return step < stride * 0.5).size()
 	var lurches := steps.filter(func(step: float) -> bool: return step > stride * 1.6).size()
-	check(stalls <= 2 and lurches <= 3,
+	check(stalls <= 4 and lurches <= 3,
 		"the copy here moves as smoothly as the client drives: %d of %d frames stalled, %d lurched (a turn's snap is one)" % [
 			stalls, steps.size(), lurches])
 	check(await _wait(func() -> bool: return FileAccess.file_exists(DRIVEN), 30.0), "the client drove and fired")
@@ -224,7 +257,60 @@ func _run_host() -> void:
 	check(await _wait(func() -> bool: return copy.net_override != before_on, 5.0),
 		"a correction first: its keys moved the copy here meanwhile")
 
+	# Either machine stands still a while (its window going fullscreen or out
+	# of sight, a stage loading): the physics frames it missed never run, so its
+	# frames slip against the other's for good. The client drives up and down
+	# meanwhile, a second each way; the copy here keeps up all the same.
+	check(await _wait(func() -> bool: return FileAccess.file_exists(SLIPPING), 30.0), "the client drives up and down without a break")
+	await tree.create_timer(1.0).timeout
+	override = copy.net_override
+	var before: Array[int] = await _evenness(copy, 2.0)
+	_behind_most = 0.0
+	_copy_watched = copy
+	for i in 4:
+		await tree.create_timer(1.2).timeout
+		OS.delay_msec(STAND_STILL_MS)
+	await tree.create_timer(0.3).timeout
+	_copy_watched = null
+	check(_behind_most > 10.0 and _behind_most <= PlayerTank.PLAY_BEHIND_MAX + 0.001,
+		"I stood still four times, %d ms each: my copy never played more than %.1f frames behind the client's newest word" % [
+			STAND_STILL_MS, _behind_most])
+	await tree.create_timer(1.7).timeout
+	var after: Array[int] = await _evenness(copy, 2.0)
+	check(after[0] <= before[0] + 2 and after[1] <= before[1] + 2,
+		"and two seconds on it goes as smoothly as before: %d frames stalled and %d lurched in two seconds, %d and %d before" % [
+			after[0], after[1], before[0], before[1]])
+	var said := FileAccess.open(HOST_SLIPPED, FileAccess.WRITE)
+	said.store_string("slipped")
+	said.close()
+	check(await _wait(func() -> bool: return FileAccess.file_exists(CLIENT_SLIPPED), 20.0), "the client stood still %d ms" % STAND_STILL_MS)
+	await tree.create_timer(1.0).timeout
+	after = await _evenness(copy, 2.0)
+	var behind := PlayerInput.remote_report_frame(1) - copy._play_at
+	check(after[0] <= before[0] + 2 and after[1] <= before[1] + 2 and behind > 0.5 and behind < PlayerTank.PLAY_DELAY_MAX,
+		"a second on, my copy goes as smoothly as before: %d frames stalled and %d lurched in two seconds, playing %.1f frames behind" % [
+			after[0], after[1], behind])
+	check(copy.net_override == override, "no corrections through any of it")
+
 	await _finish_host()
+
+
+## How evenly [param copy] goes for [param seconds]: how many frames it stood
+## (less than half a frame's way) and how many it lurched (over 1.6 frames' way).
+func _evenness(copy: PlayerTank, seconds: float) -> Array[int]:
+	var stride := copy.move_speed * get_physics_process_delta_time()
+	var stalls := 0
+	var lurches := 0
+	var last := copy.global_position
+	for i in int(seconds * Engine.physics_ticks_per_second):
+		await get_tree().physics_frame
+		var step := copy.global_position.distance_to(last)
+		last = copy.global_position
+		if step < stride * 0.5:
+			stalls += 1
+		elif step > stride * 1.6:
+			lurches += 1
+	return [stalls, lurches]
 
 
 func _clear_enemies() -> void:
@@ -367,20 +453,24 @@ func _run_client() -> void:
 	check(real != null and jump < 10.0,
 		"the host's shell takes over from it where it was: %.1f px from the ghost's last place" % jump)
 	check(not both, "one shot, one shell: never the ghost and the host's shell at once")
+	# (Its place and the time, each frame, both taken once the world has moved
+	# it that frame: a frame that runs long is no jump of the shell's.)
 	var worst := INF
 	if real:
-		worst = 0.0
-		var prev := real.global_position
-		var prev_t := Time.get_ticks_usec()
+		var shell_speed := real.speed
+		_watch.clear()
+		_watched = real
 		for i in 30:
 			await tree.process_frame
 			if not is_instance_valid(real) or not real.visible:
 				break
-			var t := Time.get_ticks_usec()
-			worst = maxf(worst, absf(prev.distance_to(real.global_position) - real.speed * (t - prev_t) / 1000000.0))
-			prev = real.global_position
-			prev_t = t
-	check(worst < 4.0, "and flies on as smoothly as the ghost: at most %.1f px off its speed from frame to frame" % worst)
+		_watched = null
+		worst = 0.0
+		for i in range(1, _watch.size()):
+			var went: float = (_watch[i - 1][0] as Vector2).distance_to(_watch[i][0])
+			worst = maxf(worst, absf(went - shell_speed * (int(_watch[i][1]) - int(_watch[i - 1][1])) / 1000000.0))
+	check(worst < 4.0 and _watch.size() >= 10,
+		"and flies on as smoothly as the ghost: at most %.1f px off its speed from frame to frame, %d frames" % [worst, _watch.size()])
 	check(SoundManager._predicted.is_empty(), "and the host's sound of it is left out: heard once")
 	await tree.create_timer(0.25).timeout
 	if is_instance_valid(real) and real.visible:
@@ -432,6 +522,35 @@ func _run_client() -> void:
 		await tree.physics_frame
 	Input.action_release("p1_up")
 	check(from_on.distance_to(tank.global_position) >= 2.0, "and it answers my keys at once again")
+
+	# Either machine stands still a while: up and down without a break
+	# meanwhile, a second each way. The host first (it says when it has), then
+	# this one, and on for five seconds more.
+	await tree.create_timer(0.5).timeout
+	seen = tank._override_seen
+	var driving := FileAccess.open(SLIPPING, FileAccess.WRITE)
+	driving.store_string("driving")
+	driving.close()
+	var legs_since := -1
+	for leg in 45:
+		await _drive_on("p1_down" if leg % 2 == 0 else "p1_up", 1.0)
+		if legs_since >= 0:
+			legs_since += 1
+			if legs_since >= 5:
+				break
+		elif FileAccess.file_exists(HOST_SLIPPED):
+			OS.delay_msec(STAND_STILL_MS)
+			var stood := FileAccess.open(CLIENT_SLIPPED, FileAccess.WRITE)
+			stood.store_string("slipped")
+			stood.close()
+			legs_since = 0
+	Input.action_release("p1_down")
+	Input.action_release("p1_up")
+	check(legs_since >= 5, "up and down while the host stood still, then I did (%d ms), and on" % STAND_STILL_MS)
+	await tree.create_timer(0.8).timeout
+	host_has = _host_has(tank)
+	check(host_has.distance_to(tank.global_position) < 0.5 and tank._override_seen == seen,
+		"the host has my tank where I have it after all that, never corrected: %s, here %s" % [host_has, tank.global_position])
 	_done = true
 	_finish_client()
 

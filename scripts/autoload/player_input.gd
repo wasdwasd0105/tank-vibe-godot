@@ -21,12 +21,19 @@ const LOCAL_P1 := 2  # peer 1, slot 0
 const LOCAL_P2 := 3  # peer 1, slot 1
 ## The most reports of a client's tank kept for the host's copy to play back
 ## (two seconds of them), and how many of the latest it goes by to see how late
-## they come (five seconds of them).
+## they come (five seconds).
 const MAX_QUEUED_REPORTS := 120
 const LATE_REPORTS := 300
-## How far the reports' clock eases down each physics frame, in frames (a
-## millisecond a second), after any drift between the two machines' clocks.
-const REPORT_CLOCK_SETTLE := 0.001
+## The reports' clock goes by the quickest of the latest CLOCK_REPORTS (two
+## seconds), and stays within CLOCK_SLACK frames of the quickest of the latest
+## CLOCK_RECENT (half a second): once that many in a row have all come later,
+## the client's frames have fallen behind this machine's for good (its machine
+## stood still a while, or its line got longer). The clock falling back by more
+## than CLOCK_FELL frames at once is that: those reports weren't that late.
+const CLOCK_REPORTS := 120
+const CLOCK_RECENT := 30
+const CLOCK_SLACK := 1.0
+const CLOCK_FELL := 2.0
 
 signal seats_changed
 
@@ -57,12 +64,18 @@ class RemotePad:
 	var report_predicts := false
 	var reports: Array = []
 	## The newest report's frame, counted on from the 0-255 the client sends,
-	## or -1: none since it last drove its tank there.
+	## or -1: none since it last drove its tank there; and how many runs of
+	## reports there have been (each counts its frames afresh).
 	var report_frame := -1
+	var report_run := 0
 	## The client's frames against this machine's: how far ahead of this
-	## machine's physics frames a report's frame was as it came, at most (the
-	## quickest comes closest to the truth), and how many frames later than that
-	## each of the latest LATE_REPORTS came (PlayerTank._play_reports).
+	## machine's physics frames each of the latest CLOCK_REPORTS was as it came
+	## (report_ahead); the reports' clock, the furthest of those (the quickest
+	## comes closest to the truth, and only the latest count, CLOCK_REPORTS:
+	## either machine's frames can slip against the other's); and how many
+	## frames later than that each of the latest LATE_REPORTS came
+	## (PlayerTank._play_reports).
+	var report_ahead: Array[float] = []
 	var report_clock := 0.0
 	var report_late: Array[float] = []
 
@@ -86,7 +99,6 @@ func _physics_process(_delta: float) -> void:
 		for b in 2:
 			pad.just_physics[b] = pad.presses[b] != pad.seen_physics[b]
 			pad.seen_physics[b] = pad.presses[b]
-		pad.report_clock -= REPORT_CLOCK_SETTLE
 
 
 # =====================================================================
@@ -254,11 +266,13 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	if not has:
 		pad.reports.clear()
 		pad.report_frame = -1
+		pad.report_ahead.clear()
 		pad.report_late.clear()
 		return
 	frame &= 0xff
-	var fresh := pad.report_frame < 0
-	if not fresh:
+	if pad.report_frame < 0:
+		pad.report_run += 1
+	else:
 		var ahead := (frame - pad.report_frame) & 0xff
 		if ahead == 0 or ahead >= 128:
 			return  # that report again (the message went for something else), or an old one
@@ -266,9 +280,18 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	# How far ahead of this machine's clock (its physics frame, and how far
 	# into the next) the report's frame is, as it comes.
 	var ahead_here := frame - (Engine.get_physics_frames() + Engine.get_physics_interpolation_fraction())
-	if fresh or ahead_here > pad.report_clock:
-		pad.report_clock = ahead_here
-	pad.report_late.append(pad.report_clock - ahead_here)
+	pad.report_ahead.append(ahead_here)
+	if pad.report_ahead.size() > CLOCK_REPORTS:
+		pad.report_ahead.pop_front()
+	var clock := minf(pad.report_ahead.max(), pad.report_ahead.slice(-CLOCK_RECENT).max() + CLOCK_SLACK)
+	# The clock fell back (CLOCK_FELL): the reports since the client's frames
+	# slipped, held against the old clock, weren't as late as that made them.
+	var fell := pad.report_clock - clock
+	if pad.report_ahead.size() > 1 and fell > CLOCK_FELL:
+		for i in range(maxi(pad.report_late.size() - CLOCK_RECENT, 0), pad.report_late.size()):
+			pad.report_late[i] = maxf(pad.report_late[i] - fell, 0.0)
+	pad.report_clock = clock
+	pad.report_late.append(clock - ahead_here)
 	if pad.report_late.size() > LATE_REPORTS:
 		pad.report_late.pop_front()
 	pad.report_frame = frame

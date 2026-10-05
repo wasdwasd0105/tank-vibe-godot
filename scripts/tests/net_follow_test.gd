@@ -78,6 +78,43 @@ func _physics_process(_delta: float) -> void:
 		_send_report(_client_at, _client_facing, _client_moving, _client_override)
 
 
+## The client stops driving its tank and starts again at [param local], facing
+## [param facing], the copy put there too: a fresh run of reports, to be sent
+## by hand (_drive_a_frame).
+func _start_run(local: Vector2, facing: Vector2) -> void:
+	_feeding = false
+	_client_has = false
+	_send_report(local, facing, false, 0)
+	_client_has = true
+	_client_predicts = true
+	_place(local, facing)
+	_client_at = local
+	_client_facing = facing
+
+
+## The client's tank goes on [param stride] the way it faces, a frame of its
+## own, and its report of that comes in.
+func _drive_a_frame(stride: float) -> void:
+	_client_at += _client_facing * stride
+	_send_report(_client_at, _client_facing, true, _player.net_override)
+
+
+## The playback as on a steady line so far: every report on time, so a frame
+## behind them is enough; [param settled], it's there already.
+func _steady_so_far(settled: bool = false) -> void:
+	var pad := PlayerInput.remote_pad(0)
+	pad.report_late.clear()
+	for i in 40:
+		pad.report_late.append(0.0)
+	if settled:
+		_player._play_seen = -1
+
+
+## How many of the client's frames behind its newest report the copy is shown.
+func _frames_behind() -> float:
+	return PlayerInput.remote_report_frame(0) - _player._play_at
+
+
 ## Fires as the client's own tank would on a client: its shot predicted here.
 ## (The role is a client's only for the call: Net's own frames would try to join.)
 func _fire_here() -> void:
@@ -224,7 +261,7 @@ func _run() -> void:
 	# the shortest wait, the playback learns to sit far enough behind. (Back
 	# the other way, to stay on the open ground.)
 	var stalling: Array[int] = [0, 0, 0, 0, 0, 6, 1, 1, 1, 1, 1, 1]
-	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
+	_steady_so_far()
 	steps.clear()
 	for pass_number in 8:
 		for count: int in stalling:
@@ -235,11 +272,12 @@ func _run() -> void:
 			steps.append(_player.global_position.distance_to(last_at))
 			last_at = _player.global_position
 	worst = steps.slice(steps.size() - stalling.size()).map(func(step: float) -> float: return absf(step - stride)).max()
-	check(worst < stride * 0.25, "they stall and catch up: it learns to wait far enough behind, steady again (%.2f px off, %.1f frames behind)" % [
-		worst, _player._play_delay])
+	check(worst < stride * 0.25 and _frames_behind() > 5.0,
+		"they stall and catch up: it learns to wait far enough behind, steady again (%.2f px off, %.1f frames behind)" % [
+			worst, _frames_behind()])
 	# The client's line gets quicker by three frames: its reports come three
 	# frames sooner from then on. That moves the reports' clock on, but what's
-	# shown goes on evenly, without a jump.
+	# shown goes on evenly, a little faster, without a jump.
 	steps.clear()
 	for i in 60:
 		var count := 4 if i == 30 else 1
@@ -256,10 +294,7 @@ func _run() -> void:
 	# later: while the delay grows (towards six frames), what's shown goes on a
 	# little slower, evenly, the way between reports.
 	var late_seen := PlayerInput.remote_pad(0).report_late
-	late_seen.clear()
-	for i in 40:
-		late_seen.append(0.0)
-	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
+	_steady_so_far(true)
 	steps.clear()
 	for i in 50:
 		if i == 20:
@@ -273,18 +308,16 @@ func _run() -> void:
 		last_at = _player.global_position
 	var slowest: float = steps.min()
 	var fastest: float = steps.max()
-	check(fastest - slowest < stride * 0.05 and fastest < stride and _player._play_delay > PlayerTank.PLAY_DELAY_MIN + 2.0,
-		"the delay growing: it goes on evenly, a little slower, %.2f to %.2f px a frame" % [slowest, fastest])
+	check(fastest - slowest < stride * 0.05 and fastest < stride and _frames_behind() > PlayerTank.PLAY_DELAY_MIN + 2.0,
+		"the delay growing: it goes on evenly, a little slower, %.2f to %.2f px a frame, %.1f frames behind by now" % [
+			slowest, fastest, _frames_behind()])
 	# On a steady line it plays only a frame behind; then three reports come
 	# late at once. Past the newest meanwhile, the copy carries on its way
 	# rather than stopping, and goes on evenly when they come.
-	var pad := PlayerInput.remote_pad(0)
-	pad.report_late.clear()
-	for i in 40:
-		pad.report_late.append(0.0)  # all on time so far: a frame behind is enough
-	_player._play_delay = PlayerTank.PLAY_DELAY_MIN
+	_steady_so_far(true)
 	steps.clear()
 	var held_back: Array[Vector2] = []
+	var past := 0.0
 	for i in 70:
 		driving += Vector2.RIGHT * stride
 		if i >= 50 and i < 53:
@@ -295,13 +328,120 @@ func _run() -> void:
 			held_back.clear()
 			_send_report(driving, Vector2.RIGHT, true, _player.net_override)
 		await tree.physics_frame
+		past = maxf(past, -_frames_behind())
 		if i >= 40:
 			steps.append(_player.global_position.distance_to(last_at))
 		last_at = _player.global_position
 	var stalled := steps.filter(func(step: float) -> bool: return step < stride * 0.5).size()
-	check(stalled == 0, "three reports late at once: it carries on its way meanwhile, no stall (%d)" % stalled)
+	check(stalled == 0 and past > 1.0,
+		"three reports late at once: it carries on its way meanwhile (%.1f frames past the newest), no stall (%d)" % [past, stalled])
 	_report(driving, Vector2.RIGHT, false)
 	await _wait_frames(int(PlayerTank.PLAY_DELAY_MAX) + 2)
+
+	print("\n[A2] Either machine's frames slip: the copy keeps up all the same")
+	# This machine stands still for two thirds of a second, four times over (its
+	# window going fullscreen or out of sight, a stage loading): each time, the
+	# frames the client drove meanwhile come at once. The copy is never left
+	# behind for it: it makes up the way at its catching-up speed, then goes on
+	# evenly, a little faster until it's back in its place.
+	_start_run(Vector2(176, 448), Vector2.RIGHT)
+	for i in 20:
+		_drive_a_frame(stride)
+		await tree.physics_frame
+	check(_frames_behind() > 0.5 and _frames_behind() < 5.0,
+		"a fresh run of reports is played by its own clock, not the last run's: %.1f frames behind its newest" % _frames_behind())
+	for stall in 4:
+		for i in 40:
+			_drive_a_frame(stride)
+		for i in 40:
+			await tree.physics_frame
+			_drive_a_frame(stride)
+	steps.clear()
+	last_at = _player.global_position
+	for i in 80:
+		await tree.physics_frame
+		_drive_a_frame(stride)
+		if i >= 40:
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	await tree.physics_frame
+	var behind := _player.global_position.distance_to(_at(_client_at)) / stride
+	check(behind < 20.0, "this machine stood still four times, two thirds of a second each: the copy is %.1f frames' way behind the client's tank, no more" % behind)
+	slowest = steps.min()
+	fastest = steps.max()
+	check(slowest > stride * 0.95 and fastest < stride * 1.15,
+		"and goes on evenly, a little faster to make it up: %.2f to %.2f px a frame (the client's %.2f)" % [slowest, fastest, stride])
+	# The client's machine stands still for half a second: its frames fall
+	# behind for good, so its reports seem to come that much later from then on.
+	# The copy goes on with it all the same, and within a second and a half as
+	# evenly as before, however unevenly they come, and no further behind than
+	# that unevenness needs.
+	_start_run(Vector2(176, 512), Vector2.RIGHT)
+	for i in 60:
+		_drive_a_frame(stride)
+		await tree.physics_frame
+	var stood_at := _player.global_position.x
+	await _wait_frames(30)  # (nothing from it meanwhile)
+	var from_x := _player.global_position.x
+	check((from_x - stood_at) / stride < 6.0,
+		"nothing from the client for half a second: the copy carries on %.1f frames' way, then waits" % ((from_x - stood_at) / stride))
+	steps.clear()
+	last_at = _player.global_position
+	for pass_number in 8:
+		for count: int in arrivals:
+			for i in count:
+				_drive_a_frame(stride)
+			await tree.physics_frame
+			steps.append(_player.global_position.distance_to(last_at))
+			last_at = _player.global_position
+		if pass_number == 1:
+			var went := (_player.global_position.x - from_x) / stride
+			check(went > 24.0, "the client's machine stood still half a second: the copy goes on with it at once (%.1f frames' way in 32)" % went)
+	worst = steps.slice(steps.size() - 2 * arrivals.size()).map(func(step: float) -> float: return absf(step - stride)).max()
+	check(worst < stride * 0.25 and _frames_behind() > 1.0 and _frames_behind() < 6.0,
+		"and two seconds on, as evenly as before: %.2f px off at most, %.1f frames behind" % [worst, _frames_behind()])
+	# The client's frames run a twentieth faster than this machine's (a display
+	# that isn't quite the 60 Hz it says), then a twentieth slower: the copy
+	# stays with it, evenly.
+	_start_run(Vector2(176, 576), Vector2.RIGHT)
+	for i in 40:
+		_drive_a_frame(stride)
+		await tree.physics_frame
+	steps.clear()
+	last_at = _player.global_position
+	for i in 240:
+		_drive_a_frame(stride)
+		if i % 20 == 0:
+			_drive_a_frame(stride)
+		await tree.physics_frame
+		if i >= 180:
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	behind = _player.global_position.distance_to(_at(_client_at)) / stride
+	slowest = steps.min()
+	fastest = steps.max()
+	check(behind < 8.0 and slowest > stride * 0.95 and fastest < stride * 1.15,
+		"the client's frames run a twentieth fast: the copy stays with it, %.1f frames' way behind, %.2f to %.2f px a frame" % [
+			behind, slowest, fastest])
+	_start_run(Vector2(176, 640), Vector2.RIGHT)
+	for i in 40:
+		_drive_a_frame(stride)
+		await tree.physics_frame
+	steps.clear()
+	last_at = _player.global_position
+	for i in 240:
+		if i % 20 != 0:
+			_drive_a_frame(stride)
+		await tree.physics_frame
+		if i >= 180:
+			steps.append(_player.global_position.distance_to(last_at))
+		last_at = _player.global_position
+	behind = _player.global_position.distance_to(_at(_client_at)) / stride
+	slowest = steps.min()
+	fastest = steps.max()
+	check(behind < 8.0 and slowest > stride * 0.85 and fastest < stride * 1.05,
+		"a twentieth slow: the same, %.1f frames' way behind, %.2f to %.2f px a frame" % [behind, slowest, fastest])
+	_start_run(home, Vector2.RIGHT)
 
 	print("\n[B] Held up by what the client didn't see in time: the client starts again")
 	_place(home, Vector2.RIGHT)
@@ -360,7 +500,7 @@ func _run() -> void:
 		"landed: no more corrections, and the old word is left alone")
 	var facing_now := _player.current_direction
 	_report(landed + facing_now * 30.0, facing_now)
-	await _wait_frames(20)
+	await _wait_frames(14)
 	check(_player.global_position.distance_to(_at(landed + facing_now * 30.0)) < 0.01,
 		"the client drives on from where it landed: followed")
 	override = _player.net_override
