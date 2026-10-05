@@ -253,3 +253,11 @@ COPIED: %s,已复制：%s
 PAUSED BY THE HOST,主机已暂停
 %s joined the game.,（系统信息）%s 加入游戏。
 %s left the game.,（系统信息）%s 离开游戏。
+LAG COMPENSATION,延迟补偿
+SMOOTHING,平滑缓冲
+AUTO (%d ms),自动（%d ms）
+PING   %s,延迟   %s
+ON: your tank and its shots answer your keys at once.,开：你的坦克和炮弹立即响应按键。
+"OFF: you see exactly what the host does, a little late.",关：画面与主机完全一致，但稍有延迟。
+"How far behind the host the game is shown, to keep it smooth.",画面比主机晚多少显示，以保持流畅。
+"Less: quicker, but jerky on a poor connection.",越少越快，但网络差时画面会卡顿。

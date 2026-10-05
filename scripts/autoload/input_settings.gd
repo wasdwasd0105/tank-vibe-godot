@@ -720,6 +720,35 @@ func save_online_connections(connections: Array[Dictionary]) -> void:
 	_config.save(_save_path)
 
 # =====================================================================
+# Online play: how a client shows the host's game (its MENU's ONLINE tab)
+# =====================================================================
+
+## SMOOTHING's choices: how far behind the host's clock a client shows the game,
+## ms, 0 for AUTO (NetClientWorld.render_delay).
+const SMOOTHING_CHOICES: Array[int] = [0, 50, 75, 100, 150, 200]
+
+## Lag compensation (docs/network_design.md section 7): a client's own tanks and
+## their shots answer its keys at once, ahead of the host's picture. Off, the
+## client shows the host's game as it is, a round trip late. On unless turned off.
+func get_lag_compensation() -> bool:
+	var value: Variant = _config.get_value("online", "lag_compensation", true)
+	return value if value is bool else true
+
+func set_lag_compensation(on: bool) -> void:
+	_config.set_value("online", "lag_compensation", on)
+	_config.save(_save_path)
+
+## How far behind the host's clock a client shows the game, ms: one of
+## SMOOTHING_CHOICES, 0 for AUTO (as far as the connection needs).
+func get_smoothing() -> int:
+	var value: Variant = _config.get_value("online", "smoothing", 0)
+	return value if value is int and value in SMOOTHING_CHOICES else 0
+
+func set_smoothing(ms: int) -> void:
+	_config.set_value("online", "smoothing", ms if ms in SMOOTHING_CHOICES else 0)
+	_config.save(_save_path)
+
+# =====================================================================
 # Audio volume persistence (0.0 - 1.0)
 # =====================================================================
 

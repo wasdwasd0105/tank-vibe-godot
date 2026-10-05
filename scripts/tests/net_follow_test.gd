@@ -4,9 +4,12 @@ extends Node
 ## following where that client drives it (at up to twice its speed, the long
 ## way round a turn, stopped by walls and enemies), the corrections it sends
 ## when held up and when the host drives the tank itself (a mine's flight, a
-## hold), its shots, and what it tells the clients; then the client's side: its
-## own tank driven at once and reported, put back by a correction, and its own
-## shells drawn ahead. The two machines together are online_lag_test's.
+## hold), its shots, what it tells the clients, and a client with lag
+## compensation off driving it with its keys as before. Then the client's side:
+## its own tank driven at once and reported, put back by a correction, its own
+## shots fired at once as ghosts the host's shells take over, their sounds heard
+## once, its own shells drawn ahead, and how far behind the host the world is
+## shown (SMOOTHING). The two machines together are online_lag_test's.
 ## Run as an override main scene:
 ##   Godot --headless res://scenes/test/net_follow_test.tscn
 
@@ -41,8 +44,16 @@ func _wait_frames(count: int) -> void:
 ## The client says its tank is at [param local], facing [param facing], having
 ## taken correction [param override] (the host's latest unless given).
 func _report(local: Vector2, facing: Vector2, moving: bool = true, override: int = -1) -> void:
-	PlayerInput.set_remote_report(PEER, 0, true, _at(local), BaseTank.FACINGS.find(facing), moving,
+	PlayerInput.set_remote_report(PEER, 0, true, true, _at(local), BaseTank.FACINGS.find(facing), moving,
 			_player.net_override if override < 0 else override)
+
+
+## Fires as the client's own tank would on a client: its shot predicted here.
+## (The role is a client's only for the call: Net's own frames would try to join.)
+func _fire_here() -> void:
+	Net.role = Net.Role.CLIENT
+	_player._predict_fire()
+	Net.role = Net.Role.OFFLINE
 
 
 func _place(local: Vector2, facing: Vector2) -> void:
@@ -242,8 +253,8 @@ func _run() -> void:
 		and absf((shell.global_position - _player.global_position).y) < 20.0,
 		"the client's fire: a shell out of the copy's barrel, where the copy is")
 	var args := shell.net_spawn_args() if shell else []
-	check(args.size() == 7 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed),
-		"the clients learn whose shell it is and how fast it set out: %s" % str(args))
+	check(args.size() == 9 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed),
+		"the clients learn whose shell it is and how it flies: %s" % str(args))
 	var state := _player.net_state()
 	check(state.size() == PlayerTank.NET_OVERRIDE_AT + 1 and state[PlayerTank.NET_OVERRIDE_AT] == _player.net_override,
 		"the copy's state carries the latest correction")
@@ -253,7 +264,29 @@ func _run() -> void:
 	if shell:
 		shell.queue_free()
 
-	print("\n[E] The client's side: its own tank, driven at once")
+	print("\n[E] A client with its lag compensation off: its keys drive the copy, as before")
+	_place(home, Vector2.RIGHT)
+	PlayerInput.set_remote_report(PEER, 0, false, false, Vector2.ZERO, 0, false, 0)
+	PlayerInput.set_remote(PEER, 0, PlayerInput.DIRECTIONS.find(Vector2.RIGHT), [false, false], [1, 0])
+	override = _player.net_override
+	await _wait_frames(10)
+	var pushed := (_player.global_position - _at(home)).x
+	check(absf(pushed - speed * 10.0 * get_physics_process_delta_time()) <= speed * get_physics_process_delta_time() + 0.01,
+		"its keys drive it here as they come, at its speed: %.1f px in 10 frames" % pushed)
+	PlayerInput.set_remote(PEER, 0, -1, [false, false], [1, 0])
+	await _wait_frames(2)
+	var held_at := _player.global_position - _lm.global_position
+	check(_player.net_override == override, "no corrections meanwhile")
+	# It turns lag compensation on, and drives on from where it saw its tank.
+	_report(held_at - Vector2(20, 0), Vector2.RIGHT, true, override)
+	await _wait_frames(3)
+	check(_player.net_override == (override + 1) % 256 and _player.global_position.distance_to(_at(held_at)) < 0.01,
+		"it turns lag compensation on: its keys moved the copy, so a correction first, and the copy waits")
+	_report(held_at + Vector2(30, 0), Vector2.RIGHT)
+	await _wait_frames(10)
+	check(_player.global_position.distance_to(_at(held_at + Vector2(30, 0))) < 0.01, "taken: followed")
+
+	print("\n[F] The client's side: its own tank, driven at once")
 	PlayerInput.reset_to_local()
 	_player.set_physics_process(false)
 	_place(home, Vector2.UP)
@@ -304,10 +337,10 @@ func _run() -> void:
 		and report.get("override") == _player._override_seen, "where it is goes to the host: %s" % str(report))
 	var bytes := Net._input_message()
 	var where := Net.REPORT_AT
-	check(bytes.size() == Net.INPUT_SIZE and bytes[where] == 3 and bytes[where + 1] == 3
-		and bytes[where + 2] == _player._override_seen % 256
+	check(bytes.size() == Net.INPUT_SIZE and bytes[where] == Net.REPORT_HAS | Net.REPORT_MOVING | Net.REPORT_PREDICTS
+		and bytes[where + 1] == 3 and bytes[where + 2] == _player._override_seen % 256
 		and Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8)).distance_to(_player.global_position) < 0.01,
-		"with its next input message: there, facing left, driving, the corrections taken")
+		"with its next input message: it runs its own tank, there, facing left, driving, the corrections taken")
 	Net.input_blocked = true
 	Input.action_press("p1_left")
 	var before := _player.global_position
@@ -319,7 +352,10 @@ func _run() -> void:
 	check(_player.global_position == before, "not while its own menu has the keys")
 	for i in 4:
 		await tree.physics_frame
-	check(Net._input_message()[where] == 0, "a report gone stale (it stopped driving here) isn't sent")
+	check(Net._input_message()[where] == Net.REPORT_PREDICTS, "a report gone stale (it stopped driving here) isn't sent")
+	InputSettings.set_lag_compensation(false)
+	check(Net._input_message()[where] == 0, "with lag compensation off, it says it doesn't run its own tank")
+	InputSettings.set_lag_compensation(true)
 
 	# The host's correction, in a snapshot: back to where the host has it.
 	var host_state := _player.net_state()
@@ -347,22 +383,31 @@ func _run() -> void:
 	check(_player.global_position == _at(home + Vector2(40, 0)) and _player._override_seen == host_state[PlayerTank.NET_OVERRIDE_AT],
 		"another's tank only takes note of a correction (NetClientWorld places it)")
 
-	print("\n[F] Its own shells, drawn ahead by the trip")
+	print("\n[G] Its own shells, drawn ahead by the trip")
+	var bullets: Node = _game.get_node("Entities/Bullets")
 	var world := NetClientWorld.new()
-	world.setup(_game, _lm, null, {}, null)
-	add_child(world)
+	world.setup(_game, _lm, null, {"bullets": bullets}, null)
+	_game.add_child(world)
+	check(NetClientWorld.of(tree) == world, "the game's client world")
 	var own: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
-	own.net_setup([BaseTank.FACINGS.find(Vector2.RIGHT), "regular", [0.0], 0, 384.0, -1.0, false])
+	own.net_setup([BaseTank.FACINGS.find(Vector2.RIGHT), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0])
 	_game.get_node("Entities/Bullets").add_child(own)
 	own.set_physics_process(false)  # (after it's in: entering turns it on)
 	NetClientWorld._strip_physics(own)
 	Net.ping_ms = 150.0
-	var lead := 384.0 * (150.0 + NetClientWorld.DELAY_MS) / 1000.0
+	var lead := 384.0 * (150.0 + world.render_delay()) / 1000.0
 	var shot_from := home + Vector2(0, -200)
-	world._own_shells[77] = {"velocity": Vector2(384, 0), "start": _at(shot_from), "range": -1.0, "pierces": false}
+	# Its snapshot is being shown now: render_delay behind the host's clock.
+	world._clock_offset = 0.0
+	world._own_shells[77] = {"start": _at(shot_from), "host_time": Time.get_ticks_msec() - world.render_delay(),
+			"range": -1.0, "pierces": false}
 	world._place(77, own, _at(shot_from))
-	check(own.visible and own.global_position.distance_to(_at(shot_from + Vector2(lead, 0))) < 0.01,
-		"drawn %.0f px ahead: 384 px/s for the 150 ms trip and the %d ms the world is shown behind" % [lead, NetClientWorld.DELAY_MS])
+	check(own.visible and own.global_position.distance_to(_at(shot_from + Vector2(lead, 0))) < 1.0,
+		"drawn %.0f px ahead: 384 px/s for the 150 ms trip and the %d ms the world is shown behind" % [lead, world.render_delay()])
+	InputSettings.set_lag_compensation(false)
+	world._place(77, own, _at(shot_from))
+	check(own.global_position == _at(shot_from), "with lag compensation off: where the host has it")
+	InputSettings.set_lag_compensation(true)
 	world._place(78, own, _at(shot_from))
 	check(own.global_position == _at(shot_from), "anyone else's: where the host has it")
 	for y in [-16, 16]:
@@ -386,11 +431,175 @@ func _run() -> void:
 	world._own_shells[77]["range"] = 60.0
 	world._place(77, own, _at(shot_from))
 	check(not own.visible, "past the end of a flame's range: hidden")
-	Net.ping_ms = 0.0
 	own.queue_free()
+	world._own_shells.erase(77)
+
+	print("\n[H] Its own shots, fired here at once")
+	_player.set_net_predicted(true, 0)
+	_place(home, Vector2.UP)
+	_player.can_shoot = true
+	SoundManager._predicted.clear()
+	Input.action_press("p1_shoot")
+	_fire_here()
+	_fire_here()
+	Input.action_release("p1_shoot")
+	var ghost: Bullet = world._ghosts[0]["node"] if world._ghosts.size() == 1 else null
+	var muzzle := _player.global_position + Vector2.UP * BaseTank.TANK_SIZE * 0.5
+	check(ghost != null and ghost.net_ghost and ghost.get_parent() == bullets and ghost.direction == Vector2.UP
+		and ghost.owner_player == 0 and ghost.collision_layer == 0 and ghost.collision_mask == 0
+		and ghost.global_position.distance_to(muzzle) < 0.01,
+		"fire: at once, a ghost of the host's shell to come, out of the barrel, touching nothing (and the cooldown holds the next)")
+	if ghost == null:
+		print("\n==== %d FAILURE(S) ====" % _fail)
+		tree.quit(_fail)
+		return
+	ghost.set_physics_process(false)  # (offline it would fly as a real shell)
+	check(SoundManager._predicted.size() == 1 and SoundManager._predicted[0][0] == 0
+		and SoundManager._predicted[0][1] == &"fire_primary", "and heard at once")
+	check(world.own_shells_in_flight(0) == 1 and world.own_shells_in_flight(0, "ap") == 0 and world.own_shells_in_flight(1) == 0,
+		"one of its shells in flight, none of them AP")
+	for i in 10:
+		ghost._fly_ghost(1.0 / 60.0)
+	check(absf((muzzle - ghost.global_position).y - ghost.speed * 10.0 / 60.0) < 0.01 and ghost.visible,
+		"it flies as the host's shell will")
+	var ghost_at := ghost.global_position
+	var host_has := muzzle + Vector2.UP * 12.0
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()  # the snapshot bringing it, shown now
+	world._spawn(90, NetWorld.T_BULLET, ghost.net_spawn_args(), [host_has.x, host_has.y])
+	var real := world.node_for(90) as Bullet
+	real.set_physics_process(false)
+	check(world._ghosts.is_empty() and ghost.is_queued_for_deletion() and real.visible
+		and real.global_position.distance_to(ghost_at) < 1.0,
+		"the host's shell for it comes: it takes over, where the ghost was")
+	world._own_shells[90]["offset_at"] -= int(NetClientWorld.HANDOFF_MS) + 1
+	world._place(90, real, host_has)
+	var its_own := host_has + Vector2.UP * real.speed * (150.0 + world.render_delay()) / 1000.0
+	check(real.global_position.distance_to(its_own) < 1.0, "and eases to its own place, ahead of the host's")
+	check(is_equal_approx(real.distance_in(0.5), real.speed * 0.5), "a shell flies on at its speed")
+	var ap := Bullet.new()
+	ap.speed = 222.0
+	ap.accel = 889.0
+	ap.max_speed = 667.0
+	var to_top := (667.0 - 222.0) / 889.0
+	check(is_equal_approx(ap.distance_in(to_top + 1.0), 222.0 * to_top + 0.5 * 889.0 * to_top * to_top + 667.0),
+		"an AP shell speeds up to its top speed, then flies on at that")
+	ap.free()
+	var heard: int = SoundManager._last_played.get(&"fire_primary", 0)
+	SoundManager.play_from_host(&"fire_primary", 0)
+	check(SoundManager._predicted.is_empty() and SoundManager._last_played.get(&"fire_primary", 0) == heard,
+		"the host's sound of that shot is left out: heard already")
+	await tree.create_timer(0.05).timeout
+	SoundManager.play_from_host(&"fire_primary", 0)
+	check(SoundManager._last_played.get(&"fire_primary", 0) > heard, "a shot it didn't fire here itself is heard as it comes")
+	real.queue_free()
+	world._despawn(90)
+
+	# One that hits a wall: hidden there, and the host's shell for it too.
+	for x in [-16, 16]:
+		_iron(home + Vector2(x, -160))
+	_player.can_shoot = true
+	Input.action_press("p1_shoot")
+	_fire_here()
+	Input.action_release("p1_shoot")
+	ghost = world._ghosts[0]["node"]
+	ghost.set_physics_process(false)
+	for i in 40:
+		ghost._fly_ghost(1.0 / 60.0)
+	check(not ghost.visible and ghost.global_position.y > _at(home).y - 160.0, "a ghost at a wall hides there")
+	world._spawn(91, NetWorld.T_BULLET, ghost.net_spawn_args(), [muzzle.x, muzzle.y])
+	(world.node_for(91) as Bullet).set_physics_process(false)
+	check(not world.node_for(91).visible, "and the host's shell for it stays hidden till its hit")
+	world.node_for(91).queue_free()
+	world._despawn(91)
+	for x in [-16, 16]:
+		_lm._remove_fg_tile(_lm.world_to_tile(_at(home + Vector2(x, -160))))
+
+	# A ghost the host never takes over: a shot the host didn't fire.
+	_player.can_shoot = true
+	Input.action_press("p1_shoot")
+	_fire_here()
+	Input.action_release("p1_shoot")
+	ghost = world._ghosts[0]["node"]
+	ghost.set_physics_process(false)
+	world._expire_ghosts()
+	check(world._ghosts.size() == 1 and not ghost.is_queued_for_deletion(), "a ghost waits for the host's shell a while")
+	world._ghosts[0]["born"] -= 100000
+	world._expire_ghosts()
+	check(world._ghosts.is_empty() and ghost.is_queued_for_deletion(), "then goes: a shot the host didn't fire")
+
+	# Its secondary weapon as the host has it; mines left to the host.
+	var kind: String = GameManager.player_secondary_weapon_types[0]
+	var count: int = GameManager.player_secondary_weapon_counts[0]
+	GameManager.player_secondary_weapon_types[0] = "ap"
+	GameManager.player_secondary_weapon_counts[0] = 9
+	SoundManager._predicted.clear()
+	Input.action_press("p1_shoot2")
+	for i in 3:
+		_player.can_shoot = true
+		_fire_here()
+	Input.action_release("p1_shoot2")
+	var ap_ghosts := world._ghosts.filter(func(entry: Dictionary) -> bool: return entry["node"].visual_style == "ap")
+	check(ap_ghosts.size() == 2 and world.own_shells_in_flight(0, "ap") == 2 and _player.secondary_weapon_count == 9,
+		"the host's AP and its ammo: two shells in flight, as many as the host allows")
+	check(SoundManager._predicted.size() == 3, "and its sound each time, as the host plays it")
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	Net.role = Net.Role.CLIENT
+	GameManager.set_secondary_weapon(0, "rapid", 1)
+	Net.role = Net.Role.OFFLINE
+	check(GameManager.player_secondary_weapon_types[0] == "ap" and GameManager.player_secondary_weapon_counts[0] == 9,
+		"a client's own shots spend none of the host's numbers")
+	GameManager.player_secondary_weapon_types[0] = "mine"
+	var mines := _lm.get_mines().size()
+	Input.action_press("p1_shoot2")
+	_player.can_shoot = true
+	_fire_here()
+	Input.action_release("p1_shoot2")
+	await tree.process_frame  # (a mine goes in deferred)
+	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 3 and _lm.get_mines().size() == mines,
+		"mines are left to the host: none laid here")
+	GameManager.player_secondary_weapon_types[0] = kind
+	GameManager.player_secondary_weapon_counts[0] = count
+	SoundManager._predicted.clear()
+
+	print("\n[I] How far behind the host the world is shown (SMOOTHING)")
+	var spacing := 1000.0 * NetHostWorld.SEND_EVERY / Engine.physics_ticks_per_second
+	var calm: Array[float] = []
+	calm.resize(NetClientWorld.LATE_SAMPLES)
+	calm.fill(0.0)
+	var on_time := NetClientWorld.auto_delay(calm, spacing)
+	check(is_equal_approx(on_time, spacing + NetClientWorld.AUTO_SPARE_MS),
+		"AUTO, the snapshots on time: their spacing and a frame, %.0f ms" % on_time)
+	var rough := calm.duplicate()
+	for i in 7:
+		rough[i] = 80.0
+	check(is_equal_approx(NetClientWorld.auto_delay(rough, spacing), on_time + 80.0), "one in ten 80 ms late: 80 ms more")
+	var stall := calm.duplicate()
+	stall[0] = 500.0
+	check(is_equal_approx(NetClientWorld.auto_delay(stall, spacing), on_time), "one stall alone changes nothing")
+	var awful := calm.duplicate()
+	awful.fill(900.0)
+	check(NetClientWorld.auto_delay(awful, spacing) == NetClientWorld.AUTO_MAX_MS, "and never more than %d ms" % NetClientWorld.AUTO_MAX_MS)
+	check(world._aimed_delay() == NetClientWorld.DELAY_MS, "not measured yet: %d ms" % NetClientWorld.DELAY_MS)
+	world._late.assign(calm)
+	check(is_equal_approx(world._aimed_delay(), on_time), "measured: AUTO's figure")
+	InputSettings.set_smoothing(150)
+	check(world._aimed_delay() == 150.0 and InputSettings.get_smoothing() == 150, "SMOOTHING 150 ms picked: 150 ms")
+	InputSettings.set_smoothing(123)
+	check(InputSettings.get_smoothing() == 0, "only its choices: else AUTO")
+	world._nodes[5] = _player
+	InputSettings.set_lag_compensation(false)
+	world._take_own_tanks()
+	check(not _player.net_predicted, "LAG COMPENSATION off: its own tank shows the host's")
+	InputSettings.set_lag_compensation(true)
+	world._take_own_tanks()
+	check(_player.net_predicted, "on again: it drives here")
+	world._nodes.erase(5)
+	Net.ping_ms = 0.0
 	world.queue_free()
 
-	print("\n[G] The host's list of players: each one's ping")
+	print("\n[J] The host's list of players: each one's ping")
 	Net.peers[5] = {"name": "CLIENTA", "allow": [true, true]}
 	var menu = _game.pause_menu
 	check(menu._player_line(5) == "CLIENTA   ·   WATCHING", "not timed yet: no ping")

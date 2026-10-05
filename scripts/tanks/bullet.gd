@@ -47,6 +47,9 @@ var max_speed: float = 0.0
 const SHIELD_BREAK_THRESHOLD: int = 6  # AP pool needed to strip a moon shield
 
 var _level_manager: LevelManager = null
+## Online, on a client: a ghost of the host's shell for a shot its own tank fired
+## (NetClientWorld.add_ghost), flying here at once until the host's shows.
+var net_ghost := false
 static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
@@ -151,6 +154,8 @@ func _physics_process(delta: float) -> void:
 
 	_animate(delta)
 	if Net.is_client():
+		if net_ghost:
+			_fly_ghost(delta)
 		return  # the host flies every shell; this one only shows it
 
 	# AP shells launch slow and accelerate to a high top speed.
@@ -173,43 +178,51 @@ func _physics_process(delta: float) -> void:
 
 	_check_tile_collision()
 
+## One step of a ghost (net_ghost): the flight the host's shell will make,
+## touching nothing. Where that shell would end, at a wall, an enemy or its
+## range, the ghost hides: the host's word of the hit comes after.
+func _fly_ghost(delta: float) -> void:
+	if not visible:
+		return
+	if accel > 0.0 and max_speed > 0.0:
+		speed = minf(speed + accel * delta, max_speed)
+	var movement: Vector2 = direction * speed * delta
+	position += movement
+	_traveled += movement.length()
+	if (max_range > 0.0 and _traveled >= max_range) \
+			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
+			or (not pierces and not _solid_tiles_touched().is_empty()) or _meets_enemy():
+		visible = false
+
+## How far this shell flies in [param seconds] from its speed now: an AP shell
+## speeds up to its top speed as it goes.
+func distance_in(seconds: float) -> float:
+	if accel <= 0.0 or max_speed <= speed:
+		return speed * seconds
+	var to_top := (max_speed - speed) / accel
+	if seconds <= to_top:
+		return speed * seconds + 0.5 * accel * seconds * seconds
+	return speed * to_top + 0.5 * accel * to_top * to_top + max_speed * (seconds - to_top)
+
+## True if this shell is on an enemy tank (a ghost's check: the host decides the hits).
+func _meets_enemy() -> bool:
+	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
+	var half := BaseTank.HITBOX_SIZE * 0.5
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var tank := node as BaseTank
+		if tank == null or not tank.is_solid():
+			continue
+		var offset := tank.global_position - global_position
+		for lane: float in collision_lane_offsets:
+			if absf(offset.dot(direction)) < half and absf(offset.dot(across) - lane) < half:
+				return true
+	return false
+
 func _check_tile_collision() -> void:
 	if not _level_manager or _destroyed:
 		return
-
-	var perp: Vector2 = Vector2.ZERO
-	if direction == Vector2.UP or direction == Vector2.DOWN:
-		perp = Vector2.RIGHT
-	else:
-		perp = Vector2.DOWN
-
-	var base_positions: Array[Vector2] = [
-		global_position,
-		global_position + direction * 6.0,
-	]
-
-	var lanes: Array[float] = tile_lane_offsets if not tile_lane_offsets.is_empty() else collision_lane_offsets
-	var tiles_to_check: Array[Vector2i] = []
-	for base_pos in base_positions:
-		for lane_offset in lanes:
-			var lane_pos: Vector2 = base_pos + perp * lane_offset
-			var tile_pos: Vector2i = _level_manager.world_to_tile(lane_pos)
-			if tile_pos not in tiles_to_check:
-				tiles_to_check.append(tile_pos)
-
-	var should_destroy: bool = false
-	var solid_tiles: Array[Vector2i] = []
-	for tile_pos in tiles_to_check:
-		if not _level_manager._fg_tile_data.has(tile_pos):
-			continue
-		var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
-		var code: int = data.get("code", 0)
-		var cat := LevelData.get_tile_category(code)
-		if LevelData.is_solid_tile(cat):
-			should_destroy = true
-			solid_tiles.append(tile_pos)
-
-	if should_destroy:
+	var solid_tiles := _solid_tiles_touched()
+	if not solid_tiles.is_empty():
 		# AP shells drill through walls, spending their pool per tile, and keep
 		# flying as long as the pool survives.
 		if pierces:
@@ -235,6 +248,41 @@ func _check_tile_collision() -> void:
 				LevelData.TileCategory.SUPER_BLOCK:
 					pass
 		_destroy()
+
+## The solid tiles this shell's lanes are on, or about to be.
+func _solid_tiles_touched() -> Array[Vector2i]:
+	var solid_tiles: Array[Vector2i] = []
+	if not _level_manager:
+		return solid_tiles
+
+	var perp: Vector2 = Vector2.ZERO
+	if direction == Vector2.UP or direction == Vector2.DOWN:
+		perp = Vector2.RIGHT
+	else:
+		perp = Vector2.DOWN
+
+	var base_positions: Array[Vector2] = [
+		global_position,
+		global_position + direction * 6.0,
+	]
+
+	var lanes: Array[float] = tile_lane_offsets if not tile_lane_offsets.is_empty() else collision_lane_offsets
+	var tiles_to_check: Array[Vector2i] = []
+	for base_pos in base_positions:
+		for lane_offset in lanes:
+			var lane_pos: Vector2 = base_pos + perp * lane_offset
+			var tile_pos: Vector2i = _level_manager.world_to_tile(lane_pos)
+			if tile_pos not in tiles_to_check:
+				tiles_to_check.append(tile_pos)
+
+	for tile_pos in tiles_to_check:
+		if not _level_manager._fg_tile_data.has(tile_pos):
+			continue
+		var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
+		var code: int = data.get("code", 0)
+		if LevelData.is_solid_tile(LevelData.get_tile_category(code)):
+			solid_tiles.append(tile_pos)
+	return solid_tiles
 
 func _on_body_entered(body: Node2D) -> void:
 	if _destroyed:
@@ -429,15 +477,16 @@ func net_type() -> int:
 
 func net_spawn_args() -> Array:
 	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets),
-			owner_player, speed, max_range, pierces]
+			owner_player, speed, max_range, pierces, accel, max_speed]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
 
 ## A client's shell: flying [param args][0] (a BaseTank facing), drawn in style
 ## [param args][1] on lanes [param args][2]; then whose it is (a player, or -1),
-## how fast it set out, how far it goes and whether it drills through walls,
-## for drawing a shell of this machine's own ahead (NetClientWorld).
+## how fast it flies, how far it goes, whether it drills through walls and how
+## it speeds up, for drawing a shell of this machine's own ahead
+## (NetClientWorld).
 func net_setup(args: Array) -> void:
 	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
 	visual_style = str(args[1])
@@ -446,11 +495,13 @@ func net_setup(args: Array) -> void:
 		lanes.append(float(lane))
 	visual_lane_offsets = lanes
 	collision_lane_offsets = lanes.duplicate()
-	if args.size() >= 7:
+	if args.size() >= 9:
 		owner_player = clampi(int(args[3]), -1, 1)
 		speed = float(args[4])
 		max_range = float(args[5])
 		pierces = bool(args[6])
+		accel = float(args[7])
+		max_speed = float(args[8])
 
 func net_apply(_state: Array) -> void:
 	pass

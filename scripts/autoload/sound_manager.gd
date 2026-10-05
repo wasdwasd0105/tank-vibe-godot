@@ -34,6 +34,10 @@ const SFX_VOICES: int = 16
 ## still fire per bullet.
 const MIN_REPEAT_INTERVAL: float = 0.03
 
+## How long a client waits for the host's sound of a shot it heard already
+## (play_predicted).
+const PREDICTED_WAIT_MS := 1500
+
 ## Logical sound name -> the wave file(s) that can satisfy it, without extension.
 ## Several entries mean "pick one at random" (the original used Random(2) for
 ## explosions and mine blasts). Several logical names may share a file: the
@@ -79,6 +83,10 @@ var _music_player: AudioStreamPlayer
 var _next_voice: int = 0
 var _last_played: Dictionary = {}    # logical name -> msec of last playback
 var _rng := RandomNumberGenerator.new()
+## Online, on a client: its own tanks' shots it heard as it fired them, ahead of
+## the host's sound of them (play_predicted): [tank, logical name, msec], oldest
+## first. The host's sound of each is left out when it comes.
+var _predicted: Array = []
 
 
 func _ready() -> void:
@@ -115,25 +123,50 @@ func _connect_events() -> void:
 # =====================================================================
 
 ## Plays a sound effect by logical name. Unknown or missing sounds do nothing.
-## Online, a host's game sounds go to its clients too; a client's game plays
-## only the host's (play_from_host), and its own menu clicks.
-func play(key: StringName) -> void:
+## Online, a host's game sounds go to its clients too, as player [param tank]'s
+## tank's if it made it (its shots: the client driving it heard them already,
+## play_predicted). A client's game plays only the host's (play_from_host), and
+## its own menu clicks.
+func play(key: StringName, tank: int = -1) -> void:
 	if key in MUSIC_KEYS:
 		play_music(key)
 		return
 	if key != UI_KEY:
 		if Net.is_client():
 			return
-		NetHostWorld.record(NetWorld.EV_SOUND, [String(key)])
+		NetHostWorld.record(NetWorld.EV_SOUND, [String(key)] if tank < 0 else [String(key), tank])
 	_play_sfx(key)
 
 
-## A client plays a sound the host's game played.
-func play_from_host(key: StringName) -> void:
+## A client plays a shot of its own tank, player [param tank]'s, as it fires it
+## (lag compensation): the host's sound of that shot, when it comes, is left out.
+func play_predicted(key: StringName, tank: int) -> void:
+	_predicted.append([tank, key, Time.get_ticks_msec()])
+	_play_sfx(key)
+
+
+## A client plays a sound the host's game played, player [param tank]'s tank's
+## if it made it.
+func play_from_host(key: StringName, tank: int = -1) -> void:
+	if tank >= 0 and _take_predicted(key, tank):
+		return  # heard already, as this machine fired it
 	if key in MUSIC_KEYS:
 		play_music_from_host(key)
 	elif CATALOG.has(key):
 		_play_sfx(key)
+
+
+## True if a client heard [param tank]'s [param key] already (play_predicted),
+## which the host's sound of it now settles.
+func _take_predicted(key: StringName, tank: int) -> bool:
+	var now := Time.get_ticks_msec()
+	while not _predicted.is_empty() and now - int(_predicted[0][2]) > PREDICTED_WAIT_MS:
+		_predicted.pop_front()  # a shot the host never fired
+	for i in _predicted.size():
+		if _predicted[i][0] == tank and _predicted[i][1] == key:
+			_predicted.remove_at(i)
+			return true
+	return false
 
 
 func _play_sfx(key: StringName) -> void:

@@ -447,6 +447,16 @@ func _spawn_bullet(
 	bullet.max_speed = max_speed
 	bullet.global_position = spawn_position
 
+	# On a client this is its own tank's shot, fired here at once (lag
+	# compensation): a ghost of the host's shell to come, touching nothing.
+	if Net.is_client():
+		var world := NetClientWorld.of(get_tree())
+		if world:
+			world.add_ghost(bullet)
+		else:
+			bullet.free()
+		return
+
 	# Set collision layers based on owner
 	if bullet.is_player_bullet:
 		bullet.set_collision_layer_value(5, true)

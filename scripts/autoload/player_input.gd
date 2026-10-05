@@ -40,10 +40,12 @@ class RemotePad:
 	var seen_idle: Array[int] = [0, 0]
 	var just_physics: Array[bool] = [false, false]
 	var just_idle: Array[bool] = [false, false]
-	## Lag compensation: the client's own tank as it drives it there, ahead of
-	## the host by the trip across (PlayerTank._follow_client goes after it):
-	## where it is, its facing (an index into BaseTank.FACINGS), whether it
-	## drives, and the last correction it has taken (PlayerTank.net_override).
+	## Lag compensation: the client runs its own tank itself (its setting on),
+	## and the tank as it drives it there, ahead of the host by the trip across
+	## (PlayerTank._follow_client goes after it): where it is, its facing (an
+	## index into BaseTank.FACINGS), whether it drives, and the last correction
+	## it has taken (PlayerTank.net_override).
+	var report_predicts := false
 	var has_report := false
 	var report_position := Vector2.ZERO
 	var report_facing := 0
@@ -224,12 +226,15 @@ func set_remote(peer: int, slot: int, direction: int, held: Array, presses: Arra
 
 
 ## Client [param peer]'s local player [param slot]'s tank, where it drives it on
-## the client ([param has] false: it doesn't drive one there just now).
-func set_remote_report(peer: int, slot: int, has: bool, position: Vector2, facing: int, moving: bool,
-		override: int) -> void:
+## the client ([param has] false: it doesn't drive one there just now), and
+## whether that client runs its own tank at all ([param predicts]: its lag
+## compensation is on).
+func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position: Vector2, facing: int,
+		moving: bool, override: int) -> void:
 	var pad: RemotePad = _remote.get(controller_key(peer, slot))
 	if pad == null:
 		return
+	pad.report_predicts = predicts
 	pad.has_report = has
 	pad.report_position = position
 	pad.report_facing = clampi(facing, 0, 3)
@@ -242,6 +247,16 @@ func set_remote_report(peer: int, slot: int, has: bool, position: Vector2, facin
 func is_remote_seat(tank: int) -> bool:
 	var key := seats[tank]
 	return key != NO_SEAT and not is_local(key)
+
+
+## True when the client driving tank [param tank] runs it itself, ahead of the
+## host (its lag compensation on): the host's copy follows its reports. Else
+## the client's keys drive the copy, as they come.
+func remote_predicts(tank: int) -> bool:
+	if not is_remote_seat(tank):
+		return false
+	var pad: RemotePad = _remote.get(seats[tank])
+	return pad != null and pad.report_predicts
 
 
 ## Where the client driving tank [param tank] has it: its pad with the report,

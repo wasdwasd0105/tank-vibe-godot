@@ -97,6 +97,9 @@ const REGULAR_WEAPON_COOLDOWN_MAP: Dictionary = {
 }
 
 const PLAYER_MAX_ACTIVE_BULLETS: int = 12
+## Secondary weapons that keep firing while their button is held (the others
+## fire once a press).
+const AUTO_SECONDARY: Array[String] = ["rapid", "fire", "explosion", "ap"]
 
 var _regular_fire_step: int = 0
 var _rapid_special_fire_step: int = 0
@@ -117,6 +120,9 @@ const APART_TIME := 0.3
 ## and only reports that have taken the change are followed.
 var net_override := 0
 var _host_drives := false
+## Host: the client driving this tank, its lag compensation off, had its keys
+## move it here: should it turn it on, it starts again from here.
+var _host_moved_it := false
 var _apart_time := 0.0
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
@@ -192,16 +198,18 @@ func _physics_process(delta: float) -> void:
 		_take_over()
 		return
 
-	if PlayerInput.is_remote_seat(player_id):
+	if not PlayerInput.is_remote_seat(player_id):
+		_drive(_read_move_direction())
+	elif PlayerInput.remote_predicts(player_id):
 		_follow_client(delta)
 	else:
-		_drive(_read_move_direction())
+		_drive_for_client()
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
 	if PlayerInput.is_held(player_id, 0):
 		shoot_regular()
-	var auto_secondary_held := secondary_weapon_type in ["rapid", "fire", "explosion", "ap"] and PlayerInput.is_held(player_id, 1)
+	var auto_secondary_held := secondary_weapon_type in AUTO_SECONDARY and PlayerInput.is_held(player_id, 1)
 	if auto_secondary_held or PlayerInput.is_just_pressed(player_id, 1):
 		shoot_secondary()
 
@@ -229,6 +237,9 @@ func _drive(input_dir: Vector2) -> void:
 ## from here (net_override); until the client has, this copy waits.
 func _follow_client(delta: float) -> void:
 	_host_drives = false
+	if _host_moved_it:
+		_host_moved_it = false
+		_correct_client()  # its keys moved it here meanwhile (_drive_for_client)
 	var report := PlayerInput.remote_report(player_id)
 	if report == null or report.report_override != net_override:
 		stop_moving()
@@ -266,6 +277,15 @@ func _follow_client(delta: float) -> void:
 			_correct_client()
 	else:
 		_apart_time = 0.0
+
+## Host: the client driving this tank doesn't run it ahead (its lag
+## compensation is off): its keys drive it here as they come, as they did
+## before lag compensation.
+func _drive_for_client() -> void:
+	var before := global_position
+	_drive(_read_move_direction())
+	if global_position != before:
+		_host_moved_it = true
 
 ## Host: the host drives this tank itself just now (a spell): the client
 ## driving it starts again from wherever it ends up.
@@ -312,12 +332,56 @@ func set_net_predicted(on: bool, slot: int) -> void:
 func _predict() -> void:
 	speed_level = int(GameManager.player_speed_levels[player_id])
 	_apply_speed_upgrade()
-	var input_dir := Vector2.ZERO
-	if not Net.input_blocked and not Net.map_prompt_open:
-		input_dir = PlayerInput.local_direction(net_slot)
-	_drive(input_dir)
+	var blocked := Net.input_blocked or Net.map_prompt_open
+	_drive(Vector2.ZERO if blocked else PlayerInput.local_direction(net_slot))
 	Net.report_tank(net_slot, global_position, maxi(FACINGS.find(current_direction), 0),
 			velocity != Vector2.ZERO, _override_seen)
+	if not blocked:
+		_predict_fire()
+
+## Client: this tank's shots, fired here at once as the host will fire them when
+## the keys reach it: each is seen and heard now, a ghost of the host's shell
+## to come (BaseTank._spawn_bullet, NetClientWorld.add_ghost). Mines are left
+## to the host.
+func _predict_fire() -> void:
+	_take_host_weapons()
+	var prefix := PlayerInput.action_prefix(net_slot)
+	if Input.is_action_pressed(prefix + PlayerInput.BUTTONS[0]):
+		shoot_regular()
+	if secondary_weapon_type == "mine":
+		return
+	var held := Input.is_action_pressed(prefix + PlayerInput.BUTTONS[1])
+	if (held and secondary_weapon_type in AUTO_SECONDARY) or Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
+		shoot_secondary()
+
+## Client: this tank's weapons as the host has them (GameManager's numbers come
+## from the host), and its shells in flight as shown here, so its shots go as
+## the host's will.
+func _take_host_weapons() -> void:
+	var level := int(GameManager.player_weapon_levels[player_id])
+	if level != weapon_level:
+		weapon_level = level
+		_apply_weapon_upgrade()
+	var kind := str(GameManager.player_secondary_weapon_types[player_id])
+	if kind != secondary_weapon_type:
+		secondary_weapon_type = kind
+		_rapid_special_fire_step = 0
+		_rapid_special_ammo_progress = 0
+	secondary_weapon_count = int(GameManager.player_secondary_weapon_counts[player_id])
+	var world := NetClientWorld.of(get_tree())
+	if world:
+		active_bullets = world.own_shells_in_flight(player_id)
+		active_fire_bullets = world.own_shells_in_flight(player_id, "fire")
+		active_explosion_bullets = world.own_shells_in_flight(player_id, "explosion")
+		active_ap_bullets = world.own_shells_in_flight(player_id, "ap")
+
+## A shot's sound. The host's goes to its clients marked as this tank's, so the
+## client driving it, which heard it as it fired (_predict_fire), doesn't again.
+func _shot_sound(key: StringName) -> void:
+	if Net.is_client():
+		SoundManager.play_predicted(key, player_id)
+	else:
+		SoundManager.play(key, player_id)
 
 # --- Speed & weapon upgrade application ---
 
@@ -362,7 +426,7 @@ func shoot_regular() -> void:
 
 	_set_shoot_cooldown_wait_time(REGULAR_WEAPON_COOLDOWN_MAP.get(weapon_level, 0.4))
 	_begin_shot()
-	SoundManager.play(&"fire_primary")
+	_shot_sound(&"fire_primary")
 	_spawn_single_row_bullet(row_offset)
 
 # --- Cookie effect methods ---
@@ -562,7 +626,7 @@ func _shoot_secondary_ap() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("ap", weapon_level)
 	if config.is_empty():
 		return
-	SoundManager.play(&"fire_ap")
+	_shot_sound(&"fire_ap")
 	if active_ap_bullets >= int(config.get("max_in_flight", 2)):
 		return
 
@@ -600,7 +664,7 @@ func _shoot_secondary_rapid() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", weapon_level)
 	if config.is_empty():
 		return
-	SoundManager.play(&"fire_rapid")
+	_shot_sound(&"fire_rapid")
 
 	var fire_rows: Array = config.get("rows", [FIRE_ROW_MID])
 	var ammo_per_count: int = config.get("ammo_per_count", 1)
@@ -622,7 +686,7 @@ func _shoot_secondary_fire() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("fire", weapon_level)
 	if config.is_empty():
 		return
-	SoundManager.play(&"fire_fire")
+	_shot_sound(&"fire_fire")
 	if active_fire_bullets >= int(config.get("max_in_flight", 3)):
 		return
 
@@ -637,7 +701,7 @@ func _shoot_secondary_explosion() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("explosion", weapon_level)
 	if config.is_empty():
 		return
-	SoundManager.play(&"fire_explosion")
+	_shot_sound(&"fire_explosion")
 	if active_explosion_bullets >= int(config.get("max_in_flight", 2)):
 		return
 

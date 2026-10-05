@@ -5,9 +5,12 @@ extends Node
 ## to the host is LAG_MS long each way ("--net-lag-ms"), 150 ms there and back.
 ## The client's own tank still answers its keys at once; the host's copy follows
 ## it and ends where it is, never corrected in open ground; the client's own
-## shells leave the barrel where its tank is; both sides know the ping, and the
-## host's list of players shows it; and a correction from the host puts the
-## client's tank where the host has it, to drive on from there.
+## shot shows and is heard at once, out of its tank's barrel, and the host's
+## shell takes over from it where it is; AUTO smoothing settles low on the
+## steady line; both sides know the ping, and the host's list of players shows
+## it; a correction from the host puts the client's tank where the host has it,
+## to drive on from there; and with LAG COMPENSATION off, the client's keys
+## drive the host's tank as they come, as before, until it's on again.
 ##
 ## The client's checks come back in its results file and count here. The parts
 ## on their own are net_follow_test's.
@@ -173,6 +176,16 @@ func _run_host() -> void:
 	check(await _wait(func() -> bool: return copy.global_position.distance_to(put) > 20.0, 15.0),
 		"the client took the correction and drives on: followed again")
 
+	# The client turns LAG COMPENSATION off, and on again.
+	check(await _wait(func() -> bool: return not PlayerInput.remote_predicts(1), 20.0), "the client turns lag compensation off")
+	var by_keys := copy.global_position
+	check(await _wait(func() -> bool: return copy.global_position.distance_to(by_keys) > 20.0, 10.0),
+		"its keys drive the copy here as they come, as before")
+	var before_on := copy.net_override
+	check(await _wait(func() -> bool: return PlayerInput.remote_predicts(1), 20.0), "and turns it on again")
+	check(await _wait(func() -> bool: return copy.net_override != before_on, 5.0),
+		"a correction first: its keys moved the copy here meanwhile")
+
 	await _finish_host()
 
 
@@ -243,6 +256,10 @@ func _run_client() -> void:
 		return
 	check(await _wait(func() -> bool: return Net._ping_samples.size() >= 2, 6.0), "timed the trip to the host and back")
 	check(Net.ping_ms >= 2 * LAG_MS and Net.ping_ms < 2 * LAG_MS + 80, "ping %.0f ms" % Net.ping_ms)
+	var world := _world()
+	check(await _wait(func() -> bool: return world.render_delay() < 75.0, 10.0),
+		"AUTO smoothing settles low on this steady line: %.0f ms behind the host, aiming at %.0f" % [
+			world.render_delay(), world._aimed_delay()])
 
 	# The keys move the tank at once, however far the host is.
 	var override := tank._override_seen
@@ -262,29 +279,61 @@ func _run_client() -> void:
 		"the host has it where I have it: %s, here %s" % [host_has, tank.global_position])
 	check(tank._override_seen == override, "and never had to correct it")
 
-	# A shell of mine comes out of my tank's barrel where my tank is.
-	var muzzle := tank.global_position + tank.current_direction * (BaseTank.TANK_SIZE * 0.5)
+	# My shot shows at once, out of my tank's barrel, and is heard once; the
+	# host's shell takes over from it where it is.
 	var direction := tank.current_direction
-	var pressed := Time.get_ticks_msec()
+	var muzzle := tank.global_position + direction * (BaseTank.TANK_SIZE * 0.5)
+	SoundManager._predicted.clear()
+	await tree.process_frame
 	Input.action_press("p1_shoot")
-	var found: Array = []  # (a lambda gets copies of the locals it uses)
-	var shown := func() -> bool:
-		for nid: int in _world()._own_shells:
-			var node := _world().node_for(nid) as Bullet
-			if node and node.visible:
-				found.append(node)
-				return true
-		return false
-	check(await _wait(shown, 3.0), "my shell shows")
+	var ghost: Bullet = null
+	for i in 3:
+		await tree.physics_frame
+		if ghost == null and not world._ghosts.is_empty():
+			ghost = world._ghosts[0]["node"]
 	Input.action_release("p1_shoot")
-	if not found.is_empty():
-		var shell: Bullet = found[0]
-		var flown := (Time.get_ticks_msec() - pressed) / 1000.0 * shell.speed
-		var off := shell.global_position.distance_to(muzzle + direction * flown)
-		check(off < 40.0, "out of the barrel where my tank is, %.0f px on since I fired: %.0f px off" % [flown, off])
-		var behind := _host_has_node(shell)
-		check((shell.global_position - behind).dot(direction) > 0.8 * shell.speed * (Net.ping_ms + NetClientWorld.DELAY_MS) / 1000.0,
-			"well ahead of where the host's word of it has it")
+	check(ghost != null and ghost.visible and ghost.global_position.distance_to(muzzle) <= ghost.speed * 3.0 / 60.0 + 1.0,
+		"my shot shows within 3 frames, out of my tank's barrel, %d ms from the host" % (2 * LAG_MS))
+	check(SoundManager._predicted.size() == 1, "and is heard at once")
+	var last_ghost := Vector2.INF
+	var real: Bullet = null
+	var both := false
+	for i in 600:  # frames
+		await tree.process_frame
+		var ghost_shown := is_instance_valid(ghost) and not ghost.is_queued_for_deletion() and ghost.visible
+		for nid: int in world._own_shells:
+			var node := world.node_for(nid) as Bullet
+			if node and node.direction == direction and node.visible:
+				real = node
+		both = both or (ghost_shown and real != null)
+		if real == null and ghost_shown:
+			last_ghost = ghost.global_position
+			continue
+		break
+	var jump := real.global_position.distance_to(last_ghost) if real else INF
+	check(real != null and jump < 10.0,
+		"the host's shell takes over from it where it was: %.1f px from the ghost's last place" % jump)
+	check(not both, "one shot, one shell: never the ghost and the host's shell at once")
+	var worst := INF
+	if real:
+		worst = 0.0
+		var prev := real.global_position
+		var prev_t := Time.get_ticks_usec()
+		for i in 30:
+			await tree.process_frame
+			if not is_instance_valid(real) or not real.visible:
+				break
+			var t := Time.get_ticks_usec()
+			worst = maxf(worst, absf(prev.distance_to(real.global_position) - real.speed * (t - prev_t) / 1000000.0))
+			prev = real.global_position
+			prev_t = t
+	check(worst < 4.0, "and flies on as smoothly as the ghost: at most %.1f px off its speed from frame to frame" % worst)
+	check(SoundManager._predicted.is_empty(), "and the host's sound of it is left out: heard once")
+	await tree.create_timer(0.25).timeout
+	if is_instance_valid(real) and real.visible:
+		var lead := (real.global_position - _host_has_node(real)).dot(direction)
+		check(lead > 0.8 * real.speed * (Net.ping_ms + world.render_delay()) / 1000.0,
+			"drawn ahead of where the host's word of it has it, as my tank is: %.0f px" % lead)
 
 	# The host corrects it: it goes where the host has it, and on from there.
 	var file := FileAccess.open(DRIVEN, FileAccess.WRITE)
@@ -300,6 +349,36 @@ func _run_client() -> void:
 	host_has = _host_has(tank)
 	check(put is Vector2 and tank.global_position.distance_to(put) > 20.0 and host_has.distance_to(tank.global_position) < 0.5,
 		"I drive on from there, and the host follows: %s, here %s" % [host_has, tank.global_position])
+
+	# LAG COMPENSATION off: the host's game as it is, my keys a trip late.
+	InputSettings.set_lag_compensation(false)
+	await tree.create_timer(0.5).timeout
+	check(not tank.net_predicted and _host_has(tank).distance_to(tank.global_position) < 0.5,
+		"LAG COMPENSATION off: my tank shows where the host has it")
+	var from_off := tank.global_position
+	await tree.process_frame
+	Input.action_press("p1_up")
+	for i in 3:
+		await tree.physics_frame
+	var early := from_off.distance_to(tank.global_position)
+	await tree.create_timer(0.6).timeout
+	Input.action_release("p1_up")
+	var later := from_off.distance_to(tank.global_position)
+	check(early < 0.5 and later > 20.0,
+		"my keys move it once the host has: %.1f px in 3 frames, %.0f px later" % [early, later])
+	await tree.create_timer(0.5).timeout
+	var seen := tank._override_seen
+	InputSettings.set_lag_compensation(true)
+	check(await _wait(func() -> bool: return tank._override_seen != seen, 5.0),
+		"on again: the host corrects it first, its keys having moved it there")
+	await tree.create_timer(0.3).timeout
+	var from_on := tank.global_position
+	await tree.process_frame
+	Input.action_press("p1_up")
+	for i in 3:
+		await tree.physics_frame
+	Input.action_release("p1_up")
+	check(from_on.distance_to(tank.global_position) >= 2.0, "and it answers my keys at once again")
 	_done = true
 	_finish_client()
 

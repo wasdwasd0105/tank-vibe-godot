@@ -22,9 +22,10 @@ extends Control
 ##
 ## Once someone has joined, a host's menu has HOST: which tank each player may
 ## drive, and KICK. A host's menu pauses everyone's game. A client's menu
-## (set_online_client) pauses nothing and has no GAME or ONLINE tab (the game
-## is the host's): it holds the client's players still while it's open, and MAIN
-## MENU becomes LEAVE GAME.
+## (set_online_client) pauses nothing and has no GAME tab (the game is the
+## host's); its ONLINE tab is how the host's game shows there: LAG COMPENSATION,
+## SMOOTHING and the ping. It holds the client's players still while it's open,
+## and MAIN MENU becomes LEAVE GAME.
 ## PLAYER 2 is offline only: online, the seats do that.
 
 signal resume_requested
@@ -83,8 +84,14 @@ var _port_type_row: Button
 var _password_row: Button
 var _max_row: Button
 var _address_row: Button
+var _players_box: VBoxContainer
 var _players_caption: Label
 var _player_lines: Array[Label] = []   # who is connected, one line each
+# A client's ONLINE tab instead: how the host's game shows here.
+var _lag_row: Button
+var _smoothing_row: Button
+var _ping_line: Label
+var _client_refresh := 0.0             # till the ping and AUTO's figure are shown afresh
 var _online_note: Label
 ## The field being typed in, or null.
 var _typing: LineEdit = null
@@ -194,9 +201,14 @@ func set_online_client(on: bool) -> void:
 	_restart_button.visible = not on
 	_main_menu_button.text = "LEAVE GAME" if on else "MAIN MENU"
 	(_main_panel.get_node("Items/Header") as Label).text = "MENU" if on else "PAUSED"
-	# The game's rules and hosting are the host's own machine's.
+	# The game's rules are the host's own machine's, and so is hosting: a
+	# client's ONLINE tab is how the host's game shows there instead.
 	_tabs.offer(SettingsTab.GAME, not on)
-	_tabs.offer(SettingsTab.ONLINE, not on)
+	for control: Control in _host_online_controls():
+		control.visible = not on
+	for control: Control in [_lag_row, _smoothing_row, _ping_line]:
+		control.visible = on
+	_refresh_online_tab()
 
 
 func _open() -> void:
@@ -304,7 +316,10 @@ func _page_items(page: Page) -> Array[Control]:
 				SettingsTab.GENERAL:
 					items.append_array(_common.rows())
 				SettingsTab.ONLINE:
-					items.append_array([_allow_row, _port_row, _port_type_row, _password_row, _max_row, _address_row])
+					if _online_client:
+						items.append_array([_lag_row, _smoothing_row])
+					else:
+						items.append_array([_allow_row, _port_row, _port_type_row, _password_row, _max_row, _address_row])
 			items.append(_settings_back_button)
 		Page.HOST:
 			for peer: int in _drive_rows:
@@ -330,6 +345,10 @@ func _adjust(direction: int) -> void:
 				_cycle_port_type(direction)
 			elif focused == _max_row:
 				_cycle_max_players(direction)
+			elif focused == _lag_row:
+				_toggle_lag_compensation(direction)
+			elif focused == _smoothing_row:
+				_cycle_smoothing(direction)
 			elif not _game.adjust(focused, direction):
 				_common.adjust(focused, direction)
 		Page.MAIN:
@@ -400,19 +419,31 @@ func _build_online_tab() -> void:
 	_address_row = MenuRows.make_action_row("YOUR ADDRESS", "")
 	_address_row.pressed.connect(_copy_address)
 	_add_online_row(_address_row)
+	# A client's, in their place (set_online_client).
+	_lag_row = _add_online_value_row("LAG COMPENSATION", _toggle_lag_compensation)
+	_smoothing_row = _add_online_value_row("SMOOTHING", _cycle_smoothing)
+	for row: Button in [_lag_row, _smoothing_row]:
+		row.visible = false
+		row.focus_entered.connect(_set_online_note.bind(""))  # what it does
 
 	# Who is connected: a caption and a line a player, room for all three.
-	var players := VBoxContainer.new()
-	players.add_theme_constant_override(&"separation", 0)
-	_online_tab.add_child(players)
+	_players_box = VBoxContainer.new()
+	_players_box.add_theme_constant_override(&"separation", 0)
+	_online_tab.add_child(_players_box)
 	_players_caption = _online_label(&"HintLabel")
-	players.add_child(_players_caption)
+	_players_box.add_child(_players_caption)
 	for i in Net.MAX_CLIENTS:
 		var line := _online_label(&"ValueLabel")
 		line.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED  # names, as typed
 		line.custom_minimum_size.y = PLAYER_LINE_HEIGHT
-		players.add_child(line)
+		_players_box.add_child(line)
 		_player_lines.append(line)
+	# A client's: the trip to the host and back.
+	_ping_line = _online_label(&"ValueLabel")
+	_ping_line.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED  # composed from parts
+	_ping_line.custom_minimum_size.y = PLAYER_LINE_HEIGHT
+	_ping_line.visible = false
+	_online_tab.add_child(_ping_line)
 	_online_note = _online_label(&"HintLabel")
 	_online_note.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_online_tab.add_child(_online_note)
@@ -482,8 +513,13 @@ func _first_settings_row() -> Button:
 		SettingsTab.GAME:
 			return _game.difficulty_row
 		SettingsTab.ONLINE:
-			return _allow_row
+			return _lag_row if _online_client else _allow_row
 	return _common.sfx_row
+
+
+## The host's ONLINE tab, all but its note (a client's has its own rows).
+func _host_online_controls() -> Array[Control]:
+	return [_allow_row, _port_row, _port_type_row, _password_row, _max_row, _address_row, _players_box]
 
 
 # =====================================================================
@@ -494,6 +530,9 @@ func _first_settings_row() -> Button:
 ## password, the most players, this machine's address, and who is here.
 func _refresh_online_tab() -> void:
 	if _online_tab == null:
+		return
+	if _online_client:
+		_refresh_client_tab()
 		return
 	var hosting := Net.is_host()
 	MenuRows.value_label(_allow_row).text = "ON" if hosting and not Net.lock_new else "OFF"
@@ -568,13 +607,75 @@ func _set_online_note(text: String, is_error: bool = false) -> void:
 	else:
 		_online_note.remove_theme_color_override(&"font_color")
 	if text.is_empty():
-		if not Net.is_host():
+		if _online_client:
+			text = _client_note()
+		elif not Net.is_host():
 			text = tr("Turn ALLOW REMOTE PLAYERS on to open this game to others.")
 		elif Net.lock_new:
 			text = tr("Nobody new can join. The players here stay.")
 		else:
 			text = tr("Open: others join from ONLINE BATTLE at YOUR ADDRESS.")
 	_online_note.text = text
+
+
+# =====================================================================
+# A client's ONLINE tab: how the host's game shows here
+# =====================================================================
+
+## LAG COMPENSATION, SMOOTHING (AUTO with how far behind the host that comes
+## to now) and the ping, as things are.
+func _refresh_client_tab() -> void:
+	MenuRows.value_label(_lag_row).text = "ON" if InputSettings.get_lag_compensation() else "OFF"
+	var chosen := InputSettings.get_smoothing()
+	var choices := InputSettings.SMOOTHING_CHOICES
+	if chosen == 0:
+		var world := NetClientWorld.of(get_tree())
+		var shown := world.render_delay() if world else NetClientWorld.DELAY_MS
+		MenuRows.value_label(_smoothing_row).text = tr("AUTO (%d ms)") % roundi(shown)
+	else:
+		MenuRows.value_label(_smoothing_row).text = "%d ms" % chosen
+	MenuRows.arrow(_smoothing_row, "Left").disabled = chosen == choices[0]
+	MenuRows.arrow(_smoothing_row, "Right").disabled = chosen == choices[-1]
+	var ping := roundi(Net.ping_ms)
+	_ping_line.text = tr("PING   %s") % ("%d ms" % ping if ping > 0 else "—")
+	if not _online_note.has_theme_color_override(&"font_color"):
+		_set_online_note("")
+
+
+## What the client's row with the focus does (LAG COMPENSATION's, off it).
+func _client_note() -> String:
+	if _nav.focus_owner() == _smoothing_row:
+		return tr("How far behind the host the game is shown, to keep it smooth.") + "\n" \
+				+ tr("Less: quicker, but jerky on a poor connection.")
+	return tr("ON: your tank and its shots answer your keys at once.") + "\n" \
+			+ tr("OFF: you see exactly what the host does, a little late.")
+
+
+## LAG COMPENSATION: on, this machine's own tanks and their shots answer its
+## keys at once; off, it shows the host's game as it is (NetClientWorld).
+func _toggle_lag_compensation(_direction: int = 1) -> void:
+	InputSettings.set_lag_compensation(not InputSettings.get_lag_compensation())
+	_refresh_client_tab()
+
+
+## SMOOTHING: AUTO, or how far behind the host's clock the game is shown, a
+## step at a time.
+func _cycle_smoothing(direction: int) -> void:
+	var choices := InputSettings.SMOOTHING_CHOICES
+	var at := choices.find(InputSettings.get_smoothing())
+	InputSettings.set_smoothing(choices[clampi(at + direction, 0, choices.size() - 1)])
+	_refresh_client_tab()
+
+
+## The ping and AUTO's figure change as the game goes: a client's ONLINE tab
+## shows them afresh a few times a second.
+func _process(delta: float) -> void:
+	if not (_online_client and visible and _page == Page.SETTINGS and _tabs.current == SettingsTab.ONLINE):
+		return
+	_client_refresh -= delta
+	if _client_refresh <= 0.0:
+		_client_refresh = 0.25
+		_refresh_client_tab()
 
 
 ## ALLOW REMOTE PLAYERS. On opens the game to others (on the port, with the

@@ -230,6 +230,8 @@ func get_secondary_weapon_count(player_id: int) -> int:
 	return player_secondary_weapon_counts[player_id]
 
 func set_secondary_weapon(player_id: int, weapon_type: String, count: int) -> void:
+	if Net.is_client():
+		return  # a client's numbers are the host's (NetClientWorld); its own shots don't spend them
 	player_secondary_weapon_types[player_id] = weapon_type
 	var max_ct: int = CookieData.WEAPON_DATA.get(weapon_type, {}).get("max_count", 200)
 	player_secondary_weapon_counts[player_id] = clampi(count, 0, max_ct)

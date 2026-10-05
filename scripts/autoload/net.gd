@@ -39,7 +39,7 @@ enum Role { OFFLINE, HOST, CLIENT }
 enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 3
+const PROTOCOL := 4
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -60,6 +60,11 @@ const PING_SAMPLES := 5
 const INPUT_SIZE := 36
 const REPORT_AT := 12
 const REPORT_SIZE := 12
+## A report's flags: there is one (the tank drives here just now), it's moving,
+## and this machine runs its own tanks at all (its lag compensation on).
+const REPORT_HAS := 1
+const REPORT_MOVING := 2
+const REPORT_PREDICTS := 4
 const SILENCE_LIMIT := 10.0
 ## A rejected or kicked client gets this long to read why before it's cut off.
 const PARTING_DELAY := 0.5
@@ -1257,8 +1262,9 @@ func _send_input() -> void:
 
 ## The input message (INPUT_SIZE): the newest snapshot, then per local player
 ## the direction, both fire buttons held and a press counter each, then per
-## local player its own tank as it drives here, if it drives one. Idle while
-## this machine's menu or the map question has the keys.
+## local player whether this machine runs its own tanks (lag compensation) and
+## its tank as it drives here, if it drives one. Idle while this machine's menu
+## or the map question has the keys.
 func _input_message() -> PackedByteArray:
 	var blocked := input_blocked or map_prompt_open
 	for slot in 2:
@@ -1282,11 +1288,12 @@ func _input_message() -> PackedByteArray:
 		bytes[at + 1] = held
 		bytes[at + 2] = _presses[slot][0]
 		bytes[at + 3] = _presses[slot][1]
+		var where := REPORT_AT + slot * REPORT_SIZE
+		bytes[where] = REPORT_PREDICTS if InputSettings.get_lag_compensation() else 0
 		var report: Dictionary = _tank_reports[slot]
 		if report.is_empty() or Engine.get_physics_frames() - int(report["frame"]) > 2:
 			continue  # no tank of its own driving here
-		var where := REPORT_AT + slot * REPORT_SIZE
-		bytes[where] = 1 | (2 if report["moving"] else 0)
+		bytes[where] |= REPORT_HAS | (REPORT_MOVING if report["moving"] else 0)
 		bytes[where + 1] = int(report["facing"])
 		bytes[where + 2] = int(report["override"]) & 0xff
 		var position: Vector2 = report["position"]
@@ -1316,8 +1323,8 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var flags := int(bytes[where])
 		var position := Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8))
 		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
-		PlayerInput.set_remote_report(sender, slot, flags & 1 != 0 and sane, position, int(bytes[where + 1]),
-				flags & 2 != 0, int(bytes[where + 2]))
+		PlayerInput.set_remote_report(sender, slot, flags & REPORT_HAS != 0 and sane, flags & REPORT_PREDICTS != 0,
+				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]))
 
 
 @rpc("any_peer", "call_remote", "reliable")

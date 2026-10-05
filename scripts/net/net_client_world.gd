@@ -1,15 +1,32 @@
 class_name NetClientWorld
 extends Node
 ## A client's side of the game scene: it shows the host's world and runs none
-## of it (NetWorld has the format). Snapshots are buffered and shown DELAY_MS
-## behind the host's clock, so that however TCP bunches them up, each is shown
-## on time and positions glide from one to the next. The entities are the game's
-## own scenes, built in mirror mode: their logic stays off and they draw
-## themselves from the host's state (net_setup, net_apply).
+## of it (NetWorld has the format). Snapshots are buffered and shown a little
+## behind the host's clock (render_delay), so that however the network bunches
+## them up, each is shown on time and positions glide from one to the next. The
+## entities are the game's own scenes, built in mirror mode: their logic stays
+## off and they draw themselves from the host's state (net_setup, net_apply).
+## This machine's own tanks and shots run ahead of that (lag compensation).
 
-## How far behind the host's newest snapshot the world is shown: three snapshots,
-## so one or two can come late without the picture stopping.
+## How far behind the host's clock the world is shown, ms, until the snapshots'
+## timing has been measured (then render_delay: SMOOTHING, AUTO by default).
 const DELAY_MS := 100.0
+## AUTO smoothing: the snapshots' spacing, plus how late nine in ten of the
+## latest LATE_SAMPLES came, plus a frame to spare, within these bounds.
+const LATE_SAMPLES := 60
+const AUTO_SPARE_MS := 10.0
+const AUTO_MIN_MS := 40.0
+const AUTO_MAX_MS := 250.0
+## How fast the delay goes after a new aim, ms per second: quickly up, so a
+## stuttering connection is met before it shows, slowly down, unnoticed.
+const DELAY_UP_RATE := 100.0
+const DELAY_DOWN_RATE := 20.0
+## A ghost of a shot the host's shell never took over within the trip there and
+## back, the delay and this long was a shot the host didn't fire.
+const GHOST_GRACE_MS := 300.0
+## The host's shell taking over from a ghost eases from where the ghost was to
+## its own place in this long.
+const HANDOFF_MS := 150.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -35,14 +52,21 @@ var _game: Dictionary = {}       # the game state as shown now
 var _clock_offset := 0.0         # host ms - local ms, as estimated
 var _have_clock := false
 var _shown_time := 0.0           # host time of the snapshot shown now
+var _delay_ms := DELAY_MS        # how far behind the host's clock it's shown now
+var _late: Array[float] = []     # how late each recent snapshot came, ms, oldest first
 var _started := false
 var _scenes: Dictionary = {}     # path -> loaded scene or script
 ## How many of each event (NetWorld.EV_*) have played here, for tests.
 var played: Dictionary = {}
 ## Shells of this machine's own tanks, drawn ahead (_lead_shell): nid ->
-## {"velocity" px/s, "start" where it set out, "range" how far it goes (<= 0
-## no end), "pierces" drills through walls}.
+## {"start" where the host had it at "host_time", the snapshot that brought it,
+## "range" how far it goes (<= 0 no end), "pierces" drills through walls; and
+## from a ghost it took over, "offset" from its own place to the ghost's at
+## "offset_at" msec, and "hidden" if the ghost had hit something}.
 var _own_shells: Dictionary = {}
+## Shots of this machine's own tanks fired here at once (add_ghost), not yet
+## taken over by the host's shells: {"node": Bullet, "born": msec}, oldest first.
+var _ghosts: Array = []
 
 
 func _init() -> void:
@@ -85,6 +109,17 @@ func node_for(nid: int) -> Node:
 	return _nodes.get(nid)
 
 
+## How far behind the host's clock the world is shown now, ms (SMOOTHING).
+func render_delay() -> float:
+	return _delay_ms
+
+
+## The client world of [param tree]'s game, or null (not a client's).
+static func of(tree: SceneTree) -> NetClientWorld:
+	var game := tree.get_first_node_in_group("game")
+	return game.get_node_or_null("NetClientWorld") as NetClientWorld if game else null
+
+
 # =====================================================================
 # Receiving
 # =====================================================================
@@ -119,11 +154,14 @@ func _on_packet(body: PackedByteArray) -> void:
 	}
 	_buffer.append(decoded)
 	# The host's clock is at least this far ahead of ours: the fastest packet
-	# comes closest to the truth.
+	# comes closest to the truth. The rest came that much later (AUTO smoothing).
 	var sample: float = decoded["time"] - Time.get_ticks_msec()
 	if not _have_clock or sample > _clock_offset:
 		_clock_offset = sample
 		_have_clock = true
+	_late.append(_clock_offset - sample)
+	if _late.size() > LATE_SAMPLES:
+		_late.pop_front()
 
 
 # =====================================================================
@@ -131,10 +169,13 @@ func _on_packet(body: PackedByteArray) -> void:
 # =====================================================================
 
 func _process(delta: float) -> void:
+	_expire_ghosts()
 	if not _have_clock:
 		return
 	_clock_offset -= CLOCK_SETTLE_MS * delta
-	var render := Time.get_ticks_msec() + _clock_offset - DELAY_MS
+	var aim := _aimed_delay()
+	_delay_ms = move_toward(_delay_ms, aim, (DELAY_UP_RATE if aim > _delay_ms else DELAY_DOWN_RATE) * delta)
+	var render := Time.get_ticks_msec() + _clock_offset - _delay_ms
 	while not _buffer.is_empty():
 		var next: Dictionary = _buffer[0]
 		if next["time"] > render and _started and _buffer.size() <= MAX_BUFFERED:
@@ -142,6 +183,7 @@ func _process(delta: float) -> void:
 		_apply(_buffer.pop_front())
 	_take_own_tanks()
 	_glide(render)
+	_fly_own_shells()
 
 
 ## Moves everything to where it is at host time [param render]: between the
@@ -163,8 +205,6 @@ func _glide(render: float) -> void:
 		if change.has(0) or change.has(1):
 			var from := Vector2(state[0], state[1])
 			var to := Vector2(change.get(0, state[0]), change.get(1, state[1]))
-			if span > 0.0 and _own_shells.has(nid):
-				_own_shells[nid]["velocity"] = (to - from) * 1000.0 / span
 			_place(nid, node as Node2D, from.lerp(to, weight))
 		if not glides.is_empty():
 			var shown := state.duplicate()
@@ -237,8 +277,9 @@ func _spawn(nid: int, type: int, args: Array, state: Array) -> void:
 	_nodes[nid] = node
 	var shell := node as Bullet
 	if shell and shell.owner_player >= 0 and Net.is_my_seat(shell.owner_player):
-		_own_shells[nid] = {"velocity": shell.direction * shell.speed, "start": Vector2(state[0], state[1]),
+		_own_shells[nid] = {"start": Vector2(state[0], state[1]), "host_time": _shown_time,
 				"range": shell.max_range, "pierces": shell.pierces}
+		_take_over_ghost(shell, _own_shells[nid])
 	_place(nid, node as Node2D, Vector2(state[0], state[1]))
 	if not _glides.has(type):
 		var glides: Variant = node.get(&"NET_GLIDES")
@@ -259,6 +300,10 @@ func _despawn(nid: int) -> void:
 func _clear() -> void:
 	for nid: int in _nodes.keys():
 		_despawn(nid)
+	for ghost: Dictionary in _ghosts:
+		if is_instance_valid(ghost["node"]):
+			ghost["node"].queue_free()
+	_ghosts.clear()
 	_game.clear()
 
 
@@ -278,26 +323,141 @@ func _place(nid: int, node: Node2D, at: Vector2) -> void:
 # =====================================================================
 
 ## This machine's own tanks drive here at once (PlayerTank predicts them),
-## each with the local controls in its seat; the others show the host's.
+## each with the local controls in its seat, unless its lag compensation is
+## off; the others show the host's.
 func _take_own_tanks() -> void:
+	var compensating := InputSettings.get_lag_compensation()
 	for node: Node in _nodes.values():
 		if is_instance_valid(node) and node is PlayerTank:
 			var tank := node as PlayerTank
 			var key: int = PlayerInput.seats[tank.player_id]
-			tank.set_net_predicted(Net.is_my_seat(tank.player_id), PlayerInput.controller_slot(key))
+			tank.set_net_predicted(compensating and Net.is_my_seat(tank.player_id), PlayerInput.controller_slot(key))
 
 
-## A shell of this machine's own tank: that tank drives ahead of the world shown
-## here, by the trip to the host and back and DELAY_MS, so the shell is drawn
-## that far ahead on its way too, coming out of the barrel where the tank is
-## now. One that would be past a wall, an enemy, the end of its range or the
-## field by then is hidden: the host's word of its hit is on its way.
+## How far behind the host's clock to show the world, ms: SMOOTHING's choice,
+## or with AUTO as far as the snapshots' timing needs (auto_delay).
+func _aimed_delay() -> float:
+	var chosen := InputSettings.get_smoothing()
+	if chosen > 0:
+		return float(chosen)
+	if _late.size() < LATE_SAMPLES / 2.0:
+		return DELAY_MS  # not measured yet
+	return auto_delay(_late, 1000.0 * NetHostWorld.SEND_EVERY / Engine.physics_ticks_per_second)
+
+
+## AUTO smoothing for snapshots sent [param spacing] ms apart that came
+## [param late] ms later than the fastest of them, each: the next snapshot must
+## be in by the time the world shown gets to it, nine times in ten, with a frame
+## to spare.
+static func auto_delay(late: Array[float], spacing: float) -> float:
+	var sorted := late.duplicate()
+	sorted.sort()
+	var most: float = sorted[int(sorted.size() * 0.9)] if not sorted.is_empty() else 0.0
+	return clampf(spacing + most + AUTO_SPARE_MS, AUTO_MIN_MS, AUTO_MAX_MS)
+
+
+## A shot of this machine's own tank, fired here at once (BaseTank._spawn_bullet
+## on a client): drawn and flown here as a ghost (Bullet.net_ghost) until the
+## host's shell for it shows and takes over (_take_over_ghost).
+func add_ghost(shell: Bullet) -> void:
+	var parent: Node = containers.get("bullets")
+	if parent == null:
+		shell.free()
+		return
+	shell.net_ghost = true
+	shell.collision_layer = 0
+	shell.collision_mask = 0
+	parent.add_child(shell)
+	_strip_physics(shell)
+	_ghosts.append({"node": shell, "born": Time.get_ticks_msec()})
+
+
+## Ghosts the host's shells never took over in time: shots the host didn't fire
+## (its cooldown came out a frame different, say).
+func _expire_ghosts() -> void:
+	var limit := Net.ping_ms + _delay_ms + GHOST_GRACE_MS
+	var now := Time.get_ticks_msec()
+	while not _ghosts.is_empty() and now - int(_ghosts[0]["born"]) > limit:
+		var ghost: Variant = _ghosts.pop_front()["node"]
+		if is_instance_valid(ghost):
+			ghost.queue_free()
+
+
+## The host's [param shell] for a shot of this machine's has come: the oldest
+## ghost of that player's with its look and way gives way to it, and it eases
+## from where the ghost was (HANDOFF_MS). If the ghost had hit something, the
+## shell stays hidden till the host's word of the hit.
+func _take_over_ghost(shell: Bullet, info: Dictionary) -> void:
+	for i in _ghosts.size():
+		var ghost: Variant = _ghosts[i]["node"]
+		if not is_instance_valid(ghost) or ghost.owner_player != shell.owner_player \
+				or ghost.visual_style != shell.visual_style or ghost.direction != shell.direction:
+			continue
+		info["offset"] = (ghost as Node2D).global_position - _shell_now(shell, info)
+		info["offset_at"] = Time.get_ticks_msec()
+		info["hidden"] = not (ghost as Node2D).visible
+		ghost.queue_free()
+		_ghosts.remove_at(i)
+		return
+
+
+## How many shells of player [param player]'s are on their way as shown here,
+## ghosts and all (of [param style] only, if given): its shots go as the host's
+## will (PlayerTank._take_host_weapons).
+func own_shells_in_flight(player: int, style: String = "") -> int:
+	var count := 0
+	var shells: Array = _ghosts.map(func(ghost: Dictionary) -> Variant: return ghost["node"])
+	for nid: int in _own_shells:
+		shells.append(_nodes.get(nid))
+	for shell: Variant in shells:
+		if is_instance_valid(shell) and shell.owner_player == player \
+				and (style.is_empty() or shell.visual_style == style):
+			count += 1
+	return count
+
+
+## A shell of this machine's own tank, shown here at [param at] as the host had
+## it: that tank drives ahead of the world shown here, by the trip to the host
+## and back and render_delay, so the shell is drawn where it is by then too
+## (_shell_now), coming out of the barrel where the tank is now (and on from its
+## ghost's place, _take_over_ghost). One that would be past a wall, an enemy,
+## the end of its range or the field by then is hidden: the host's word of its
+## hit is on its way.
 func _lead_shell(nid: int, shell: Node2D, at: Vector2) -> Vector2:
+	if not InputSettings.get_lag_compensation():
+		shell.visible = true
+		return at  # this machine shows the host's game as it is
 	var info: Dictionary = _own_shells[nid]
-	var ahead: Vector2 = info["velocity"] * (Net.ping_ms + DELAY_MS) / 1000.0
-	var clear := _shell_way_clear(shell as Bullet, at, at + ahead, info)
+	info["at"] = at
+	var now := _shell_now(shell as Bullet, info)
+	var clear: bool = not info.get("hidden", false) and _shell_way_clear(shell as Bullet, at, now, info)
 	shell.visible = clear
-	return at + ahead if clear else at
+	if not clear:
+		return at
+	var offset: Vector2 = info.get("offset", Vector2.ZERO)
+	if offset != Vector2.ZERO:
+		offset *= clampf(1.0 - (Time.get_ticks_msec() - int(info["offset_at"])) / HANDOFF_MS, 0.0, 1.0)
+	return now + offset
+
+
+## This machine's own shells fly on each frame, whether a snapshot moved them or
+## not (_shell_now).
+func _fly_own_shells() -> void:
+	for nid: int in _own_shells:
+		var node: Node = _nodes.get(nid)
+		if is_instance_valid(node):
+			_place(nid, node as Node2D, _own_shells[nid].get("at", (node as Node2D).global_position))
+
+
+## Where own [param shell] is by now on this machine's clock, a trip to the host
+## ahead of the host's own (as this machine's tanks are): from where the host
+## had it at the snapshot that brought it, on at its speed for the time since.
+## Worked out from its speed rather than from the snapshots' spacing, which the
+## host's frames make uneven, so it flies on as smoothly as its ghost did.
+func _shell_now(shell: Bullet, info: Dictionary) -> Vector2:
+	var host_now := Time.get_ticks_msec() + _clock_offset
+	var seconds := maxf(host_now - float(info["host_time"]) + Net.ping_ms, 0.0) / 1000.0 * Engine.time_scale
+	return info["start"] + shell.direction * shell.distance_in(seconds)
 
 
 ## True if nothing stops [param shell] going from [param from] to [param to].
@@ -440,7 +600,7 @@ func _play(event: Array) -> void:
 	var args := event.slice(1)
 	match int(event[0]):
 		NetWorld.EV_SOUND:
-			SoundManager.play_from_host(StringName(str(args[0])))
+			SoundManager.play_from_host(StringName(str(args[0])), int(args[1]) if args.size() > 1 else -1)
 		NetWorld.EV_MUSIC:
 			SoundManager.play_music_from_host(StringName(str(args[0])))
 		NetWorld.EV_STOP_MUSIC:

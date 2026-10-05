@@ -19,7 +19,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
   - Nothing else is needed: no discovery port and no port range (the original needed DirectPlay's 47624 plus 2300–2400).
   - Behind a router, only that one port needs forwarding on the host's side, as TCP or UDP to match PORT TYPE.
   - Clients type the host's address (with ":PORT" when the host's port isn't 24680). The ONLINE tab's YOUR ADDRESS and the lobby show the host's LAN address to share, as the original's 信息 button did.
-- **The handshake** is `SceneMultiplayer`'s authentication. The client sends its protocol number (`Net.PROTOCOL`, now 3) and name.
+- **The handshake** is `SceneMultiplayer`'s authentication. The client sends its protocol number (`Net.PROTOCOL`, now 4) and name.
   - The host turns it away, with a reason the client shows, when the protocol differs, the name is empty, the game is full (MAX PLAYERS, 1 to 3 besides the host), or new players aren't allowed.
   - **A game with a password** then challenges the newcomer with 32 random bytes. The newcomer answers with their HMAC-SHA256, keyed with the password it was given (`Net.password_proof`). The host compares that with its own in constant time.
     - So the password itself never crosses the network, and an answer overheard is no use against the next challenge.
@@ -75,7 +75,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
   - The host goes by the name it last played under in ONLINE BATTLE (PLAYER if none).
   - The players on the field keep their tanks. A tank nobody plays (player 2 never joined, or sitting out) is free for whoever presses fire first, the host's own P2 included. Joining it is joining mid-game, with fresh lives (credits are unlimited); one sitting out comes back with all it had.
   - Clients joining see the stage at once, and take a free tank with their fire.
-  - A client's MENU has no ONLINE tab.
+  - A client's MENU has an ONLINE tab of its own instead: how the host's game shows on that machine (LAG COMPENSATION, SMOOTHING and its ping, section 7).
 - **HOST**: once someone has joined, the host's pause menu has HOST under SETTINGS (section 8).
 - A host's BACK in the lobby goes to the title.
 - **The online lobby** is the join screen, networked:
@@ -114,7 +114,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
   - Gone ones are listed as removed.
 - **map changes:** each changed cell's bg code, fg code and standing brick quarters;
 - **game state**, only what changed: stage, lives, scores, levels, weapons, HP, add-ons, chains, the enemies' count, holds and freezes, the lose countdown, pause, game speed, the base, and the stage screen showing (with its random draws) and its clock;
-- **events:** sounds and music, and one-shot effects (hit sparks, tank explosions, spawn bursts, blasts, kill and pickup text).
+- **events:** sounds and music, and one-shot effects (hit sparks, tank explosions, spawn bursts, blasts, kill and pickup text). A player tank's shot sounds say whose tank fired, so the client driving it, which heard it as it fired, leaves it out (section 7).
 
 Rumbles go straight to the peer they're for, outside the snapshots.
 
@@ -133,6 +133,7 @@ Rumbles go straight to the peer they're for, outside the snapshots.
 - Positions, a mine flight's tumble and an item's size and fade glide between snapshots.
 - Everything else (spawns, removals, state changes, sounds, effects) happens as that point in time is reached.
 - More than 45 snapshots waiting means the client stalled: it catches up at once.
+- How far behind is the client's SMOOTHING setting: AUTO by default, which goes by how late the snapshots have been coming (section 7).
 - The client's own tanks and its own shells are the exception: they run ahead of that (section 7).
 
 **Mirror mode.** On a client the game's own scenes run with their logic off (`Net.is_client()` guards):
@@ -154,7 +155,7 @@ Rumbles go straight to the peer they're for, outside the snapshots.
 - A client samples both local players every physics frame. It sends a 36-byte message when anything changes, which a new snapshot's ack always does. The message holds:
   - the newest snapshot;
   - per player: the direction, both fire buttons held and a press counter per button;
-  - per player driving a tank of their own: where that tank is on the client, its facing, whether it moves, and the last correction it has taken (section 7). So a moving tank sends one every frame.
+  - per player: whether the client runs its own tanks (its LAG COMPENSATION on) and, while that player drives one there, where that tank is on the client, its facing, whether it moves, and the last correction it has taken (section 7). So a moving tank sends one every frame.
 - Press counters make a quick tap impossible to lose, even if its press and release land between two host frames.
 - Once a second a client times a trip to the host and back (`_c_ping`, `_h_pong`) and tells the host its latest ping.
 - While the client's own menu is open, its players are sent as idle.
@@ -162,14 +163,24 @@ Rumbles go straight to the peer they're for, outside the snapshots.
 
 ## 7. Timing and feel
 
-- **What a client sees** of the host's world is about half a round trip plus the 100 ms interpolation delay old: on a LAN about 0.1 s, over the internet 0.1 s plus half the round trip. Its own tank is the exception.
-- **Lag compensation** (Sean, 2026-10-05): a client's own tank answers its keys at once, however far away the host is. Before it, a key press took a whole round trip plus 0.1 s to show, which players found unplayable above about 100 ms.
+- **What a client sees** of the host's world is about half a round trip plus its smoothing delay old. Its own tank and shots are the exception (lag compensation, below).
+- **Smoothing** (Sean, 2026-10-05, from players' feedback): how far behind the host's clock a client shows the world, so a snapshot arriving late doesn't stop the picture.
+  - AUTO, the default, goes by the snapshots themselves (`NetClientWorld.auto_delay`): their spacing (33 ms) plus how late nine in ten of the last 60 came, compared with the quickest, plus 10 ms, between 40 and 250 ms. About 45 ms on a steady line, more on a jittery one; one stall alone changes nothing. It starts at 100 ms until a second of snapshots has been measured.
+  - Or a client picks 50, 75, 100, 150 or 200 ms on its MENU's ONLINE tab: less is quicker but jerkier when the connection stutters.
+  - The delay moves to a new aim smoothly: up at 100 ms a second, down at 20, so the picture never jumps.
+- **A client's ONLINE tab** (its MENU's SETTINGS) has LAG COMPENSATION (ON / OFF), SMOOTHING (AUTO, with what it comes to now, or a figure) and the ping, with a line on what the focused row does. Both are kept in the settings file, `[online] lag_compensation` and `smoothing`.
+- **Lag compensation** (Sean, 2026-10-05): a client's own tank and its shots answer its keys at once, however far away the host is. Before it, a key press took a whole round trip plus 0.1 s to show, which players found unplayable above about 100 ms.
   - **The client drives its own tank** (`PlayerTank._predict`) with the same movement code as the host's: turns and their snap to the half-tile grid, ice, and walls, water and the base on its copy of the map. Enemies it sees stop it too. Its speed and a mine's slowing come from the host. Each input message carries where it is (section 6).
   - **The host's copy follows it** (`PlayerTank._follow_client`) at up to twice the tank's speed. It goes the way the client went: on to a turn's corner first, then round it, with a turn's grid snap at once. What stops any tank stops it there: walls, water, the base and enemies. So the host still decides what the tank runs into, what hits it and what it picks up, and its shots leave from where the copy is.
   - **Corrections.** Held up for 0.3 s more than 24 px behind (by an enemy the client hadn't seen yet, say), the host sends a correction: a counter in the tank's state (`net_override`). The client's tank goes where the host has it, and drives on from there. Until a client's report has taken the correction, the host ignores it. Catching up after a stall (a pause, a hitch) is no correction.
   - **Spells.** While the host drives the tank itself (materializing, a mine's flight, an enemy's hold), the client shows the host's tank. Each one starts with a correction, so the client drives on from wherever it ends, with nothing to put right.
-  - **Its own shells** are drawn ahead along their way, by the round trip plus the 100 ms, so they leave the barrel where the client's tank is now. One that would be past a wall, an enemy or the end of its range by then is hidden until the host's word of its hit comes. AP shells drill on.
-  - **Everything else** stays where the host had it 0.1 s plus half a round trip ago: enemies, the other players' tanks, and every other shell. So an enemy shell can still hit a client's tank that seemed just clear of it, and an enemy can stop it a little short of where it looked free. Its tank goes back by that much when that happens.
+  - **Its own shots go off at once** (Sean, 2026-10-05, from players' feedback: firing still felt late once the tank moved at once). The client fires them as the host will when its keys arrive, with the host's weapons, levels, ammo and the shells it has in flight (`PlayerTank._predict_fire`): each shot is a ghost shell (`Bullet.net_ghost`) that flies at once from the barrel, and its sound plays at once.
+    - The host still fires the real shell, which decides every hit. When it shows on the client, it takes over from the oldest ghost of that player's with its look and way, easing from where the ghost was over 0.15 s (`NetClientWorld._take_over_ghost`).
+    - The host's sound for that shot carries the tank's number, and the client, having heard it, leaves it out (`SoundManager.play_predicted`).
+    - A ghost hides where the host's shell would end (a wall, an enemy, its range); the host's word of the hit shows it go. A ghost no host shell takes over within the round trip, the smoothing and 0.3 s was a shot the host didn't fire, and goes. Mines are left to the host.
+  - **Its own shells** are then drawn where they are by the client's clock: from where the host had one at the snapshot that brought it, on at its speed for the time since plus the round trip (`NetClientWorld._shell_now`). That's worked out from the shell's speed, which the host sends, rather than from the snapshots' timing, which the host's frames make uneven, so the shell flies on as smoothly as its ghost did. One that would be past a wall, an enemy or the end of its range by then is hidden until the host's word of its hit comes. AP shells drill on.
+  - **LAG COMPENSATION OFF** (the client's choice) gives the picture from before: its tank and shots show where the host has them, its keys a round trip late. The host then drives that tank from the client's keys as they come (`PlayerTank._drive_for_client`); turned on again, the host corrects it first, since the keys moved it meanwhile.
+  - **Everything else** stays where the host had it, the smoothing plus half a round trip ago: enemies, the other players' tanks, and every other shell. So an enemy shell can still hit a client's tank that seemed just clear of it, and an enemy can stop it a little short of where it looked free. Its tank goes back by that much when that happens.
   - **The trust this takes:** the host takes a client's word for where its tank drove, within what the host's own walls and enemies allow, at no more than twice the tank's speed. A cheating client could steer perfectly, but not drive faster or through walls.
   - **Ping:** clients time the round trip once a second, the first a second after joining, and go by the middle one of the latest five, so a stall (a stage loading) doesn't count. The host's CONNECTED PLAYERS list shows each one's.
 - **Game speed:** clients run at the host's GAME SPEED, so their local animations keep pace with it.
@@ -198,14 +209,14 @@ New:
 
 Changed:
 - **Mirrored entity scripts** (BaseTank, PlayerTank, EnemyTank, Bullet, Cookie, Mine, GroundFire): `net_type`, `net_spawn_args`, `net_state` on the host; `net_setup`, `net_apply` on a client; a client guard in front of their logic.
-- **Lag compensation** (section 7): PlayerTank drives a client's own tank there (`set_net_predicted`, `_predict`) and has the host's copy follow it (`_follow_client`, `net_override`); NetClientWorld picks the client's own tanks and draws its own shells ahead (`_take_own_tanks`, `_lead_shell`); a shell's spawn data says whose it is; PlayerInput keeps each client's reports; Net carries them, times the ping, and has `--net-lag-ms=N` for tests (a client's line made N ms longer each way).
+- **Lag compensation** (section 7): PlayerTank drives a client's own tank there (`set_net_predicted`, `_predict`), fires its shots there (`_predict_fire`, `_take_host_weapons`), and has the host's copy follow it (`_follow_client`, `net_override`) or, with the client's compensation off, its keys drive it (`_drive_for_client`); BaseTank's `_spawn_bullet` makes a client's shot a ghost (`Bullet.net_ghost`, `_fly_ghost`); NetClientWorld picks the client's own tanks, keeps the ghosts and hands them to the host's shells, draws its own shells ahead (`_take_own_tanks`, `add_ghost`, `_take_over_ghost`, `_lead_shell`, `_shell_now`) and sets the smoothing (`render_delay`, `auto_delay`); a shell's spawn data says whose it is and how it flies; SoundManager leaves out the host's sound of a shot the client heard already; PlayerInput keeps each client's reports; Net carries them, times the ping, and has `--net-lag-ms=N` for tests (a client's line made N ms longer each way); GameManager's ammo setter does nothing on a client (its numbers are the host's).
 - **Effects** (HitEffect, SpawnBurst, KillText, PickupText, ExplosionBlast, the explosion scene): the host records them as events; a client's blast is only its picture.
 - **LevelManager:** marks changed tiles; `net_map`, `net_cell`, `net_load_map`, `net_set_cell`; mirror mode.
 - **StageOverlay:** `net_screen`, `net_show`, `net_set_time`; follow mode.
 - **game.gd:** host mode (a NetHostWorld, seats, tanks without drivers sit out), opening and closing a running game to others (`hosting_started`, `session_ended`), and mirror mode.
 - **Screens:** title (ONLINE BATTLE), join screen (the lobby), pause menu (SETTINGS' ONLINE tab, the HOST page, the client's MENU).
 - **SoundManager:** sounds to clients; a client plays only the host's.
-- **InputSettings:** `[online]` the host's `port`, `port_type`, `host_password` and `max_players`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file (and, through LevelData.user_map_dir, its own maps folder).
+- **InputSettings:** `[online]` the host's `port`, `port_type`, `host_password` and `max_players`, a client's `lag_compensation` and `smoothing`, and the saved `connections`; `--test-profile=NAME` gives a test process its own settings file (and, through LevelData.user_map_dir, its own maps folder).
 - **LevelData:** `pool_hash`, `bytes_hash`, `pool_with_hash`, `find_pool`, and `save_map_bytes` for a map set that came from a host.
 - `scripts/net/net_map_prompt.gd` (`NetMapPrompt`): the question about the host's map set.
 - **SaveManager:** player 1 never loads as sitting out.
@@ -241,9 +252,11 @@ The client half starts with an empty maps folder of its own while the host plays
 
 `online_screen_test.tscn` [L] covers a join finding out the transport: a TCP host, a UDP host, and a UDP host with something else on its TCP port.
 
-`scenes/test/net_follow_test.tscn` covers lag compensation's parts in one process: the host's copy of a client's tank waiting for word, following at up to twice its speed and round a turn the way it went, a turn's snap, standing still; a wall or an enemy holding it up and the correction after 0.3 s, reports that haven't taken it ignored; a mine's flight and a hold each starting with a correction and none at their end; its shots and the state it sends; then the client's side: its own tank driven at once and reported in the input message, not while its menu has the keys, a stale report not sent, a correction putting it back, and its own shells drawn ahead (hidden past a wall, an enemy or a flame's range; AP drilling on). And the ping in the host's list of players.
+`scenes/test/net_follow_test.tscn` covers lag compensation's parts in one process: the host's copy of a client's tank waiting for word, following at up to twice its speed and round a turn the way it went, a turn's snap, standing still; a wall or an enemy holding it up and the correction after 0.3 s, reports that haven't taken it ignored; a mine's flight and a hold each starting with a correction and none at their end; its shots and the state it sends; a client with lag compensation off driving it with its keys, and a correction when it turns it on; then the client's side: its own tank driven at once and reported in the input message, not while its menu has the keys, a stale report not sent; a correction putting it back; its own shells drawn ahead (hidden past a wall, an enemy or a flame's range; AP drilling on); its own shots fired at once as ghosts (the cooldown, the host's weapon and ammo, AP's limit in flight, no mines, none of the host's numbers spent), flying as the host's will, hiding at a wall, taken over by the host's shells where they are and eased to their own place, or going when no shell comes, and their sounds heard once; and AUTO smoothing's figure, a picked one, and the settings. And the ping in the host's list of players.
 
-`scenes/test/online_lag_test.tscn` plays a session over a long line: it hosts, and starts itself again as a client with 75 ms added each way (`--net-lag-ms`). The client's tank answers its keys within 3 frames, the host's copy ends where the client's tank is, with no corrections in open ground; the client's shell leaves its tank's barrel where the tank is; both sides know the ping (about 150 ms), and the host's list shows it; a correction from the host puts the client's tank where the host has it, and the host follows it again from there. online_test's client also checks its own tank, standing still, is where the host has it.
+`pause_menu_test.tscn` [H] covers a client's ONLINE tab: GENERAL and ONLINE only, LAG COMPENSATION and SMOOTHING by keys and kept, what each does, and the ping as it's timed.
+
+`scenes/test/online_lag_test.tscn` plays a session over a long line: it hosts, and starts itself again as a client with 75 ms added each way (`--net-lag-ms`). The client's tank answers its keys within 3 frames, the host's copy ends where the client's tank is, with no corrections in open ground; AUTO smoothing comes down (aiming at about 45 ms); the client's shot shows within 3 frames out of its tank's barrel and is heard once, the host's shell takes over from it where it was (never both at once) and flies on as smoothly; both sides know the ping (about 160 ms), and the host's list shows it; a correction from the host puts the client's tank where the host has it, and the host follows it again from there; with LAG COMPENSATION off, the client's keys move its tank only once the host has, the host driving it from them, and on again the host corrects it first. online_test's client also checks its own tank, standing still, is where the host has it.
 
 `scenes/test/pause_menu_test.tscn` [H] covers the ONLINE tab and HOST, PORT TYPE too (an ENet server over UDP, a busy UDP port): the tabs by keys and LB / RB, typing the port (a bad one refused) and the password, MAX PLAYERS, opening the game (the seats it leaves, its NetHostWorld), the port fixed while open, HOST appearing once someone joins and its rows, OFF locking with someone there and closing with nobody, a port in use, and no ONLINE tab on a client.
 
@@ -259,6 +272,15 @@ The client half starts with an empty maps folder of its own while the host plays
 
 - **ONLINE BATTLE** replaces ONLINE on the title: a list of saved connections, like the saved games' list, with CREATE, EDIT, DELETE and CONNECT. CREATE's window takes a username, the remote address (ip:port), an optional password, and JOIN (section 3).
 - **No host screen for now:** its design comes later.
+
+## 17. Sean's calls (2026-10-05, again)
+
+- **From players' feedback on 1.1.2:** under 100 ms of ping, firing felt late on a client (the tank moved at once, its shots didn't), and the host's and a client's pictures differ. They asked for a way to set the lag compensation themselves. Section 7.
+- My choices:
+  - A client's own shots go off at once too, as ghosts the host's shells take over, with their sounds heard once.
+  - The smoothing delay, a fixed 100 ms before, now follows the connection (AUTO, about 45 ms on a good line), which brings everything a client sees nearer the host's.
+  - Players set it on their MENU's ONLINE tab: LAG COMPENSATION ON / OFF (off is the picture from before: exactly the host's, a round trip late) and SMOOTHING, AUTO or 50 to 200 ms. On and AUTO by default.
+  - Protocol 4: a 1.1.2 player can't join a newer host, or the other way round.
 
 ## 16. Sean's calls (2026-10-05)
 

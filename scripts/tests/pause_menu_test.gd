@@ -578,10 +578,47 @@ func _test_online_tab() -> void:
 	await _key(KEY_ESCAPE)
 	_menu._settings_button.grab_focus()
 	await _key(KEY_ENTER)
-	check(not strip.visible and _menu._settings_rows.visible and not _menu._game_rows.visible
-		and not _menu._page_items(1).has(strip) and _focus() == _menu._common.sfx_row,
-		"a client's settings: GENERAL only, no GAME or ONLINE tab (the host's game and its rules aren't theirs)")
+	var offered: Array = tabs.filter(func(tab: Button) -> bool: return tab.visible).map(
+			func(tab: Button) -> String: return tab.text)
+	check(strip.visible and offered == ["GENERAL", "ONLINE"] and _menu._settings_rows.visible
+		and not _menu._game_rows.visible and _focus() == _menu._common.sfx_row,
+		"a client's settings: GENERAL and ONLINE, no GAME (the host's game and its rules aren't theirs): %s" % str(offered))
+	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
+	check(_menu._online_tab.visible and _menu._lag_row.visible and _menu._smoothing_row.visible
+		and not _menu._allow_row.visible and not _menu._players_box.visible and _focus() == _menu._lag_row,
+		"RB: a client's ONLINE tab is how the host's game shows there, not hosting")
+	check(MenuRows.name_label(_menu._lag_row).text == "LAG COMPENSATION" and MenuRows.value_label(_menu._lag_row).text == "ON"
+		and MenuRows.name_label(_menu._smoothing_row).text == "SMOOTHING"
+		and MenuRows.value_label(_menu._smoothing_row).text == "AUTO (%d ms)" % NetClientWorld.DELAY_MS
+		and _menu._ping_line.text == "PING   —",
+		"LAG COMPENSATION ON, SMOOTHING AUTO, no ping timed yet: %s" % MenuRows.value_label(_menu._smoothing_row).text)
+	check(_menu._online_note.text == "ON: your tank and its shots answer your keys at once.\nOFF: you see exactly what the host does, a little late.",
+		"what it does, under the rows")
+	await _key(KEY_RIGHT)
+	check(not InputSettings.get_lag_compensation() and MenuRows.value_label(_menu._lag_row).text == "OFF"
+		and _settings_file().get_value("online", "lag_compensation") == false, "right: OFF, kept")
+	await _key(KEY_ENTER)
+	check(InputSettings.get_lag_compensation() and MenuRows.value_label(_menu._lag_row).text == "ON", "Enter: ON again")
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._smoothing_row and _menu._online_note.text.begins_with("How far behind the host")
+		and MenuRows.arrow(_menu._smoothing_row, "Left").disabled, "down: SMOOTHING, what it does, AUTO first")
+	await _key(KEY_RIGHT)
+	check(InputSettings.get_smoothing() == 50 and MenuRows.value_label(_menu._smoothing_row).text == "50 ms"
+		and _settings_file().get_value("online", "smoothing") == 50, "right: 50 ms, kept")
+	for i in 6:
+		await _key(KEY_RIGHT)
+	check(InputSettings.get_smoothing() == 200 and MenuRows.arrow(_menu._smoothing_row, "Right").disabled,
+		"right on: up to 200 ms, and no further")
+	for i in 6:
+		await _key(KEY_LEFT)
+	check(InputSettings.get_smoothing() == 0, "left all the way: AUTO again")
+	Net.ping_ms = 84.0
+	await tree.create_timer(0.3).timeout
+	check(_menu._ping_line.text == "PING   84 ms", "the ping shows as it's timed: %s" % _menu._ping_line.text)
+	Net.ping_ms = 0.0
 	_menu.set_online_client(false)
+	check(_menu._allow_row.visible and _menu._players_box.visible and not _menu._lag_row.visible
+		and not _menu._ping_line.visible, "the host's ONLINE tab back for a host")
 	await _key(KEY_ESCAPE)
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused, "Esc, Esc: resumed")
