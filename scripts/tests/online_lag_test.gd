@@ -68,6 +68,12 @@ var _watch: Array = []
 ## behind the client's newest report it has played, in frames.
 var _copy_watched: PlayerTank = null
 var _behind_most := 0.0
+## Client: while watching its own shots, every ghost number seen, and each
+## host shell for one: nid -> [its number, how far it jumped from the ghost
+## (px), whether it flies on the ghost's own line, how far it flies a frame].
+var _shots_world: NetClientWorld = null
+var _ghosts_seen := {}
+var _shells_seen := {}
 
 
 func check(cond: bool, msg: String) -> void:
@@ -106,6 +112,16 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if _watched != null and is_instance_valid(_watched) and _watched.visible:
 		_watch.append([_watched.global_position, Time.get_ticks_usec()])
+	if _shots_world != null:
+		for ghost: Dictionary in _shots_world._ghosts:
+			if is_instance_valid(ghost["node"]):
+				_ghosts_seen[int(ghost["node"].net_shot)] = true
+		for nid: int in _shots_world._own_shells:
+			var shell := _shots_world.node_for(nid) as Bullet
+			var info: Dictionary = _shots_world._own_shells[nid]
+			if shell and not _shells_seen.has(nid):
+				_shells_seen[nid] = [shell.net_shot, (info.get("offset", Vector2.INF) as Vector2).length(), info.has("born"),
+						shell.speed / Engine.physics_ticks_per_second]
 
 
 func _physics_process(_delta: float) -> void:
@@ -477,6 +493,45 @@ func _run_client() -> void:
 		var lead := (real.global_position - _host_has_node(real)).dot(direction)
 		check(lead > 0.8 * real.speed * (Net.ping_ms + world.render_delay()) / 1000.0,
 			"drawn ahead of where the host's word of it has it, as my tank is: %.0f px" % lead)
+
+	# Fired while driving, and at once after turning: the host fires each of
+	# those very shots, from where this tank was, so each host shell takes over
+	# its ghost by its number, on the ghost's own line, without a jump; no
+	# ghost waits in vain, and no shell comes that wasn't fired here.
+	var before := int(Net._shots[tank.net_slot][0])
+	_ghosts_seen.clear()
+	_shells_seen.clear()
+	_shots_world = world
+	await tree.create_timer(0.8).timeout  # (the cooldown after the last shot)
+	for way: String in ["p1_up", "p1_left", "p1_down", "p1_right"]:
+		_drive_on(way, 0.0)  # it turns, and drives on that way
+		await tree.physics_frame
+		Input.action_press("p1_shoot")
+		await tree.physics_frame
+		await tree.physics_frame
+		Input.action_release("p1_shoot")
+		await tree.create_timer(0.8).timeout  # (more than the cooldown)
+	Input.action_release("p1_right")
+	await tree.create_timer(1.0 + (Net.ping_ms + world.render_delay()) / 1000.0).timeout
+	_shots_world = null
+	for nid: int in _shells_seen.keys():
+		if int(_shells_seen[nid][0]) <= before:
+			_shells_seen.erase(nid)  # a shell of an earlier shot
+	var numbers := _shells_seen.values().map(func(seen: Array) -> int: return seen[0])
+	var fired := _ghosts_seen.keys()
+	fired.sort()
+	numbers.sort()
+	# (The ghost goes a physics frame at a time, sometimes two in one go, the
+	# shell on by the clock: they can be up to two frames' flight apart as it
+	# takes over, eased out over HANDOFF_MS.)
+	var jumps: Array = _shells_seen.values().map(func(seen: Array) -> float: return seen[1] / seen[3])
+	var on_line := _shells_seen.values().all(func(seen: Array) -> bool: return seen[2])
+	check(fired.size() == 4 and numbers == fired, "four shots fired driving and turning, and the host's shell for each: %s, %s" % [
+		str(fired), str(numbers)])
+	check(on_line and not jumps.is_empty() and jumps.max() <= 2.0,
+		"each takes over its ghost on the ghost's own line, at most %.2f of a frame's flight from it" % (
+			jumps.max() if not jumps.is_empty() else INF))
+	check(world._ghosts.is_empty(), "no ghost left waiting")
 
 	# The host corrects it: it goes where the host has it, and on from there.
 	var file := FileAccess.open(DRIVEN, FileAccess.WRITE)

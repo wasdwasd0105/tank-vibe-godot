@@ -34,6 +34,8 @@ const CLOCK_REPORTS := 120
 const CLOCK_RECENT := 30
 const CLOCK_SLACK := 1.0
 const CLOCK_FELL := 2.0
+## The most shots of a client's own kept waiting to be fired here.
+const MAX_DUE_SHOTS := 8
 
 signal seats_changed
 
@@ -78,6 +80,15 @@ class RemotePad:
 	var report_ahead: Array[float] = []
 	var report_clock := 0.0
 	var report_late: Array[float] = []
+	## The shots its tank fired there itself (lag compensation): its counts per
+	## fire button as last heard (shots_heard: any yet), and those still to fire
+	## here, oldest first (PlayerTank._fire_client_shots): [fire button, row
+	## (0 left, 1 middle, 2 right), the report that came with it (where it had
+	## the tank, as reports has them; [] none), its number (button * 256 + its
+	## count), when it came here (msec)].
+	var shots: Array[int] = [0, 0]
+	var shots_heard := false
+	var shots_due: Array = []
 
 
 func _ready() -> void:
@@ -298,6 +309,33 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
 	if pad.reports.size() > MAX_QUEUED_REPORTS:
 		pad.reports.pop_front()
+
+
+## Client [param peer]'s local player [param slot]'s tank has fired
+## [param shots] shots there itself in all (a count per fire button, 0-255,
+## wrapping), the latest of each from row [param rows]: each new one is queued
+## to be fired here, from where its report (the one just come with it) had the
+## tank. Counts start from when they're first heard.
+func set_remote_shots(peer: int, slot: int, shots: Array, rows: Array) -> void:
+	var pad: RemotePad = _remote.get(controller_key(peer, slot))
+	if pad == null:
+		return
+	if not pad.shots_heard:
+		pad.shots_heard = true
+		pad.shots = [int(shots[0]) & 0xff, int(shots[1]) & 0xff]
+		return
+	var report: Array = pad.reports[-1] if pad.report_frame >= 0 and not pad.reports.is_empty() else []
+	for b in 2:
+		var count := int(shots[b]) & 0xff
+		var new := (count - pad.shots[b]) & 0xff
+		if new >= 128:
+			continue  # an older count (never, in order as messages come)
+		for i in new:
+			var number := (pad.shots[b] + 1 + i) & 0xff
+			pad.shots_due.append([b, clampi(int(rows[b]), 0, 2), report, b * 256 + number, Time.get_ticks_msec()])
+		pad.shots[b] = count
+	while pad.shots_due.size() > MAX_DUE_SHOTS:
+		pad.shots_due.pop_front()
 
 
 ## True when a player on a client drives tank [param tank]: the host's copy of

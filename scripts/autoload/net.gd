@@ -39,7 +39,7 @@ enum Role { OFFLINE, HOST, CLIENT }
 enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 5
+const PROTOCOL := 6
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -57,10 +57,14 @@ const PING_SAMPLES := 5
 ## The input message: the newest snapshot (4 bytes), each local player's
 ## controls (4 each), then each one's own tank as it drives here (12 each:
 ## flags, facing, last correction taken, the physics frame it was there (0-255,
-## wrapping), x and y as 32-bit floats).
-const INPUT_SIZE := 36
+## wrapping), x and y as 32-bit floats), then the shots each one's tank has
+## fired here (3 each: a count per fire button, 0-255, wrapping; and the row
+## the latest of each left from, 0 left to 2 right, two bits each).
+const INPUT_SIZE := 42
 const REPORT_AT := 12
 const REPORT_SIZE := 12
+const SHOTS_AT := 36
+const SHOTS_SIZE := 3
 ## A report's flags: there is one (the tank drives here just now), it's moving,
 ## and this machine runs its own tanks at all (its lag compensation on).
 const REPORT_HAS := 1
@@ -170,8 +174,11 @@ var _last_heard: Dictionary = {}   # peer id -> Time.get_ticks_msec() of its las
 var _last_sent := 0                # msec we last said anything
 var _session_dirty := false
 
-# Client: the two local players' press counters, and what was last sent.
+# Client: the two local players' press counters, their tanks' shots fired here
+# and the row of the latest per fire button (note_shot), and what was last sent.
 var _presses: Array = [[0, 0], [0, 0]]
+var _shots: Array = [[0, 0], [0, 0]]
+var _shot_rows: Array = [[1, 1], [1, 1]]
 var _sent_input := PackedByteArray()
 ## Client: the newest snapshot received, acknowledged with the next input
 ## message.
@@ -214,6 +221,9 @@ var _map_sends: Dictionary = {}
 func _ready() -> void:
 	# Messages, keepalives and the host's paused game all go on through a pause.
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# A client's input goes out after its own tank's step, so a press of fire
+	# comes with where the tank was as it fired (PlayerTank._shot_origin).
+	process_physics_priority = 100
 	local_name = InputSettings.get_online_name()
 	port = InputSettings.get_online_port()
 	PlayerInput.seats_changed.connect(func() -> void:
@@ -592,6 +602,8 @@ func join(address: String, p_port: int, p_name: String, password: String = "") -
 	_connect_timer = CONNECT_TIMEOUT
 	_world_packets.clear()
 	_presses = [[0, 0], [0, 0]]
+	_shots = [[0, 0], [0, 0]]
+	_shot_rows = [[1, 1], [1, 1]]
 	_sent_input = PackedByteArray()
 	_latest_snapshot = -1
 	_ping_timer = PING_EVERY  # the first once the host's screen has loaded here
@@ -899,6 +911,19 @@ func report_tank(slot: int, position: Vector2, facing: int, moving: bool, overri
 		return
 	_tank_reports[slot] = {"position": position, "facing": facing, "moving": moving, "override": override,
 			"frame": Engine.get_physics_frames()}
+
+
+## Client: local slot [param slot]'s tank fired a shot here at once with fire
+## button [param button] (0 or 1), from row [param row] (0 left, 1 middle, 2
+## right): the host is told with the next input message, and fires that very
+## shot (PlayerTank._fire_client_shots). Returns its number, button * 256 + its
+## count, which the host's shell for it carries too.
+func note_shot(slot: int, button: int, row: int) -> int:
+	if slot < 0 or slot > 1 or button < 0 or button > 1:
+		return -1
+	_shots[slot][button] = (int(_shots[slot][button]) + 1) & 0xff
+	_shot_rows[slot][button] = clampi(row, 0, 2)
+	return button * 256 + int(_shots[slot][button])
 
 
 ## Host: client [param peer]'s trip here and back, ms, as it last timed it (0 not yet).
@@ -1273,8 +1298,9 @@ func _send_input() -> void:
 ## The input message (INPUT_SIZE): the newest snapshot, then per local player
 ## the direction, both fire buttons held and a press counter each, then per
 ## local player whether this machine runs its own tanks (lag compensation) and
-## its tank as it drives here, if it drives one. Idle while this machine's menu
-## or the map question has the keys.
+## its tank as it drives here, if it drives one, then the shots its tank fired
+## here (note_shot). Idle while this machine's menu or the map question has the
+## keys.
 func _input_message() -> PackedByteArray:
 	var blocked := input_blocked or map_prompt_open
 	for slot in 2:
@@ -1310,6 +1336,11 @@ func _input_message() -> PackedByteArray:
 		var position: Vector2 = report["position"]
 		bytes.encode_float(where + 4, position.x)
 		bytes.encode_float(where + 8, position.y)
+	for slot in 2:
+		var shots := SHOTS_AT + slot * SHOTS_SIZE
+		bytes[shots] = _shots[slot][0]
+		bytes[shots + 1] = _shots[slot][1]
+		bytes[shots + 2] = int(_shot_rows[slot][0]) | int(_shot_rows[slot][1]) << 2
 	return bytes
 
 
@@ -1336,6 +1367,9 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
 		PlayerInput.set_remote_report(sender, slot, flags & REPORT_HAS != 0 and sane, flags & REPORT_PREDICTS != 0,
 				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]))
+		var shots := SHOTS_AT + slot * SHOTS_SIZE
+		var rows := int(bytes[shots + 2])
+		PlayerInput.set_remote_shots(sender, slot, [int(bytes[shots]), int(bytes[shots + 1])], [rows & 3, (rows >> 2) & 3])
 
 
 @rpc("any_peer", "call_remote", "reliable")

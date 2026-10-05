@@ -22,11 +22,18 @@ const AUTO_MAX_MS := 250.0
 const DELAY_UP_RATE := 100.0
 const DELAY_DOWN_RATE := 20.0
 ## A ghost of a shot the host's shell never took over within the trip there and
-## back, the delay and this long was a shot the host didn't fire.
-const GHOST_GRACE_MS := 300.0
+## back, the delay and this long was a shot the host didn't fire. (Each is
+## numbered, and the host fires each one it can: so wait out a spike on the
+## line rather than lose a shot that's on its way.)
+const GHOST_GRACE_MS := 1000.0
 ## The host's shell taking over from a ghost eases from where the ghost was to
 ## its own place in this long.
 const HANDOFF_MS := 150.0
+## The end of a shell of this machine's own, shown here at once (predict_hit):
+## the host's picture of it coming within the trip there and back, the delay
+## and PREDICTED_HIT_MS, this close to it, isn't shown again.
+const PREDICTED_HIT_MS := 500.0
+const PREDICTED_HIT_NEAR := 28.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -62,11 +69,17 @@ var played: Dictionary = {}
 ## {"start" where the host had it at "host_time", the snapshot that brought it,
 ## "range" how far it goes (<= 0 no end), "pierces" drills through walls; and
 ## from a ghost it took over, "offset" from its own place to the ghost's at
-## "offset_at" msec, and "hidden" if the ghost had hit something}.
+## "offset_at" msec, and "hidden" if the ghost had hit something; and, flying
+## on the ghost's own line, "start" is where the ghost left, at "born" msec on
+## this machine's clock, at "speed0"}.
 var _own_shells: Dictionary = {}
 ## Shots of this machine's own tanks fired here at once (add_ghost), not yet
-## taken over by the host's shells: {"node": Bullet, "born": msec}, oldest first.
+## taken over by the host's shells: {"node": Bullet, "born": msec, "start":
+## where it left, "speed0": its speed then}, oldest first.
 var _ghosts: Array = []
+## Ends of this machine's own shells shown here at once (predict_hit), oldest
+## first: [visual style, where, msec, whether its theme has its own picture].
+var _predicted_hits: Array = []
 
 
 func _init() -> void:
@@ -304,6 +317,7 @@ func _clear() -> void:
 		if is_instance_valid(ghost["node"]):
 			ghost["node"].queue_free()
 	_ghosts.clear()
+	_predicted_hits.clear()
 	_game.clear()
 
 
@@ -369,7 +383,7 @@ func add_ghost(shell: Bullet) -> void:
 	shell.collision_mask = 0
 	parent.add_child(shell)
 	_strip_physics(shell)
-	_ghosts.append({"node": shell, "born": Time.get_ticks_msec()})
+	_ghosts.append({"node": shell, "born": Time.get_ticks_msec(), "start": shell.global_position, "speed0": shell.speed})
 
 
 ## Ghosts the host's shells never took over in time: shots the host didn't fire
@@ -383,16 +397,30 @@ func _expire_ghosts() -> void:
 			ghost.queue_free()
 
 
-## The host's [param shell] for a shot of this machine's has come: the oldest
-## ghost of that player's with its look and way gives way to it, and it eases
-## from where the ghost was (HANDOFF_MS). If the ghost had hit something, the
+## The host's [param shell] for a shot of this machine's has come: the ghost
+## with its number gives way to it (else, from a host that doesn't number them,
+## the oldest of that player's with its look and way). The host fired it from
+## where this machine had its tank, so it's on the ghost's own line: it flies on
+## from there by this machine's own clock, as the ghost did, without a jump.
+## Off that line (the host fired it from its copy), it eases from where the
+## ghost was to its own place (HANDOFF_MS). If the ghost had hit something, the
 ## shell stays hidden till the host's word of the hit.
 func _take_over_ghost(shell: Bullet, info: Dictionary) -> void:
 	for i in _ghosts.size():
 		var ghost: Variant = _ghosts[i]["node"]
-		if not is_instance_valid(ghost) or ghost.owner_player != shell.owner_player \
-				or ghost.visual_style != shell.visual_style or ghost.direction != shell.direction:
+		if not is_instance_valid(ghost) or ghost.owner_player != shell.owner_player:
 			continue
+		if shell.net_shot >= 0:
+			if ghost.net_shot != shell.net_shot:
+				continue
+		elif ghost.visual_style != shell.visual_style or ghost.direction != shell.direction:
+			continue
+		var left: Vector2 = _ghosts[i]["start"]
+		var across := Vector2(absf(shell.direction.y), absf(shell.direction.x))
+		if ghost.direction == shell.direction and ((info["start"] - left) * across).length() < 1.0:
+			info["start"] = left
+			info["born"] = int(_ghosts[i]["born"])
+			info["speed0"] = float(_ghosts[i]["speed0"])
 		info["offset"] = (ghost as Node2D).global_position - _shell_now(shell, info)
 		info["offset_at"] = Time.get_ticks_msec()
 		info["hidden"] = not (ghost as Node2D).visible
@@ -430,7 +458,12 @@ func _lead_shell(nid: int, shell: Node2D, at: Vector2) -> Vector2:
 	var info: Dictionary = _own_shells[nid]
 	info["at"] = at
 	var now := _shell_now(shell as Bullet, info)
-	var clear: bool = not info.get("hidden", false) and _shell_way_clear(shell as Bullet, at, now, info)
+	var hidden: bool = info.get("hidden", false)
+	var stop := -1.0 if hidden else _shell_stop(shell as Bullet, at, now, info)
+	if stop >= 0.0 and not hidden and not info.get("ended", false):
+		info["ended"] = true  # its end, shown at once, where it stops
+		predict_hit(shell as Bullet, at + (shell as Bullet).direction * stop)
+	var clear := not hidden and stop < 0.0
 	shell.visible = clear
 	if not clear:
 		return at
@@ -450,52 +483,103 @@ func _fly_own_shells() -> void:
 
 
 ## Where own [param shell] is by now on this machine's clock, a trip to the host
-## ahead of the host's own (as this machine's tanks are): from where the host
-## had it at the snapshot that brought it, on at its speed for the time since.
-## Worked out from its speed rather than from the snapshots' spacing, which the
-## host's frames make uneven, so it flies on as smoothly as its ghost did.
+## ahead of the host's own (as this machine's tanks are). One on its ghost's
+## line: where the ghost left, on at its speed for the time since it left here,
+## exactly as the ghost flew. Else from where the host had it at the snapshot
+## that brought it, on at its speed for the time since, and the trip there and
+## back. Worked out from its speed rather than from the snapshots' spacing,
+## which the host's frames make uneven, so it flies on as smoothly as its ghost.
 func _shell_now(shell: Bullet, info: Dictionary) -> Vector2:
+	if info.has("born"):
+		var flown := maxf(Time.get_ticks_msec() - float(info["born"]), 0.0) / 1000.0 * Engine.time_scale
+		return info["start"] + shell.direction * Bullet.flight(info["speed0"], shell.accel, shell.max_speed, flown)
 	var host_now := Time.get_ticks_msec() + _clock_offset
 	var seconds := maxf(host_now - float(info["host_time"]) + Net.ping_ms, 0.0) / 1000.0 * Engine.time_scale
 	return info["start"] + shell.direction * shell.distance_in(seconds)
 
 
-## True if nothing stops [param shell] going from [param from] to [param to].
-func _shell_way_clear(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) -> bool:
-	if to.x < 144.0 or to.x > 1456.0 or to.y < 0.0 or to.y > 992.0:
-		return false
-	var reach: float = info["range"]
-	if reach > 0.0 and to.distance_to(info["start"]) > reach:
-		return false
-	if shell == null:
-		return true
+## How far past [param from] own [param shell] stops on its way to
+## [param to]: at a wall, an enemy, the end of its range or of the field; -1
+## if nothing stops it.
+func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) -> float:
 	var direction := shell.direction
 	var length := (to - from).dot(direction)
-	if length <= 0.0:
-		return true
-	# Its lanes lie across its way as Bullet._check_tile_collision has them.
-	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
-	var lanes: Array[float] = shell.collision_lane_offsets
-	if level_manager and not info["pierces"]:
-		var done := 0.0
-		while done < length:
-			done = minf(done + 8.0, length)
+	var stop := INF
+	if to.x < 144.0 or to.x > 1456.0 or to.y < 0.0 or to.y > 992.0:
+		var edge := 0.0
+		if direction.x > 0.0:
+			edge = 1456.0 - from.x
+		elif direction.x < 0.0:
+			edge = from.x - 144.0
+		elif direction.y > 0.0:
+			edge = 992.0 - from.y
+		else:
+			edge = from.y
+		stop = maxf(edge, 0.0)
+	var reach: float = info["range"]
+	if reach > 0.0 and to.distance_to(info["start"]) > reach:
+		stop = minf(stop, maxf(reach - (from - info["start"]).dot(direction), 0.0))
+	if length > 0.0:
+		# Its lanes lie across its way as Bullet._check_tile_collision has them.
+		var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
+		var lanes: Array[float] = shell.collision_lane_offsets
+		if level_manager and not info["pierces"]:
+			var done := 0.0
+			while done < minf(length, stop):
+				done = minf(done + 8.0, length)
+				for lane: float in lanes:
+					var cell := level_manager.world_to_tile(from + direction * done + across * lane)
+					var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
+					if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
+						stop = minf(stop, done)
+		var half := BaseTank.HITBOX_SIZE * 0.5
+		for node in get_tree().get_nodes_in_group("enemies"):
+			var tank := node as BaseTank
+			if tank == null or not tank.is_solid():
+				continue
+			var offset := tank.global_position - from
+			var ahead := offset.dot(direction)
 			for lane: float in lanes:
-				var cell := level_manager.world_to_tile(from + direction * done + across * lane)
-				var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
-				if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
-					return false
-	var half := BaseTank.HITBOX_SIZE * 0.5
-	for node in get_tree().get_nodes_in_group("enemies"):
-		var tank := node as BaseTank
-		if tank == null or not tank.is_solid():
+				if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half:
+					stop = minf(stop, maxf(ahead - half, 0.0))
+	return stop if stop < INF else -1.0
+
+
+## The end of [param shell], a shell of this machine's own, seen here at
+## [param at] (a ghost's, or one drawn ahead of the host's): shown at once as
+## the host will show it (Bullet._destroy's look: its theme's hit picture, or
+## the flash on each of its lanes), rather than a trip and the delay later.
+## The host's picture of the same end, when it comes, isn't shown again
+## (_seen_here). (An AP shell drills on through tanks: the host shows its end.)
+func predict_hit(shell: Bullet, at: Vector2) -> void:
+	if shell.pierces or effects == null:
+		return
+	var frames: Array = ThemeManager.get_hit_frames(shell.visual_style)
+	if not frames.is_empty():
+		HitEffect.spawn(effects, at, frames, ThemeManager.get_hit_duration())
+	else:
+		var across := Vector2.RIGHT if shell.direction.x == 0.0 else Vector2.DOWN
+		for lane: float in shell.collision_lane_offsets:
+			var flash: Node2D = preload("res://scenes/effects/explosion.tscn").instantiate()
+			flash.global_position = at + across * lane
+			effects.add_child(flash)
+	_predicted_hits.append([shell.visual_style, at, Time.get_ticks_msec(), not frames.is_empty()])
+
+
+## True if the host's picture of a shell's end at [param at] (its theme's,
+## [param style]; "" the flash) was shown here already (predict_hit).
+func _seen_here(style: String, at: Vector2) -> bool:
+	var now := Time.get_ticks_msec()
+	var wait := Net.ping_ms + _delay_ms + PREDICTED_HIT_MS
+	while not _predicted_hits.is_empty() and now - int(_predicted_hits[0][2]) > wait:
+		_predicted_hits.pop_front()
+	for hit: Array in _predicted_hits:
+		var themed: bool = hit[3]
+		if themed != not style.is_empty() or (themed and hit[0] != style):
 			continue
-		var offset := tank.global_position - from
-		var ahead := offset.dot(direction)
-		for lane: float in lanes:
-			if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half:
-				return false
-	return true
+		if (hit[1] as Vector2).distance_to(at) <= PREDICTED_HIT_NEAR:
+			return true
+	return false
 
 
 ## A shown entity touches nothing: no layers, no masks, no monitoring. It can't
@@ -606,6 +690,8 @@ func _play(event: Array) -> void:
 		NetWorld.EV_STOP_MUSIC:
 			SoundManager.stop_music()
 		NetWorld.EV_HIT:
+			if str(args[0]) != "tank" and _seen_here(str(args[0]), Vector2(args[1], args[2])):
+				return  # this machine's own shell's end, shown here as it came
 			var frames: Array = []
 			var duration := 0.0
 			if str(args[0]) == "tank":
@@ -619,6 +705,8 @@ func _play(event: Array) -> void:
 		NetWorld.EV_SPAWN_BURST:
 			SpawnBurst.spawn_at(get_tree(), Vector2(args[0], args[1]))
 		NetWorld.EV_EXPLOSION:
+			if is_equal_approx(float(args[2]), 1.0) and _seen_here("", Vector2(args[0], args[1])):
+				return  # this machine's own shell's end, shown here as it came
 			if effects:
 				var explosion: Node2D = preload("res://scenes/effects/explosion.tscn").instantiate()
 				explosion.global_position = Vector2(args[0], args[1])

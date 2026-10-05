@@ -100,6 +100,11 @@ const PLAYER_MAX_ACTIVE_BULLETS: int = 12
 ## Secondary weapons that keep firing while their button is held (the others
 ## fire once a press).
 const AUTO_SECONDARY: Array[String] = ["rapid", "fire", "explosion", "ap"]
+## The rows a shot leaves from, as a client numbers them (Net.note_shot).
+const SHOT_ROWS: Array[float] = [FIRE_ROW_LEFT, FIRE_ROW_MID, FIRE_ROW_RIGHT]
+## Host: a client's own shot that can't be fired here for this long (a shell
+## of its kind still flying here, say) is let go: its ghost there goes too.
+const CLIENT_SHOT_WAIT_MS := 500
 
 var _regular_fire_step: int = 0
 var _rapid_special_fire_step: int = 0
@@ -157,6 +162,11 @@ var _play_run := 0
 var _play_at := 0.0
 var _play_seen := -1
 var _played: Array = []
+## Host: the shot of the client's own being fired just now (PlayerInput's
+## shots_due entry), or [].
+var _client_shot: Array = []
+## Client: the fire button of the shot being fired just now (_predict_fire).
+var _firing_button := 0
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
 ## host by the trip there, and the host's copy follows it.
@@ -240,6 +250,12 @@ func _physics_process(delta: float) -> void:
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
+	if PlayerInput.remote_predicts(player_id):
+		# Its shots are the ones it fired there itself, each fired here once.
+		_fire_client_shots()
+		if secondary_weapon_type == "mine" and PlayerInput.is_just_pressed(player_id, 1):
+			shoot_secondary()  # (mines aren't fired there: laid here on its press)
+		return
 	# Held, or a tap between two frames: a client's press and release can come
 	# in one bunch, and its counter still says it pressed.
 	if PlayerInput.is_held(player_id, 0) or PlayerInput.is_just_pressed(player_id, 0):
@@ -375,6 +391,89 @@ func _play_reports() -> Array:
 	_played = [play, on_its_way, a[2], a[3], a[4]]
 	return _played
 
+## Host: the shots a client running this tank ahead (lag compensation) fired
+## there itself (PlayerInput's shots_due), each fired here once, in order, as it
+## fired it: the same weapon and row, from where it had the tank, numbered so
+## its ghost there gives way to this very shell (_shot_origin, _shot_row,
+## _shot_number). It kept to the cooldown on its own clock, so the host's
+## doesn't hold a shot back however the network bunched them; one whose kind
+## still has too many shells flying here waits (CLIENT_SHOT_WAIT_MS at most).
+func _fire_client_shots() -> void:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null:
+		return
+	var now := Time.get_ticks_msec()
+	while not pad.shots_due.is_empty():
+		var shot: Array = pad.shots_due[0]
+		var button := int(shot[0])
+		if now - int(shot[4]) > CLIENT_SHOT_WAIT_MS or (button == 1 and secondary_weapon_type == "mine"):
+			pad.shots_due.pop_front()
+			continue
+		if not _client_shot_ready(button):
+			return
+		pad.shots_due.pop_front()
+		var fired := active_bullets
+		var could := can_shoot
+		_client_shot = shot
+		can_shoot = true
+		if button == 0:
+			shoot_regular()
+		else:
+			shoot_secondary()
+		_client_shot = []
+		if active_bullets == fired:
+			can_shoot = could  # it couldn't fire here at all (no ammo, say)
+
+## Host: whether a client's own shot with fire button [param button] can leave
+## here now: its kind's shells in flight here below their limit.
+func _client_shot_ready(button: int) -> bool:
+	if button == 0:
+		return true
+	var flying := {"fire": active_fire_bullets, "explosion": active_explosion_bullets, "ap": active_ap_bullets}
+	if not flying.has(secondary_weapon_type):
+		return true
+	var limit: int = CookieData.get_weapon_fire_config(secondary_weapon_type, weapon_level).get(
+			"max_in_flight", {"fire": 3, "explosion": 2, "ap": 2}[secondary_weapon_type])
+	return int(flying[secondary_weapon_type]) < limit
+
+## Host: a client's own shot leaves from where that client had this tank as it
+## fired, facing its way: the report that came with the shot (else the newest).
+## Not from this copy, played back behind it, perhaps not yet turned the way it
+## fired: the client's shot would jump back to the host's shell, or never be
+## taken over. A report that hasn't taken the latest correction, or one further
+## from this copy than the playback ever lags (a client held up here), fires
+## from here.
+func _shot_origin() -> Vector2:
+	var report := _shooter_report()
+	return report[1] if not report.is_empty() else global_position
+
+func _shot_facing() -> Vector2:
+	var report := _shooter_report()
+	return FACINGS[int(report[2])] if not report.is_empty() else current_direction
+
+func _shot_row(row_offset: float) -> float:
+	return row_offset if _client_shot.is_empty() else SHOT_ROWS[int(_client_shot[1])]
+
+func _shot_number() -> int:
+	return -1 if _client_shot.is_empty() else int(_client_shot[3])
+
+func _shooter_report() -> Array:
+	if Net.is_client() or not PlayerInput.remote_predicts(player_id):
+		return []
+	var report: Array = []
+	if not _client_shot.is_empty():
+		report = _client_shot[2]
+	else:
+		var pad := PlayerInput.remote_pad(player_id)
+		if pad != null and pad.report_frame >= 0 and not pad.reports.is_empty():
+			report = pad.reports[-1]
+	if report.is_empty():
+		return []
+	var reach := move_speed * (PLAY_BEHIND_MAX + PLAY_CARRY) * get_physics_process_delta_time() + HALF_TILE
+	if int(report[4]) != net_override or (report[1] as Vector2).distance_to(global_position) > reach:
+		return []
+	return report
+
 ## Host: the client driving this tank doesn't run it ahead (its lag
 ## compensation is off): its keys drive it here as they come, as they did
 ## before lag compensation.
@@ -387,6 +486,9 @@ func _drive_for_client() -> void:
 ## Host: the host drives this tank itself just now (a spell): the client
 ## driving it starts again from wherever it ends up.
 func _take_over() -> void:
+	var pad := PlayerInput.remote_pad(player_id) if not Net.is_client() else null
+	if pad != null:
+		pad.shots_due.clear()  # fired there before it knew: not fired here
 	if not _host_drives:
 		_host_drives = true
 		_correct_client()
@@ -445,12 +547,22 @@ func _predict_fire() -> void:
 	var prefix := PlayerInput.action_prefix(net_slot)
 	var fire := prefix + PlayerInput.BUTTONS[0]
 	if Input.is_action_pressed(fire) or Input.is_action_just_pressed(fire):
+		_firing_button = 0
 		shoot_regular()
 	if secondary_weapon_type == "mine":
 		return
 	var held := Input.is_action_pressed(prefix + PlayerInput.BUTTONS[1])
 	if (held and secondary_weapon_type in AUTO_SECONDARY) or Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
+		_firing_button = 1
 		shoot_secondary()
+
+## Client: [param shell], a shot of this tank's, flies here at once as a ghost:
+## the host is told which button fired it and from which row, and fires that
+## very shot (_fire_client_shots); its shell takes over by the number given.
+func _net_ghost_fired(shell: Bullet) -> void:
+	var across := (shell.global_position - global_position).dot(Vector2(-shell.direction.y, shell.direction.x))
+	var row := 0 if across < -8.0 else (2 if across > 8.0 else 1)
+	shell.net_shot = Net.note_shot(net_slot, _firing_button, row)
 
 ## Client: this tank's weapons as the host has them (GameManager's numbers come
 ## from the host), and its shells in flight as shown here, so its shots go as

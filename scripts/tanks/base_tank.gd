@@ -392,10 +392,31 @@ func shoot() -> void:
 		return
 	_begin_shot()
 	_spawn_bullet(
-		global_position + current_direction * (TANK_SIZE * 0.5),
+		_shot_origin() + _shot_facing() * (TANK_SIZE * 0.5),
 		DEFAULT_BULLET_LANE_OFFSETS,
 		DEFAULT_BULLET_LANE_OFFSETS
 	)
+
+## Where this tank's shots leave from, which way they go, from which row
+## (given [param row_offset], across the barrel) and with what number: its own
+## place and facing, that row, none. (A client's tank on the host fires that
+## client's own shots as it fired them, and tells it so: PlayerTank.)
+func _shot_origin() -> Vector2:
+	return global_position
+
+func _shot_facing() -> Vector2:
+	return current_direction
+
+func _shot_row(row_offset: float) -> float:
+	return row_offset
+
+func _shot_number() -> int:
+	return -1
+
+## On a client: [param shell], a shot of this machine's own tank, is about to
+## fly here as a ghost (PlayerTank tells the host).
+func _net_ghost_fired(_shell: Bullet) -> void:
+	pass
 
 func _begin_shot() -> void:
 	can_shoot = false
@@ -424,7 +445,7 @@ func _spawn_bullet(
 ) -> void:
 	var bullet_scene := preload("res://scenes/tanks/bullet.tscn")
 	var bullet: Bullet = bullet_scene.instantiate()
-	bullet.direction = current_direction
+	bullet.direction = _shot_facing()
 	bullet.speed = bullet_speed_override if bullet_speed_override > 0.0 else bullet_speed
 	bullet.owner_tank = self
 	bullet.is_player_bullet = is_in_group("players")
@@ -445,6 +466,7 @@ func _spawn_bullet(
 	bullet.pierces = pierces
 	bullet.accel = accel
 	bullet.max_speed = max_speed
+	bullet.net_shot = _shot_number()
 	bullet.global_position = spawn_position
 
 	# On a client this is its own tank's shot, fired here at once (lag
@@ -452,6 +474,7 @@ func _spawn_bullet(
 	if Net.is_client():
 		var world := NetClientWorld.of(get_tree())
 		if world:
+			_net_ghost_fired(bullet)
 			world.add_ghost(bullet)
 		else:
 			bullet.free()
@@ -478,7 +501,8 @@ func _spawn_bullet(
 		get_tree().current_scene.add_child(bullet)
 
 func _get_firing_right_vector() -> Vector2:
-	return Vector2(-current_direction.y, current_direction.x)
+	var facing := _shot_facing()
+	return Vector2(-facing.y, facing.x)
 
 func _get_single_row_collision_offsets(row_offset: float) -> Array[float]:
 	if is_zero_approx(row_offset):
@@ -490,7 +514,8 @@ func _spawn_single_row_bullet(
 	bullet_speed_override: float = -1.0,
 	bullet_visual_style: String = "regular"
 ) -> void:
-	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	row_offset = _shot_row(row_offset)
+	var spawn_position := _shot_origin() + _shot_facing() * (TANK_SIZE * 0.5)
 	spawn_position += _get_firing_right_vector() * row_offset
 	_spawn_bullet(
 		spawn_position,
@@ -503,7 +528,7 @@ func _spawn_single_row_bullet(
 ## Fire a single centred fire bullet. [param config] comes from
 ## CookieData.get_weapon_fire_config("fire", level).
 func _spawn_fire_bullet(config: Dictionary) -> void:
-	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	var spawn_position := _shot_origin() + _shot_facing() * (TANK_SIZE * 0.5)
 	active_fire_bullets += 1
 	# Two collision lanes so a wall hit damages the full 2-tile tank width.
 	_spawn_bullet(
@@ -520,7 +545,7 @@ func _spawn_fire_bullet(config: Dictionary) -> void:
 ## Fire a single centred explosion bullet. [param config] comes from
 ## CookieData.get_weapon_fire_config("explosion", level).
 func _spawn_explosion_bullet(config: Dictionary) -> void:
-	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	var spawn_position := _shot_origin() + _shot_facing() * (TANK_SIZE * 0.5)
 	active_explosion_bullets += 1
 	# Two collision lanes so a wall hit damages the full 2-tile tank width.
 	_spawn_bullet(
@@ -540,7 +565,7 @@ func _spawn_explosion_bullet(config: Dictionary) -> void:
 ## CookieData.get_weapon_fire_config("ap", level). Accelerating pierce bullet
 ## whose damage is a pool it spends through tanks and walls.
 func _spawn_ap_bullet(config: Dictionary) -> void:
-	var spawn_position := global_position + current_direction * (TANK_SIZE * 0.5)
+	var spawn_position := _shot_origin() + _shot_facing() * (TANK_SIZE * 0.5)
 	active_ap_bullets += 1
 	# Two collision lanes so the shell drills a 2-tile-wide channel — wide enough
 	# for the tank (2x2 tiles) to drive through the wall it destroyed.

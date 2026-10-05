@@ -50,6 +50,10 @@ var _level_manager: LevelManager = null
 ## Online, on a client: a ghost of the host's shell for a shot its own tank fired
 ## (NetClientWorld.add_ghost), flying here at once until the host's shows.
 var net_ghost := false
+## Online: the number the client gave a shot of its own tank's (Net.note_shot),
+## on its ghost there and on the host's shell for it, so the one takes over
+## from the other; -1 for any other shell.
+var net_shot := -1
 static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
@@ -193,16 +197,24 @@ func _fly_ghost(delta: float) -> void:
 			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
 			or (not pierces and not _solid_tiles_touched().is_empty()) or _meets_enemy():
 		visible = false
+		var world := NetClientWorld.of(get_tree())
+		if world:
+			world.predict_hit(self, global_position)  # its end, shown at once
 
 ## How far this shell flies in [param seconds] from its speed now: an AP shell
 ## speeds up to its top speed as it goes.
 func distance_in(seconds: float) -> float:
-	if accel <= 0.0 or max_speed <= speed:
-		return speed * seconds
-	var to_top := (max_speed - speed) / accel
+	return flight(speed, accel, max_speed, seconds)
+
+## How far a shell leaving at [param from_speed] flies in [param seconds],
+## speeding up by [param accel] to [param top] (if it does).
+static func flight(from_speed: float, accel: float, top: float, seconds: float) -> float:
+	if accel <= 0.0 or top <= from_speed:
+		return from_speed * seconds
+	var to_top := (top - from_speed) / accel
 	if seconds <= to_top:
-		return speed * seconds + 0.5 * accel * seconds * seconds
-	return speed * to_top + 0.5 * accel * to_top * to_top + max_speed * (seconds - to_top)
+		return from_speed * seconds + 0.5 * accel * seconds * seconds
+	return from_speed * to_top + 0.5 * accel * to_top * to_top + top * (seconds - to_top)
 
 ## True if this shell is on an enemy tank (a ghost's check: the host decides the hits).
 func _meets_enemy() -> bool:
@@ -477,7 +489,7 @@ func net_type() -> int:
 
 func net_spawn_args() -> Array:
 	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets),
-			owner_player, speed, max_range, pierces, accel, max_speed]
+			owner_player, speed, max_range, pierces, accel, max_speed, net_shot]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
@@ -486,7 +498,7 @@ func net_state() -> Array:
 ## [param args][1] on lanes [param args][2]; then whose it is (a player, or -1),
 ## how fast it flies, how far it goes, whether it drills through walls and how
 ## it speeds up, for drawing a shell of this machine's own ahead
-## (NetClientWorld).
+## (NetClientWorld), and the number of the client's own shot it is (net_shot).
 func net_setup(args: Array) -> void:
 	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
 	visual_style = str(args[1])
@@ -502,6 +514,8 @@ func net_setup(args: Array) -> void:
 		pierces = bool(args[6])
 		accel = float(args[7])
 		max_speed = float(args[8])
+	if args.size() >= 10:
+		net_shot = int(args[9])
 
 func net_apply(_state: Array) -> void:
 	pass
