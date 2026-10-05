@@ -113,6 +113,16 @@ var _rapid_special_ammo_progress: int = 0
 const FOLLOW_SPEED := 2.0
 const APART_DISTANCE := 24.0
 const APART_TIME := 0.3
+## Host: the client's reports are played back steadily, one of its frames a frame
+## here, this many frames behind the newest, so its tank moves here as smoothly
+## as it drove however unevenly the network brings them: more after one came
+## too late, less after PLAY_STEADY_FRAMES with none. Further behind than
+## PLAY_JUMP frames past that (a stall), it jumps ahead.
+const PLAY_LAG_START := 2
+const PLAY_LAG_MIN := 1
+const PLAY_LAG_MAX := 8
+const PLAY_STEADY_FRAMES := 120
+const PLAY_JUMP := 12
 
 ## Host: changes whenever the host, not the client driving this tank, says
 ## where it is: a correction, or a spell the host drives (materializing, a
@@ -124,6 +134,15 @@ var _host_drives := false
 ## move it here: should it turn it on, it starts again from here.
 var _host_moved_it := false
 var _apart_time := 0.0
+## Host: playing back the client's reports (PLAY_LAG_START): whose they are,
+## whether under way, the client's frame being played, how far behind the
+## newest, frames since one came late, and the report being followed ([] none).
+var _play_key := PlayerInput.NO_SEAT
+var _playing := false
+var _play_frame := 0
+var _play_lag := PLAY_LAG_START
+var _play_steady := 0
+var _played: Array = []
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
 ## host by the trip there, and the host's copy follows it.
@@ -240,17 +259,19 @@ func _follow_client(delta: float) -> void:
 	if _host_moved_it:
 		_host_moved_it = false
 		_correct_client()  # its keys moved it here meanwhile (_drive_for_client)
-	var report := PlayerInput.remote_report(player_id)
-	if report == null or report.report_override != net_override:
+	var report := _play_reports()
+	if report.is_empty() or int(report[4]) != net_override:
 		stop_moving()
 		_apart_time = 0.0
 		return
+	var target: Vector2 = report[1]
+	var reported_moving: bool = report[3]
 	var speed := move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0)
-	var way: Vector2 = report.report_position - global_position
+	var way: Vector2 = target - global_position
 	# Across the way it faces now first: the rest of the way it went before
 	# it turned. Within half a tile, that's the turn's own snap to the grid
 	# (try_move), taken at once as the client did.
-	var facing: Vector2 = FACINGS[report.report_facing]
+	var facing: Vector2 = FACINGS[int(report[2])]
 	var across := way * Vector2(absf(facing.y), absf(facing.x))
 	if across.length() > HALF_TILE:
 		way = across
@@ -269,14 +290,45 @@ func _follow_client(delta: float) -> void:
 	if facing != current_direction:
 		current_direction = facing
 		_update_sprite_direction()
-	is_moving = report.report_moving or moved > 0.0
+	is_moving = reported_moving or moved > 0.0
 	velocity = current_direction * speed if is_moving else Vector2.ZERO
-	if global_position.distance_to(report.report_position) > APART_DISTANCE and moved < step.length() * 0.5:
+	if global_position.distance_to(target) > APART_DISTANCE and moved < step.length() * 0.5:
 		_apart_time += delta
 		if _apart_time >= APART_TIME:
 			_correct_client()
 	else:
 		_apart_time = 0.0
+
+## Host: the client's report this copy follows now, played back steadily: one
+## of the client's frames a frame here, _play_lag frames behind its newest
+## (PLAY_LAG_START). [] while there's none to follow.
+func _play_reports() -> Array:
+	var key: int = PlayerInput.seats[player_id]
+	var newest := PlayerInput.remote_report_frame(player_id)
+	if key != _play_key or newest < 0:
+		_play_key = key
+		_playing = false
+		_played = []
+		if newest < 0:
+			return _played
+	if not _playing or newest < _play_frame - 1 or newest - _play_frame > _play_lag + PLAY_JUMP:
+		_playing = true
+		_play_frame = newest - _play_lag  # a start, a fresh run of them, or far behind after a stall
+	else:
+		_play_frame += 2 if newest - _play_frame > _play_lag + 2 else 1  # a little behind: catch up
+	if _play_frame > newest:
+		_play_frame = newest  # ran dry, one came late: play further behind from now
+		_play_lag = mini(_play_lag + 1, PLAY_LAG_MAX)
+		_play_steady = 0
+	else:
+		_play_steady += 1
+		if _play_steady >= PLAY_STEADY_FRAMES and _play_lag > PLAY_LAG_MIN:
+			_play_lag -= 1
+			_play_steady = 0
+	var taken := PlayerInput.take_remote_reports(player_id, _play_frame)
+	if not taken.is_empty():
+		_played = taken
+	return _played
 
 ## Host: the client driving this tank doesn't run it ahead (its lag
 ## compensation is off): its keys drive it here as they come, as they did

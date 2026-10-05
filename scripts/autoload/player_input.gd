@@ -19,6 +19,9 @@ const NO_SEAT := -1
 ## This machine's own two controllers, as the host (or offline).
 const LOCAL_P1 := 2  # peer 1, slot 0
 const LOCAL_P2 := 3  # peer 1, slot 1
+## The most reports of a client's tank kept for the host's copy to play back
+## (two seconds of them).
+const MAX_QUEUED_REPORTS := 120
 
 signal seats_changed
 
@@ -41,16 +44,16 @@ class RemotePad:
 	var just_physics: Array[bool] = [false, false]
 	var just_idle: Array[bool] = [false, false]
 	## Lag compensation: the client runs its own tank itself (its setting on),
-	## and the tank as it drives it there, ahead of the host by the trip across
-	## (PlayerTank._follow_client goes after it): where it is, its facing (an
-	## index into BaseTank.FACINGS), whether it drives, and the last correction
-	## it has taken (PlayerTank.net_override).
+	## and the tank as it drives it there, ahead of the host by the trip across:
+	## its reports, oldest first, for the host's copy to play back steadily
+	## (PlayerTank._follow_client): [the client's physics frame, where it is,
+	## its facing (an index into BaseTank.FACINGS), whether it drives, the last
+	## correction it has taken (PlayerTank.net_override)].
 	var report_predicts := false
-	var has_report := false
-	var report_position := Vector2.ZERO
-	var report_facing := 0
-	var report_moving := false
-	var report_override := 0
+	var reports: Array = []
+	## The newest report's frame, counted on from the 0-255 the client sends,
+	## or -1: none since it last drove its tank there.
+	var report_frame := -1
 
 
 func _ready() -> void:
@@ -226,20 +229,30 @@ func set_remote(peer: int, slot: int, direction: int, held: Array, presses: Arra
 
 
 ## Client [param peer]'s local player [param slot]'s tank, where it drives it on
-## the client ([param has] false: it doesn't drive one there just now), and
+## the client at its physics frame [param frame] (0-255, wrapping), queued for
+## the host's copy ([param has] false: it doesn't drive one there just now); and
 ## whether that client runs its own tank at all ([param predicts]: its lag
 ## compensation is on).
 func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position: Vector2, facing: int,
-		moving: bool, override: int) -> void:
+		moving: bool, override: int, frame: int) -> void:
 	var pad: RemotePad = _remote.get(controller_key(peer, slot))
 	if pad == null:
 		return
 	pad.report_predicts = predicts
-	pad.has_report = has
-	pad.report_position = position
-	pad.report_facing = clampi(facing, 0, 3)
-	pad.report_moving = moving
-	pad.report_override = override & 0xff
+	if not has:
+		pad.reports.clear()
+		pad.report_frame = -1
+		return
+	frame &= 0xff
+	if pad.report_frame >= 0:
+		var ahead := (frame - pad.report_frame) & 0xff
+		if ahead == 0 or ahead >= 128:
+			return  # that report again (the message went for something else), or an old one
+		frame = pad.report_frame + ahead
+	pad.report_frame = frame
+	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
+	if pad.reports.size() > MAX_QUEUED_REPORTS:
+		pad.reports.pop_front()
 
 
 ## True when a player on a client drives tank [param tank]: the host's copy of
@@ -259,13 +272,26 @@ func remote_predicts(tank: int) -> bool:
 	return pad != null and pad.report_predicts
 
 
-## Where the client driving tank [param tank] has it: its pad with the report,
-## or null (no word of it yet, or not a client's tank).
-func remote_report(tank: int) -> RemotePad:
+## The newest report's frame from the client driving tank [param tank], on that
+## client's count (set_remote_report), or -1: no word of it driving it there.
+func remote_report_frame(tank: int) -> int:
 	if not is_remote_seat(tank):
-		return null
+		return -1
 	var pad: RemotePad = _remote.get(seats[tank])
-	return pad if pad != null and pad.has_report else null
+	return pad.report_frame if pad != null else -1
+
+
+## Takes the reports up to frame [param frame] from the client driving tank
+## [param tank] off its queue, and returns the last of them ([frame, position,
+## facing, moving, override]), or [] if none had come by then.
+func take_remote_reports(tank: int, frame: int) -> Array:
+	if not is_remote_seat(tank):
+		return []
+	var pad: RemotePad = _remote.get(seats[tank])
+	var taken: Array = []
+	while pad != null and not pad.reports.is_empty() and int(pad.reports[0][0]) <= frame:
+		taken = pad.reports.pop_front()
+	return taken
 
 
 ## Forgets client [param peer]'s controllers and frees the seats they held.

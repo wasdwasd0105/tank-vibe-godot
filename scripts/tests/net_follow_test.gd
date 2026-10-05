@@ -20,6 +20,8 @@ var _fail := 0
 var _game: Node
 var _lm: LevelManager
 var _player: PlayerTank
+## The client's physics frame its reports come from (_report).
+var _client_frame := 0
 
 
 func check(cond: bool, msg: String) -> void:
@@ -42,10 +44,12 @@ func _wait_frames(count: int) -> void:
 
 
 ## The client says its tank is at [param local], facing [param facing], having
-## taken correction [param override] (the host's latest unless given).
+## taken correction [param override] (the host's latest unless given): its next
+## physics frame's report.
 func _report(local: Vector2, facing: Vector2, moving: bool = true, override: int = -1) -> void:
+	_client_frame += 1
 	PlayerInput.set_remote_report(PEER, 0, true, true, _at(local), BaseTank.FACINGS.find(facing), moving,
-			_player.net_override if override < 0 else override)
+			_player.net_override if override < 0 else override, _client_frame & 0xff)
 
 
 ## Fires as the client's own tank would on a client: its shot predicted here.
@@ -114,7 +118,7 @@ func _run() -> void:
 	print("\n[A] A client's tank: the host's copy goes after it")
 	PlayerInput.set_remote(PEER, 0, -1, [false, false], [0, 0])
 	PlayerInput.set_seat(0, PlayerInput.controller_key(PEER, 0))
-	check(PlayerInput.is_remote_seat(0) and PlayerInput.remote_report(0) == null, "a client's seat, nothing heard of its tank yet")
+	check(PlayerInput.is_remote_seat(0) and PlayerInput.remote_report_frame(0) == -1, "a client's seat, nothing heard of its tank yet")
 	_place(home, Vector2.RIGHT)
 	Input.action_press("p1_right")
 	await _wait_frames(10)
@@ -167,6 +171,43 @@ func _run() -> void:
 	await _wait_frames(2)
 	check(not _player.is_moving and _player.velocity == Vector2.ZERO and _player.net_state()[3] & BaseTank.NET_MOVING == 0,
 		"the client's tank stands still: so does the copy, for everyone to see")
+	# The client drives on at its speed, a report every frame of its own, but
+	# they come in unevenly, as a network brings them: two at once, then none.
+	var stride := speed * get_physics_process_delta_time()
+	var arrivals: Array[int] = [0, 2, 0, 1, 1, 3, 0, 0, 2, 1, 0, 2, 1, 1, 0, 2]
+	var driving := stand
+	var last_at := _player.global_position
+	var steps: Array[float] = []
+	for pass_number in 3:
+		for count: int in arrivals:
+			for i in count:
+				driving += Vector2.RIGHT * stride
+				_report(driving, Vector2.RIGHT)
+			await tree.physics_frame
+			steps.append(_player.global_position.distance_to(last_at))
+			last_at = _player.global_position
+	var settled := steps.slice(arrivals.size())
+	var worst: float = settled.map(func(step: float) -> float: return absf(step - stride)).max()
+	check(worst < 0.01, "they come unevenly: the copy plays them back a frame's way every frame, %.2f px (%.3f px off at most)" % [
+		stride, worst])
+	# A connection that stalls 80 ms now and then and makes up for it: from
+	# the shortest wait, the playback learns to sit far enough behind.
+	var stalling: Array[int] = [0, 0, 0, 0, 0, 6, 1, 1, 1, 1, 1, 1]
+	_player._play_lag = PlayerTank.PLAY_LAG_START
+	steps.clear()
+	for pass_number in 6:
+		for count: int in stalling:
+			for i in count:
+				driving += Vector2.RIGHT * stride
+				_report(driving, Vector2.RIGHT)
+			await tree.physics_frame
+			steps.append(_player.global_position.distance_to(last_at))
+			last_at = _player.global_position
+	worst = steps.slice(steps.size() - stalling.size()).map(func(step: float) -> float: return absf(step - stride)).max()
+	check(worst < 0.01, "they stall and catch up: after a few times it waits far enough behind, steady again (%.3f px off, %d frames behind)" % [
+		worst, _player._play_lag])
+	_report(driving, Vector2.RIGHT, false)
+	await _wait_frames(PlayerTank.PLAY_LAG_MAX + 2)
 
 	print("\n[B] Held up by what the client didn't see in time: the client starts again")
 	_place(home, Vector2.RIGHT)
@@ -266,7 +307,7 @@ func _run() -> void:
 
 	print("\n[E] A client with its lag compensation off: its keys drive the copy, as before")
 	_place(home, Vector2.RIGHT)
-	PlayerInput.set_remote_report(PEER, 0, false, false, Vector2.ZERO, 0, false, 0)
+	PlayerInput.set_remote_report(PEER, 0, false, false, Vector2.ZERO, 0, false, 0, 0)
 	PlayerInput.set_remote(PEER, 0, PlayerInput.DIRECTIONS.find(Vector2.RIGHT), [false, false], [1, 0])
 	override = _player.net_override
 	await _wait_frames(10)
@@ -283,7 +324,7 @@ func _run() -> void:
 	check(_player.net_override == (override + 1) % 256 and _player.global_position.distance_to(_at(held_at)) < 0.01,
 		"it turns lag compensation on: its keys moved the copy, so a correction first, and the copy waits")
 	_report(held_at + Vector2(30, 0), Vector2.RIGHT)
-	await _wait_frames(10)
+	await _wait_frames(PlayerTank.PLAY_LAG_MAX + 10)
 	check(_player.global_position.distance_to(_at(held_at + Vector2(30, 0))) < 0.01, "taken: followed")
 
 	print("\n[F] The client's side: its own tank, driven at once")

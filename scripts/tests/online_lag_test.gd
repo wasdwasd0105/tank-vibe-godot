@@ -157,8 +157,29 @@ func _run_host() -> void:
 	_clear_enemies()  # any that were on their way in
 	var start := copy.global_position
 	var override := copy.net_override
-	check(await _wait(func() -> bool: return copy.global_position.distance_to(start) > 40.0, 20.0),
-		"the client drives it, and the copy here follows")
+	# Its drive, frame by frame here: the copy should move every frame at the
+	# tank's speed, as the client's tank did, not by fits and starts.
+	var steps: Array[float] = []
+	var last := copy.global_position
+	var still := 0
+	for i in 60 * 20:
+		await tree.physics_frame
+		var step := copy.global_position.distance_to(last)
+		last = copy.global_position
+		if step > 0.0 or not steps.is_empty():
+			steps.append(step)
+		still = still + 1 if step == 0.0 else 0
+		if not steps.is_empty() and still > 20:
+			break  # stood a third of a second: that drive is over
+	check(start.distance_to(copy.global_position) > 40.0, "the client drives it, and the copy here follows")
+	while not steps.is_empty() and steps[-1] == 0.0:
+		steps.pop_back()
+	var stride := copy.move_speed * get_physics_process_delta_time()
+	var stalls := steps.filter(func(step: float) -> bool: return step < stride * 0.5).size()
+	var lurches := steps.filter(func(step: float) -> bool: return step > stride * 1.6).size()
+	check(stalls <= 2 and lurches <= 3,
+		"the copy here moves as smoothly as the client drives: %d of %d frames stalled, %d lurched (a turn's snap is one)" % [
+			stalls, steps.size(), lurches])
 	check(await _wait(func() -> bool: return FileAccess.file_exists(DRIVEN), 30.0), "the client drove and fired")
 	check(copy.net_override == override, "never once held up in open ground: no corrections")
 	var ping := Net.peer_ping(client)

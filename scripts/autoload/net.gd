@@ -39,7 +39,7 @@ enum Role { OFFLINE, HOST, CLIENT }
 enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 4
+const PROTOCOL := 5
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -56,7 +56,8 @@ const PING_EVERY := 1.0
 const PING_SAMPLES := 5
 ## The input message: the newest snapshot (4 bytes), each local player's
 ## controls (4 each), then each one's own tank as it drives here (12 each:
-## flags, facing, last correction taken, a spare, x and y as 32-bit floats).
+## flags, facing, last correction taken, the physics frame it was there (0-255,
+## wrapping), x and y as 32-bit floats).
 const INPUT_SIZE := 36
 const REPORT_AT := 12
 const REPORT_SIZE := 12
@@ -1296,6 +1297,7 @@ func _input_message() -> PackedByteArray:
 		bytes[where] |= REPORT_HAS | (REPORT_MOVING if report["moving"] else 0)
 		bytes[where + 1] = int(report["facing"])
 		bytes[where + 2] = int(report["override"]) & 0xff
+		bytes[where + 3] = int(report["frame"]) & 0xff
 		var position: Vector2 = report["position"]
 		bytes.encode_float(where + 4, position.x)
 		bytes.encode_float(where + 8, position.y)
@@ -1324,7 +1326,7 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var position := Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8))
 		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
 		PlayerInput.set_remote_report(sender, slot, flags & REPORT_HAS != 0 and sane, flags & REPORT_PREDICTS != 0,
-				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]))
+				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]))
 
 
 @rpc("any_peer", "call_remote", "reliable")
