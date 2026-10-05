@@ -124,12 +124,15 @@ func _ready_as_host() -> void:
 
 
 ## This game was opened to others in the middle of it (the pause menu's ONLINE
-## tab): the players on the field keep their tanks, and any other tank is free
-## for whoever presses fire first, here or there.
+## tab): player 1 keeps their tank, and tank 2 is free for whoever presses fire
+## first, here or there (Sean, 2026-10-06). Player 2, if in the game, sits out
+## until then, keeping all they have: a saved two-player game hosted for the
+## other machine's player to go on as player 2 would otherwise leave tank 2 on
+## this machine's P2 controls, with nothing for them to take.
 func _on_hosting_started() -> void:
-	for pid in 2:
-		if GameManager.player_active[pid] and not GameManager.player_disabled[pid]:
-			PlayerInput.set_seat(pid, [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2][pid])
+	if GameManager.is_player_in_play(0):
+		PlayerInput.set_seat(0, PlayerInput.LOCAL_P1)
+	_on_seat_vacated(1)
 	_add_host_world()
 	Net.set_host_screen(Net.SCREEN_GAME)
 

@@ -73,7 +73,7 @@ How the remake plays over a network. It keeps the original's model (network_orig
 
   More about it:
   - The host goes by the name it last played under in ONLINE BATTLE (PLAYER if none).
-  - The players on the field keep their tanks. A tank nobody plays (player 2 never joined, or sitting out) is free for whoever presses fire first, the host's own P2 included. Joining it is joining mid-game, with fresh lives (credits are unlimited); one sitting out comes back with all it had.
+  - Player 1 keeps their tank. Tank 2 is free for whoever presses fire first, the host's own P2 included (Sean, 2026-10-06, section 19): if player 2 is in the game (a two-player game, or a saved one), they sit out until then, keeping all they had. Joining a tank whose player never joined is joining mid-game, with fresh lives (credits are unlimited); one sitting out comes back with all it had.
   - Clients joining see the stage at once, and take a free tank with their fire.
   - A client's MENU has an ONLINE tab of its own instead: how the host's game shows on that machine (LAG COMPENSATION, SMOOTHING and its ping, section 7).
 - **HOST**: once someone has joined, the host's pause menu has HOST under SETTINGS (section 8).
@@ -269,6 +269,8 @@ The client half starts with an empty maps folder of its own while the host plays
 
 `scenes/test/pause_menu_test.tscn` [H] covers the ONLINE tab and HOST, PORT TYPE too (an ENet server over UDP, a busy UDP port): the tabs by keys and LB / RB, typing the port (a bad one refused) and the password, MAX PLAYERS, opening the game (the seats it leaves, its NetHostWorld), the port fixed while open, HOST appearing once someone joins and its rows, OFF locking with someone there and closing with nobody, a port in use, and no ONLINE tab on a client.
 
+`pause_menu_test.tscn` [H2] covers hosting a game with both players in: player 1 keeps tank 1, player 2 waits off the field with their lives, score and HP, and another machine's fire (a stand-in) takes tank 2 with all of it.
+
 ## 11. Sean's calls (2026-09-29)
 
 - **Controls:** a joining player drives with their own controls (section 4), not the original's "press the tank's own fire key".
@@ -282,11 +284,16 @@ The client half starts with an empty maps folder of its own while the host plays
 - **ONLINE BATTLE** replaces ONLINE on the title: a list of saved connections, like the saved games' list, with CREATE, EDIT, DELETE and CONNECT. CREATE's window takes a username, the remote address (ip:port), an optional password, and JOIN (section 3).
 - **No host screen for now:** its design comes later.
 
+## 19. Sean's report and call (2026-10-06)
+
+- **"My remote player still can't move."** The other machine never had a tank. Sean had loaded a saved game with both players in and opened it from the pause menu, and hosting kept every player on the field on this machine's own controls: tank 2 stayed on the host's P2 keys, which nobody pressed, and the other machine's fire had nothing to take. A temporary log of what the host received showed it: the client's keys and fire arriving every second, both seats the host's.
+- **Sean's call:** hosting keeps tank 1 on the host's machine; tank 2 goes to whoever presses fire first, the other machine or the host's own P2. Player 2, if in the game, sits out until then with all they had (section 3).
+
 ## 18. Sean's report (2026-10-05, on 1.1.3)
 
 - **A joining player's tank moved by fits and starts on the host's screen, even on a LAN** (the host's tank looked fine on the client). The host's copy chased the newest report, so the network's unevenness showed as stop-and-go. It now plays the reports back steadily (section 7). Protocol 5.
 - **Still not smooth** on his machines after a first fix (a playback a few frames behind, which shrank every two seconds and stopped at 133 ms). Here, two windowed processes with up to 100 ms of jitter showed that one still stopping and lurching now and then, mid-drive. Now the playback sizes its delay from how late the reports come, up to 250 ms, as the client's own view does, and carries a moving tank on past a late report; with the same jitter it goes on evenly. Testing that also turned up quick taps of fire lost on the host when a press and release came in one bunch: fixed.
-- **"My remote can't move now"** (2026-10-06, on that second fix). It kept time by the two machines' physics frame counts, and a count that slips was taken for the network: each time the host's window went out of sight or came back, the copy played another half second further behind, for good, and past two seconds behind it stopped altogether. Two real windows showed it here: the host's window hidden and shown three times, and the copy never moved again. The playback now goes by the latest reports only and never plays more than 18 frames behind the newest (section 7); the same run now follows all the way through. No protocol change.
+- **"My remote can't move now"** (2026-10-06, on that second fix). Its cause was a hosting rule (section 19). Looking for it turned up a real fault in the second fix, though: it kept time by the two machines' physics frame counts, and a count that slips was taken for the network, so each time the host's window went out of sight or came back, the copy played another half second further behind, for good, and past two seconds behind it stopped altogether. Two real windows showed it here. The playback now goes by the latest reports only and never plays more than 18 frames behind the newest (section 7).
 
 ## 17. Sean's calls (2026-10-05, again)
 

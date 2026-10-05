@@ -352,6 +352,7 @@ func _run() -> void:
 	Input.flush_buffered_events()
 
 	await _test_online_tab()
+	await _test_hosting_with_both()
 
 	print("\n[G] The game's speed belongs to the stage")
 	InputSettings.save_game_speed(133)
@@ -622,3 +623,66 @@ func _test_online_tab() -> void:
 	await _key(KEY_ESCAPE)
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused, "Esc, Esc: resumed")
+
+
+## A game with both players in (a two-player game, or a saved one), opened to
+## others from the pause menu: player 1 keeps tank 1, and tank 2 waits with all
+## player 2 had for whoever presses fire first, the other machine or this one's
+## P2 (Sean, 2026-10-06: his saved game kept tank 2 on this machine's P2 keys,
+## and the other machine's player had nothing to drive).
+func _test_hosting_with_both() -> void:
+	var tree := get_tree()
+	print("\n[H2] HOST with both players in: tank 2 waits for whoever presses fire first")
+	check(not Net.is_online() and not tree.paused and not GameManager.player_active[1], "offline, in play, player 1 alone")
+	await tree.process_frame
+	Input.action_press("p2_shoot")
+	await tree.process_frame
+	await tree.process_frame
+	Input.action_release("p2_shoot")
+	var tank2: PlayerTank = null
+	for i in 240:
+		await tree.physics_frame
+		for node in tree.get_nodes_in_group("players"):
+			if node is PlayerTank and node.player_id == 1 and not node.is_queued_for_deletion():
+				tank2 = node
+		if tank2 and not tank2.is_materializing:
+			break
+	check(GameManager.player_active[1] and tank2 != null and not tank2.is_materializing
+		and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2], "P2's fire: player 2 in, on this machine's P2 keys")
+	if tank2 == null:
+		return
+	GameManager.player_lives[1] = 7
+	GameManager.player_scores[1] = 4321
+	tank2.health = 3
+	_menu._toggle_hosting()  # SETTINGS, ONLINE: ALLOW REMOTE PLAYERS
+	await tree.physics_frame
+	var on_field := tree.get_nodes_in_group("players").filter(
+			func(node: Node) -> bool: return node is PlayerTank and node.player_id == 1 and not node.is_queued_for_deletion())
+	check(Net.is_host() and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.NO_SEAT],
+		"HOST: player 1 keeps tank 1, and tank 2 is free")
+	check(GameManager.player_disabled[1] and on_field.is_empty() and GameManager.player_lives[1] == 7
+		and GameManager.player_scores[1] == 4321 and GameManager.player_hp[1] == 3,
+		"player 2 waits off the field, keeping all they had: 7 lives, 4321 points, 3 HP")
+	check(Net.free_seat_for(PlayerInput.LOCAL_P2) == 1, "this machine's P2 fire could take it back")
+	# The other machine's player presses fire (a stand-in: the real thing is online_test's).
+	Net.peers[8] = {"name": "CLIENTB", "allow": [true, true]}
+	PlayerInput.set_remote(8, 0, -1, [false, false], [0, 0])
+	await tree.physics_frame
+	PlayerInput.set_remote(8, 0, -1, [true, false], [1, 0])
+	var came: PlayerTank = null
+	for i in 30:
+		await tree.physics_frame
+		for node in tree.get_nodes_in_group("players"):
+			if node is PlayerTank and node.player_id == 1 and not node.is_queued_for_deletion():
+				came = node
+		if came:
+			break
+	check(PlayerInput.seats[1] == PlayerInput.controller_key(8, 0) and not GameManager.player_disabled[1]
+		and came != null and came.health == 3 and GameManager.player_lives[1] == 7 and GameManager.player_scores[1] == 4321,
+		"the other machine's fire takes tank 2, as player 2 with all they had (%s HP, %d lives)" % [
+			came.health if came else "-", GameManager.player_lives[1]])
+	Net.peers.erase(8)
+	Net.leave()
+	await tree.process_frame
+	check(not Net.is_online() and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2],
+		"closed again: offline, the keys driving their own tanks")
