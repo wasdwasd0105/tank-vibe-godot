@@ -36,6 +36,11 @@ const PREDICTED_HIT_MS := 500.0
 const PREDICTED_HIT_NEAR := 28.0
 ## How finely an AP shell's way is worked out (ap_walk), px.
 const AP_STEP := 4.0
+## An enemy one of this machine's own shells reached (note_own_hit) that the
+## host says has gone within this long is shown going at once
+## (_show_own_kills); its explosion and score this close to where it was.
+const OWN_HIT_MS := 1500.0
+const KILL_NEAR := 32.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -82,6 +87,9 @@ var _ghosts: Array = []
 ## Ends of this machine's own shells shown here at once (predict_hit), oldest
 ## first: [visual style, where, msec, whether its theme has its own picture].
 var _predicted_hits: Array = []
+## Enemies this machine's own shells have reached here (note_own_hit):
+## instance id -> msec.
+var _own_hits: Dictionary = {}
 
 
 func _init() -> void:
@@ -167,6 +175,8 @@ func _on_packet(body: PackedByteArray) -> void:
 		"game": snapshot[NetWorld.SNAP_GAME],
 		"events": snapshot[NetWorld.SNAP_EVENTS],
 	}
+	if _started and not full:
+		_show_own_kills(decoded)
 	_buffer.append(decoded)
 	# The host's clock is at least this far ahead of ours: the fastest packet
 	# comes closest to the truth. The rest came that much later (AUTO smoothing).
@@ -320,6 +330,7 @@ func _clear() -> void:
 			ghost["node"].queue_free()
 	_ghosts.clear()
 	_predicted_hits.clear()
+	_own_hits.clear()
 	_game.clear()
 
 
@@ -549,6 +560,7 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 					if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
 						stop = minf(stop, done)
 		var half := BaseTank.HITBOX_SIZE * 0.5
+		var met: BaseTank = null
 		for node in get_tree().get_nodes_in_group("enemies"):
 			var tank := node as BaseTank
 			if tank == null or not tank.is_solid():
@@ -556,8 +568,12 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 			var offset := tank.global_position - from
 			var ahead := offset.dot(direction)
 			for lane: float in lanes:
-				if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half:
-					stop = minf(stop, maxf(ahead - half, 0.0))
+				if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half \
+						and maxf(ahead - half, 0.0) < stop:
+					stop = maxf(ahead - half, 0.0)
+					met = tank
+		if met:
+			note_own_hit(met)  # it stops on that one before anything else
 	return stop if stop < INF else -1.0
 
 
@@ -613,7 +629,7 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 					break
 		if stop >= 0.0:
 			break
-		# The enemies it reaches (as Bullet._meets_enemy).
+		# The enemies it reaches (as Bullet._enemy_met).
 		for node in get_tree().get_nodes_in_group("enemies"):
 			var tank := node as BaseTank
 			if tank == null or not tank.is_solid() or tanks.has(tank.get_instance_id()):
@@ -625,6 +641,7 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 			if not meets:
 				continue
 			tanks[tank.get_instance_id()] = true
+			note_own_hit(tank)
 			if tank.is_bullet_blocked(direction):
 				pool = 0
 			else:
@@ -639,6 +656,61 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 	if stop >= 0.0:
 		walk["stop"] = stop
 	return stop
+
+
+## One of this machine's own shells reached enemy [param tank] here: if the
+## host's word that it has gone comes soon (OWN_HIT_MS), it goes at once
+## (_show_own_kills).
+func note_own_hit(tank: Node) -> void:
+	_own_hits[tank.get_instance_id()] = Time.get_ticks_msec()
+
+
+## A snapshot just come says enemies have gone. One that this machine's own
+## shells reached (note_own_hit) goes at once, with its explosion, its score
+## and its sound from that snapshot, rather than when the snapshot's time
+## comes, render_delay later: so its own shots land as soon as the host's
+## word of them can. The snapshot, shown in its time, leaves them out. It's
+## the host's word, so nothing shows that didn't happen: the tank just goes
+## a little before the rest of the world shown here gets there.
+func _show_own_kills(snapshot: Dictionary) -> void:
+	if _own_hits.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	for id: int in _own_hits.keys():
+		if now - int(_own_hits[id]) > OWN_HIT_MS:
+			_own_hits.erase(id)
+	var left := PackedInt32Array()
+	var events: Array = snapshot["events"]
+	for nid: int in snapshot["removed"]:
+		var node: Variant = _nodes.get(nid)
+		var tank: EnemyTank = node as EnemyTank if is_instance_valid(node) else null
+		if tank == null or not _own_hits.has(tank.get_instance_id()):
+			left.append(nid)
+			continue
+		_own_hits.erase(tank.get_instance_id())
+		var at := tank.global_position
+		_despawn(nid)
+		var heard := false
+		var rest: Array = []
+		for event: Array in events:
+			var its := false
+			match int(event[0]):
+				NetWorld.EV_HIT:
+					its = str(event[1]) == "tank" and Vector2(event[2], event[3]).distance_to(at) <= KILL_NEAR
+				NetWorld.EV_EXPLOSION:
+					its = float(event[3]) > 1.0 and Vector2(event[1], event[2]).distance_to(at) <= KILL_NEAR
+				NetWorld.EV_KILL_TEXT:
+					its = Vector2(event[3], event[4]).distance_to(at) <= KILL_NEAR
+				NetWorld.EV_SOUND:
+					its = not heard and str(event[1]) == "tank_destroyed"
+					heard = heard or its
+			if its:
+				_play(event)
+			else:
+				rest.append(event)
+		events = rest
+	snapshot["removed"] = left
+	snapshot["events"] = events
 
 
 ## The end of [param shell], a shell of this machine's own, seen here at

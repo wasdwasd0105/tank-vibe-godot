@@ -1048,6 +1048,8 @@ func _run() -> void:
 			drill.global_position - _lm.global_position if drill else "none"))
 	check(world._predicted_hits.size() == 1 and (world._predicted_hits[0][1] as Vector2).distance_to(drill.global_position) < 0.01,
 		"its end shown there at once")
+	check(line.all(func(enemy: EnemyTank) -> bool: return world._own_hits.has(enemy.get_instance_id())),
+		"and each tank it drilled through or stopped in noted as one its shells reached")
 	# The host's shell for it takes over its drilling as far as the ghost had got.
 	world._spawn(94, NetWorld.T_BULLET, drill.net_spawn_args(), [muzzle.x, muzzle.y])
 	var drilled := world.node_for(94) as Bullet
@@ -1057,6 +1059,93 @@ func _run() -> void:
 	check(not drilled.visible and world._own_shells[94].get("walk", {}).get("stop", -1.0) > 0.0 and world._predicted_hits.size() == 1,
 		"the host's shell for it takes over its drilling: hidden where it stopped, its end not shown twice")
 	world._despawn(94)
+	# A kill by its own shell: the host's word of it is shown as it comes (the
+	# tank gone, its explosion, score and sound), not a smoothing later; the
+	# snapshot leaves them out when its time comes. Another tank's death, one
+	# its shells didn't reach, waits for its time as before.
+	var shot_dead := line[0]
+	var other_dead := _spawn_enemy(home + Vector2(200, 0))  # none of its shells came near this one
+	world._own_hits.clear()
+	_player.can_shoot = true
+	Input.action_press("p1_shoot")
+	_fire_here()
+	Input.action_release("p1_shoot")
+	var at_tank: Bullet = world._ghosts[-1]["node"] if not world._ghosts.is_empty() else null
+	if at_tank:
+		at_tank.set_physics_process(false)
+		for i in 60:
+			at_tank._fly_ghost(1.0 / 60.0)
+			if not at_tank.visible:
+				break
+	check(at_tank != null and not at_tank.visible and world._own_hits.has(shot_dead.get_instance_id())
+		and not world._own_hits.has(other_dead.get_instance_id()),
+		"its ghost reaching a tank: that tank noted as one its shells reached")
+	world._nodes[95] = shot_dead
+	world._states[95] = shot_dead.net_state()
+	world._types[95] = NetWorld.T_ENEMY
+	world._nodes[96] = other_dead
+	world._states[96] = other_dead.net_state()
+	world._types[96] = NetWorld.T_ENEMY
+	var dead_at := shot_dead.global_position
+	var far_at := other_dead.global_position
+	var kill_frames := not ThemeManager.get_tank_explode_frames().is_empty()
+	var boom := func(where: Vector2) -> Array:
+		return [NetWorld.EV_HIT, "tank", where.x, where.y] if kill_frames else [NetWorld.EV_EXPLOSION, where.x, where.y, 2.0]
+	var packet := []
+	packet.resize(NetWorld.SNAP_SIZE)
+	packet[NetWorld.SNAP_SEQ] = 1
+	packet[NetWorld.SNAP_EPOCH] = 1
+	packet[NetWorld.SNAP_TIME] = Time.get_ticks_msec() + 100000  # its time far off: only what's shown at once shows
+	packet[NetWorld.SNAP_FLAGS] = 0
+	packet[NetWorld.SNAP_MAP] = []
+	packet[NetWorld.SNAP_SPAWNS] = []
+	packet[NetWorld.SNAP_UPDATES] = PackedByteArray()
+	packet[NetWorld.SNAP_REMOVED] = PackedInt32Array([95, 96])
+	packet[NetWorld.SNAP_TILES] = PackedInt32Array()
+	packet[NetWorld.SNAP_GAME] = {}
+	packet[NetWorld.SNAP_EVENTS] = [[NetWorld.EV_SOUND, "tank_destroyed"], [NetWorld.EV_KILL_TEXT, 100, 1, dead_at.x, dead_at.y - 4.0],
+			boom.call(dead_at + Vector2(3, -5)), [NetWorld.EV_SOUND, "tank_destroyed"], boom.call(far_at)]
+	world._started = true
+	world._epoch = 1
+	world._buffer.clear()
+	var clock_was := [world._clock_offset, world._have_clock, world._late.duplicate()]
+	var shown_before := fx.get_child_count()
+	world._on_packet(var_to_bytes(packet))
+	world._clock_offset = clock_was[0]  # (the made-up snapshot's time is no clock to go by)
+	world._have_clock = clock_was[1]
+	world._late = clock_was[2]
+	check(shot_dead.is_queued_for_deletion() and not world._nodes.has(95) and fx.get_child_count() == shown_before + 2
+		and not world._own_hits.has(shot_dead.get_instance_id()),
+		"that tank gone in the host's snapshot just come: gone at once, its explosion and score with it")
+	var waiting: Dictionary = world._buffer[-1] if not world._buffer.is_empty() else {}
+	check(Array(waiting.get("removed", [])) == [96] and waiting.get("events", []).size() == 2
+		and waiting["events"][1] == boom.call(far_at) and world._nodes.has(96) and not other_dead.is_queued_for_deletion(),
+		"another tank's death in it waits for its time, with its own explosion and sound")
+	world._buffer.clear()
+	world._started = false
+	world._nodes.erase(96)
+	world._states.erase(96)
+	world._types.erase(96)
+	other_dead.queue_free()
+	line.remove_at(0)
+	for i in 2:
+		await tree.physics_frame  # (the tanks gone from the tree; its fire's press no longer "just" pressed)
+	# One drawn ahead of the host's (its ghost gone) that its lead takes onto a
+	# tank notes it too.
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._own_hits.clear()
+	var below := line[0].global_position + Vector2.DOWN * 120.0
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(97, NetWorld.T_BULLET, [BaseTank.FACINGS.find(Vector2.UP), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0, 999],
+			[below.x, below.y])
+	(world.node_for(97) as Bullet).set_physics_process(false)
+	world._place(97, world.node_for(97), below)
+	check(not world.node_for(97).visible and world._own_hits.has(line[0].get_instance_id()),
+		"one drawn ahead reaching a tank here first: that tank noted too")
+	world._despawn(97)
+	world._predicted_hits.clear()
 	# A moon shield's front stops it, as on the host.
 	line[0].has_moon_shield = true
 	line[0].current_direction = Vector2.DOWN
@@ -1072,7 +1161,7 @@ func _run() -> void:
 			drill._fly_ghost(1.0 / 60.0)
 			if not drill.visible:
 				break
-	check(drill != null and not drill.visible and drill.global_position.y > line[0].global_position.y,
+	check(drill != null and drill.pierces and not drill.visible and drill.global_position.y > line[0].global_position.y,
 		"a tank's moon shield, facing it, stops it at once")
 	for enemy in line:
 		enemy.queue_free()

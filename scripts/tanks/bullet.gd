@@ -203,11 +203,14 @@ func _fly_ghost(delta: float) -> void:
 	var drilled_to := world.ap_walk(self, net_origin, _traveled, net_walk) if pierces and world else -1.0
 	if drilled_to >= 0.0:
 		global_position = net_origin + direction * drilled_to
+	var met: BaseTank = null if pierces else _enemy_met()
 	if drilled_to >= 0.0 or (max_range > 0.0 and _traveled >= max_range) \
 			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
-			or (not pierces and (not _solid_tiles_touched().is_empty() or _meets_enemy())):
+			or (not pierces and (not _solid_tiles_touched().is_empty() or met != null)):
 		visible = false
 		if world:
+			if met:
+				world.note_own_hit(met)
 			world.predict_hit(self, global_position)  # its end, shown at once
 
 ## How far this shell flies in [param seconds] from its speed now: an AP shell
@@ -225,8 +228,8 @@ static func flight(from_speed: float, accel: float, top: float, seconds: float) 
 		return from_speed * seconds + 0.5 * accel * seconds * seconds
 	return from_speed * to_top + 0.5 * accel * to_top * to_top + top * (seconds - to_top)
 
-## True if this shell is on an enemy tank (a ghost's check: the host decides the hits).
-func _meets_enemy() -> bool:
+## The enemy tank this shell is on, if any (a ghost's check: the host decides the hits).
+func _enemy_met() -> BaseTank:
 	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
 	var half := BaseTank.HITBOX_SIZE * 0.5
 	for node in get_tree().get_nodes_in_group("enemies"):
@@ -236,8 +239,8 @@ func _meets_enemy() -> bool:
 		var offset := tank.global_position - global_position
 		for lane: float in collision_lane_offsets:
 			if absf(offset.dot(direction)) < half and absf(offset.dot(across) - lane) < half:
-				return true
-	return false
+				return tank
+	return null
 
 func _check_tile_collision() -> void:
 	if not _level_manager or _destroyed:
