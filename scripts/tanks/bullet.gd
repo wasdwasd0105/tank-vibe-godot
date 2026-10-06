@@ -58,6 +58,14 @@ var net_shot := -1
 ## worked out (NetClientWorld.ap_walk).
 var net_origin := Vector2.ZERO
 var net_walk: Dictionary = {}
+## Host: a client's own shot (lag compensation, docs/network_design.md section
+## 7): [the controller (PlayerInput) of the client that fired it, the run of
+## its reports and the frame it fired it at]; [] for any other shell. It meets
+## tanks and the enemies' shells where that client's screen had them as this
+## shot got there on it (_meet_as_seen), not where they are here by then.
+var net_view: Array = []
+var _net_steps := 0
+var _met_as_seen: Dictionary = {}
 static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
@@ -117,13 +125,10 @@ func _ready() -> void:
 
 	var col_shape = get_node_or_null("CollisionShape2D")
 	if col_shape and col_shape.shape is RectangleShape2D:
-		var rect := col_shape.shape as RectangleShape2D
-		var lane_span := _get_lane_span(collision_lane_offsets)
-		var cross_size := maxf(BULLET_THICKNESS, lane_span + BULLET_THICKNESS)
-		if direction == Vector2.UP or direction == Vector2.DOWN:
-			rect.size = Vector2(cross_size, BULLET_LENGTH)
-		else:
-			rect.size = Vector2(BULLET_LENGTH, cross_size)
+		# Its own box: the scene's shape is one resource every shell shares.
+		var rect := (col_shape.shape as RectangleShape2D).duplicate() as RectangleShape2D
+		rect.size = box_half(direction, collision_lane_offsets) * 2.0
+		col_shape.shape = rect
 
 	var game = get_tree().get_first_node_in_group("game")
 	if game and game.has_method("get_level_manager"):
@@ -132,16 +137,32 @@ func _ready() -> void:
 	_create_visual_sprites()
 	queue_redraw()
 
-func _get_lane_span(offsets: Array[float]) -> float:
-	if offsets.size() <= 1:
-		return 0.0
+## Half the box a shell's shape covers about its middle, going [param way] on
+## collision lanes [param lanes]: their span and BULLET_THICKNESS across its
+## way, BULLET_LENGTH along it.
+static func box_half(way: Vector2, lanes: Array) -> Vector2:
+	var span := 0.0
+	if lanes.size() > 1:
+		span = float(lanes.max()) - float(lanes.min())
+	var across := maxf(BULLET_THICKNESS, span + BULLET_THICKNESS)
+	return (Vector2(across, BULLET_LENGTH) if way.x == 0.0 else Vector2(BULLET_LENGTH, across)) * 0.5
 
-	var min_offset: float = offsets[0]
-	var max_offset: float = offsets[0]
-	for lane_offset in offsets:
-		min_offset = minf(min_offset, lane_offset)
-		max_offset = maxf(max_offset, lane_offset)
-	return max_offset - min_offset
+## Whether a shell at [param at] going [param way] on [param lanes] is on a tank
+## at [param tank_at]: their shapes overlap, as the physics has them (a tank's
+## is BaseTank.HITBOX_SIZE square).
+static func touches_tank(at: Vector2, way: Vector2, lanes: Array, tank_at: Vector2) -> bool:
+	var reach := box_half(way, lanes) + Vector2.ONE * BaseTank.HITBOX_SIZE * 0.5
+	var offset := tank_at - at
+	return absf(offset.x) < reach.x and absf(offset.y) < reach.y
+
+## Whether two shells' shapes overlap: one at [param at] going [param way] on
+## [param lanes], the other at [param other_at] going [param other_way] on
+## [param other_lanes].
+static func shells_touch(at: Vector2, way: Vector2, lanes: Array,
+		other_at: Vector2, other_way: Vector2, other_lanes: Array) -> bool:
+	var reach := box_half(way, lanes) + box_half(other_way, other_lanes)
+	var offset := other_at - at
+	return absf(offset.x) < reach.x and absf(offset.y) < reach.y
 
 func _draw() -> void:
 	if not _visual_sprites.is_empty():
@@ -172,6 +193,7 @@ func _physics_process(delta: float) -> void:
 
 	var movement: Vector2 = direction * speed * delta
 	position += movement
+	_net_steps += 1
 
 	# Fire bullets drop (and ignite) once they exceed their range.
 	if max_range > 0.0:
@@ -185,10 +207,14 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_check_tile_collision()
+	if not net_view.is_empty() and not _destroyed:
+		_meet_as_seen()
 
 ## One step of a ghost (net_ghost): the flight the host's shell will make,
-## touching nothing. Where that shell would end, at a wall, an enemy or its
-## range, the ghost hides: the host's word of the hit comes after.
+## touching nothing. Where that shell ends, the ghost ends: the host judges it
+## by what this machine shows (Bullet._meet_as_seen), so a wall, a shell of the
+## enemies' (both going, as on the host) or a tank shown here is where it ends
+## there too; the end, and a kill, are shown at once.
 func _fly_ghost(delta: float) -> void:
 	if not visible:
 		return
@@ -197,20 +223,31 @@ func _fly_ghost(delta: float) -> void:
 	var movement: Vector2 = direction * speed * delta
 	position += movement
 	_traveled += movement.length()
-	# An AP shell drills on through walls and tanks while its pool lasts, as
-	# the host's does; any other stops at the first.
+	# An AP shell drills on through walls, shells and tanks while its pool
+	# lasts, as the host's does; any other stops at the first, in the host's
+	# order: the walls, then the shells, then the tanks.
 	var world := NetClientWorld.of(get_tree())
 	var drilled_to := world.ap_walk(self, net_origin, _traveled, net_walk) if pierces and world else -1.0
 	if drilled_to >= 0.0:
 		global_position = net_origin + direction * drilled_to
-	var met: BaseTank = null if pierces else _enemy_met()
-	if drilled_to >= 0.0 or (max_range > 0.0 and _traveled >= max_range) \
+	var ended := drilled_to >= 0.0 or (max_range > 0.0 and _traveled >= max_range) \
 			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
-			or (not pierces and (not _solid_tiles_touched().is_empty() or met != null)):
+			or (not pierces and not _solid_tiles_touched().is_empty())
+	if not ended and not pierces and world:
+		var theirs := world.shell_met(self, global_position)
+		if theirs:
+			world.clash(self, theirs, damage, global_position)  # (it ends: 1 damage, or a fire or explosion shell)
+			ended = true
+	var met: BaseTank = null
+	if not ended and not pierces:
+		met = _enemy_met()
+		ended = met != null
+	if ended:
 		visible = false
 		if world:
 			if met:
 				world.note_own_hit(met)
+				world.guess_kill(met, tank_damage(), self, global_position)  # its kill too, if it is one
 			world.predict_hit(self, global_position)  # its end, shown at once
 
 ## How far this shell flies in [param seconds] from its speed now: an AP shell
@@ -228,19 +265,30 @@ static func flight(from_speed: float, accel: float, top: float, seconds: float) 
 		return from_speed * seconds + 0.5 * accel * seconds * seconds
 	return from_speed * to_top + 0.5 * accel * to_top * to_top + top * (seconds - to_top)
 
-## The enemy tank this shell is on, if any (a ghost's check: the host decides the hits).
+## How much of a tank's health this shell takes on hitting it (not an AP
+## shell's, which spends its pool): a direct hit's damage for an explosion
+## shell, else one. A client's shell of the host's doesn't know whether it
+## explodes, but its look says.
+func tank_damage() -> int:
+	if explodes:
+		return damage
+	if visual_style == "explosion":
+		var level := int(GameManager.player_weapon_levels[clampi(owner_player, 0, 1)])
+		return int(CookieData.get_weapon_fire_config("explosion", level).get("damage", 1))
+	return 1
+
+## The enemy tank this shell is on as shown here, the nearest if more (a
+## ghost's check, as the host judges it: touches_tank).
 func _enemy_met() -> BaseTank:
-	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
-	var half := BaseTank.HITBOX_SIZE * 0.5
+	var met: BaseTank = null
 	for node in get_tree().get_nodes_in_group("enemies"):
 		var tank := node as BaseTank
 		if tank == null or not tank.is_solid():
 			continue
-		var offset := tank.global_position - global_position
-		for lane: float in collision_lane_offsets:
-			if absf(offset.dot(direction)) < half and absf(offset.dot(across) - lane) < half:
-				return tank
-	return null
+		if touches_tank(global_position, direction, collision_lane_offsets, tank.global_position) \
+				and (met == null or (tank.global_position - met.global_position).dot(direction) < 0.0):
+			met = tank
+	return met
 
 func _check_tile_collision() -> void:
 	if not _level_manager or _destroyed:
@@ -313,21 +361,15 @@ func _on_body_entered(body: Node2D) -> void:
 		return
 	if body == owner_tank:
 		return
+	if not net_view.is_empty() and body is BaseTank:
+		return  # a client's own shot meets tanks where its screen had them (_meet_as_seen)
 
 	if pierces:
 		_ap_on_body(body)
 		return
 
 	if is_player_bullet and body is EnemyTank:
-		if body.is_bullet_blocked(direction):
-			_destroy()
-			return
-		if explodes:
-			_explode_direct_hit(body)
-		else:
-			body.hit_by = owner_player
-			body.take_damage(direction)
-		_destroy()
+		_hit_enemy(body, body.is_bullet_blocked(direction))
 	elif not is_player_bullet and body is PlayerTank:
 		if body.is_bullet_blocked(direction):
 			_destroy()
@@ -342,6 +384,18 @@ func _on_body_entered(body: Node2D) -> void:
 		_hit_base()
 	elif body.is_in_group("boundary"):
 		_destroy()
+
+## A player's shell hits enemy [param tank], its moon shield's front to the
+## shell ([param blocked]) or not, and ends. (null: a tank finished here already
+## that the client firing it still had on its screen: it just ends there.)
+func _hit_enemy(tank: EnemyTank, blocked: bool) -> void:
+	if tank != null and not blocked:
+		if explodes:
+			_explode_direct_hit(tank)
+		else:
+			tank.hit_by = owner_player
+			tank.take_damage(direction)
+	_destroy()
 
 ## The shell reached the base: it falls, unless the BASE INVINCIBLE setting is
 ## on, when the shell just stops there.
@@ -368,35 +422,42 @@ func _ap_on_body(body: Node2D) -> void:
 		tank = body
 
 	if tank:
-		# An invincible tank is fully untouchable: the shell is absorbed WITHOUT
-		# stripping its moon shield or dealing damage. (Check before the shield.)
-		if tank is PlayerTank and tank.is_invincible:
-			_destroy()
-			return
-		# Moon-shield front hit: a strong enough pool (>= threshold) strips the
-		# shield (tank unhurt + grace); a worn-down shell is just absorbed.
-		if tank.is_bullet_blocked(direction):
-			SoundManager.play(&"shield_absorb")
-			if damage >= SHIELD_BREAK_THRESHOLD:
-				tank.break_moon_shield_grace()
-			_destroy()
-			return
-		# Spend min(pool, tankHP): the tank takes that much, the pool drops by it.
-		var dealt: int = mini(damage, tank.health)
-		for i in range(dealt):
-			if is_instance_valid(tank) and tank.health > 0:
-				tank.hit_by = owner_player
-				tank.take_damage()  # no direction -> no retaliation while being drilled
-		damage -= dealt
-		if damage <= 0:
-			_destroy()
-		# else: the tank died and the shell flies on through it (pass-through)
+		_ap_hit_tank(tank, tank.is_bullet_blocked(direction))
 		return
 
 	if body.is_in_group("eagle"):
 		_hit_base()
 	elif body.is_in_group("boundary"):
 		_destroy()
+
+## The AP shell reaches [param tank], its moon shield's front to the shell
+## ([param blocked]) or not: its pool is spent on it. (null: a tank finished
+## here already that the client firing it still had on its screen, with
+## [param health_seen] then: the pool goes as it would have.)
+func _ap_hit_tank(tank: BaseTank, blocked: bool, health_seen: int = 0) -> void:
+	# An invincible tank is fully untouchable: the shell is absorbed WITHOUT
+	# stripping its moon shield or dealing damage. (Check before the shield.)
+	if tank is PlayerTank and tank.is_invincible:
+		_destroy()
+		return
+	# Moon-shield front hit: a strong enough pool (>= threshold) strips the
+	# shield (tank unhurt + grace); a worn-down shell is just absorbed.
+	if blocked:
+		SoundManager.play(&"shield_absorb")
+		if damage >= SHIELD_BREAK_THRESHOLD and tank:
+			tank.break_moon_shield_grace()
+		_destroy()
+		return
+	# Spend min(pool, tankHP): the tank takes that much, the pool drops by it.
+	var dealt: int = mini(damage, tank.health if tank else health_seen)
+	for i in range(dealt):
+		if is_instance_valid(tank) and tank.health > 0:
+			tank.hit_by = owner_player
+			tank.take_damage()  # no direction -> no retaliation while being drilled
+	damage -= dealt
+	if damage <= 0:
+		_destroy()
+	# else: the tank died and the shell flies on through it (pass-through)
 
 func _on_area_entered(area: Area2D) -> void:
 	if _destroyed:
@@ -407,6 +468,8 @@ func _on_area_entered(area: Area2D) -> void:
 			return
 		if is_player_bullet == other_bullet.is_player_bullet:
 			return  # same side — bullets pass through each other
+		if not net_view.is_empty() or not other_bullet.net_view.is_empty():
+			return  # a client's own shot meets shells where its screen had them (_meet_as_seen)
 
 		# Each bullet subtracts the other's damage (rule 6). Normal bullets die
 		# only when reduced to <= 0, so two normal bullets annihilate 1-for-1.
@@ -424,6 +487,87 @@ func _on_area_entered(area: Area2D) -> void:
 			_destroy()
 		if (other_bullet.ignites_ground or other_bullet.explodes) and not other_bullet._destroyed:
 			other_bullet._destroy()
+
+## Host: a step of a client's own shot (net_view): the tanks and the enemies'
+## shells it meets are those where that client's screen had them as the shot
+## got here on it (NetHostWorld.seen_at), not where they are here by now. So its
+## player's own screen, which shows its shots' ends and kills at once, is right
+## (lag compensation as the popular shooters have it, "favor the shooter"). As
+## the physics has them: the shells first, then the tanks, the nearest first.
+func _meet_as_seen() -> void:
+	var world := NetHostWorld.active
+	if world == null:
+		net_view = []  # the session is over: it meets what's here, as any shell does
+		return
+	var key := int(net_view[0])
+	var peer := PlayerInput.controller_peer(key)
+	var time := PlayerInput.view_time(key, int(net_view[1]), int(net_view[2]) + _net_steps)
+	var shells: Array = []
+	var tanks: Array = []
+	for seen: Array in world.seen_at(time, peer):
+		var kept: Array = seen[1]
+		if _met_as_seen.has(seen[0]) or int(seen[0]) == get_instance_id():
+			continue
+		if int(kept[0]) == NetHostWorld.SEEN_SHELL:
+			if bool(kept[4]) != is_player_bullet \
+					and shells_touch(global_position, direction, collision_lane_offsets, kept[1], kept[2], kept[3]):
+				shells.append(seen)
+		elif bool(kept[6]) == is_player_bullet and bool(kept[3]) \
+				and touches_tank(global_position, direction, collision_lane_offsets, kept[1]):
+			tanks.append(seen)
+	var nearer := func(a: Array, b: Array) -> bool:
+		return (a[1][1] - global_position).dot(direction) < (b[1][1] - global_position).dot(direction)
+	shells.sort_custom(nearer)
+	tanks.sort_custom(nearer)
+	for seen: Array in shells:
+		_met_as_seen[seen[0]] = true
+		_clash_as_seen(seen, world, peer)
+		if _destroyed:
+			return
+	for seen: Array in tanks:
+		var kept: Array = seen[1]
+		_met_as_seen[seen[0]] = true
+		var tank := instance_from_id(int(seen[0])) as EnemyTank
+		if tank != null and (tank.is_queued_for_deletion() or tank.health <= 0):
+			tank = null  # finished here already, by something else
+		var blocked: bool = bool(kept[4]) and direction.dot(kept[2]) < 0.0
+		# Shown dying at once on that screen (NetClientWorld.guess_kill): its later
+		# shots there pass where it was, so here too.
+		if not blocked and not bool(kept[7]) and (damage if pierces else tank_damage()) >= int(kept[5]):
+			world.mark_gone(peer, int(seen[0]))
+		if pierces:
+			_ap_hit_tank(tank, blocked, int(kept[5]))
+		else:
+			_hit_enemy(tank, blocked)
+		if _destroyed:
+			return
+
+## Host: a client's own shot meets the enemies' shell [param seen] (as
+## NetHostWorld.seen_at has it) where that client's screen had it: each takes
+## the other's damage, as _on_area_entered has it. One gone here since still
+## counts with its damage then; one that goes now goes where that screen had the
+## two meet.
+func _clash_as_seen(seen: Array, world: NetHostWorld, peer: int) -> void:
+	var kept: Array = seen[1]
+	var other := instance_from_id(int(seen[0])) as Bullet
+	if other != null and (other._destroyed or other.is_queued_for_deletion()):
+		other = null
+	var my_dmg := damage
+	var their_dmg: int = other.damage if other else int(kept[5])
+	var other_goes := their_dmg <= my_dmg or bool(kept[6])
+	take_bullet_damage(their_dmg)
+	if other:
+		if other_goes:
+			other.global_position = kept[1]
+		other.take_bullet_damage(my_dmg)
+		if (other.ignites_ground or other.explodes) and not other._destroyed:
+			other._destroy()
+	if other_goes:
+		world.mark_gone(peer, int(seen[0]))
+	if _destroyed != other_goes:
+		SoundManager.play(&"bullet_clink")
+	if (ignites_ground or explodes) and not _destroyed:
+		_destroy()
 
 ## Reduce this bullet's damage by [param amount]; destroy it if it hits 0.
 func take_bullet_damage(amount: int) -> void:
@@ -501,7 +645,7 @@ func net_type() -> int:
 
 func net_spawn_args() -> Array:
 	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets),
-			owner_player, speed, max_range, pierces, accel, max_speed, net_shot]
+			owner_player, speed, max_range, pierces, accel, max_speed, net_shot, damage, Array(collision_lane_offsets)]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
@@ -510,7 +654,10 @@ func net_state() -> Array:
 ## [param args][1] on lanes [param args][2]; then whose it is (a player, or -1),
 ## how fast it flies, how far it goes, whether it drills through walls and how
 ## it speeds up, for drawing a shell of this machine's own ahead
-## (NetClientWorld), and the number of the client's own shot it is (net_shot).
+## (NetClientWorld), the number of the client's own shot it is (net_shot), its
+## damage as it left (what it takes off a shell it meets), and the lanes it
+## meets things on (a shot drawn as one shell can hit on two), the walls across
+## the shooter's body if more than one, as _spawn_bullet has them.
 func net_setup(args: Array) -> void:
 	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
 	visual_style = str(args[1])
@@ -528,6 +675,15 @@ func net_setup(args: Array) -> void:
 		max_speed = float(args[8])
 	if args.size() >= 10:
 		net_shot = int(args[9])
+	if args.size() >= 11:
+		damage = int(args[10])
+	if args.size() >= 12:
+		var hit_lanes: Array[float] = []
+		for lane: Variant in args[11]:
+			hit_lanes.append(float(lane))
+		collision_lane_offsets = hit_lanes
+		if hit_lanes.size() > 1:
+			tile_lane_offsets = BaseTank.BODY_LANE_OFFSETS
 
 func net_apply(_state: Array) -> void:
 	pass

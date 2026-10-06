@@ -41,6 +41,18 @@ const AP_STEP := 4.0
 ## (_show_own_kills); its explosion and score this close to where it was.
 const OWN_HIT_MS := 1500.0
 const KILL_NEAR := 32.0
+## A kill or a clash guessed here (guess_kill, clash) that the host's word
+## hasn't settled in this long, either way, shows what went again; as does one
+## whose shell the host has seen this far past where it ended here. The host
+## judges this machine's shots by what it shows, perhaps a frame off: a shot
+## hits a tank driving across its way for sure only this far inside its sides.
+const GUESS_MAX_MS := 1500.0
+const GUESS_PAST := 12.0
+const SURE_INSIDE := 4.0
+## Shown further behind the host than this (the trip there and back and the
+## smoothing), the host may not look back as far as this machine's screen
+## (NetHostWorld.SEEN_KEEP_MS, less a shot held up there): no guess.
+const GUESS_MAX_LAG_MS := 700.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -90,6 +102,14 @@ var _predicted_hits: Array = []
 ## Enemies this machine's own shells have reached here (note_own_hit):
 ## instance id -> msec.
 var _own_hits: Dictionary = {}
+## Kills guessed here from this machine's own shots (guess_kill), and the
+## enemies' shells guessed gone meeting them (clash), till the host's word
+## settles them: instance id -> {"nid", "owner" and "shot" (the shot's
+## number), "end" where that shot ended here and "way" it went, "msec"}. How
+## many turned out wrong, for tests.
+var _guessed_kills: Dictionary = {}
+var _guessed_clashes: Dictionary = {}
+var guesses_undone := 0
 
 
 func _init() -> void:
@@ -177,6 +197,7 @@ func _on_packet(body: PackedByteArray) -> void:
 	}
 	if _started and not full:
 		_show_own_kills(decoded)
+		_settle_guesses(decoded)
 	_buffer.append(decoded)
 	# The host's clock is at least this far ahead of ours: the fastest packet
 	# comes closest to the truth. The rest came that much later (AUTO smoothing).
@@ -208,7 +229,21 @@ func _process(delta: float) -> void:
 		_apply(_buffer.pop_front())
 	_take_own_tanks()
 	_glide(render)
+	Net.client_view_time = _view_time(render) if _started else 0.0
 	_fly_own_shells()
+	for id: int in _guessed_kills:
+		var gone := instance_from_id(id) as Node2D
+		if gone:
+			gone.visible = false  # (whatever its state says meanwhile)
+
+
+## The moment of the host's world shown here at host time [param render]: the
+## snapshot shown, on towards the next as far as _glide takes it. The host
+## judges this machine's own shots by it (Net.client_view_time).
+func _view_time(render: float) -> float:
+	if _buffer.is_empty() or float(_buffer[0]["time"]) <= _shown_time:
+		return _shown_time
+	return clampf(render, _shown_time, float(_buffer[0]["time"]))
 
 
 ## Moves everything to where it is at host time [param render]: between the
@@ -331,6 +366,8 @@ func _clear() -> void:
 	_ghosts.clear()
 	_predicted_hits.clear()
 	_own_hits.clear()
+	_guessed_kills.clear()
+	_guessed_clashes.clear()
 	_game.clear()
 
 
@@ -437,6 +474,7 @@ func _take_over_ghost(shell: Bullet, info: Dictionary) -> void:
 			info["start"] = left
 			info["born"] = int(_ghosts[i]["born"])
 			info["speed0"] = float(_ghosts[i]["speed0"])
+			info["looked"] = ((ghost as Node2D).global_position - left).dot(shell.direction)  # (as far as the ghost got)
 			if shell.pierces and not ghost.net_walk.is_empty():
 				info["walk"] = ghost.net_walk  # its drilling, worked out as far as the ghost went
 		info["offset"] = (ghost as Node2D).global_position - _shell_now(shell, info)
@@ -477,10 +515,24 @@ func _lead_shell(nid: int, shell: Node2D, at: Vector2) -> Vector2:
 	info["at"] = at
 	var now := _shell_now(shell as Bullet, info)
 	var hidden: bool = info.get("hidden", false)
-	var stop := -1.0 if hidden else _shell_stop(shell as Bullet, at, now, info)
-	if stop >= 0.0 and not hidden and not info.get("ended", false):
-		info["ended"] = true  # its end, shown at once, where it stops
-		predict_hit(shell as Bullet, at + (shell as Bullet).direction * stop)
+	var direction := (shell as Bullet).direction
+	# One that ended on a tank or a shell here stays ended there (that may be
+	# shown gone before the host's word of this shell's end comes), unless the
+	# host's shell is seen going on past it: then on it flies.
+	if info.has("ended_at") and (at - info["ended_at"]).dot(direction) > 8.0:
+		info.erase("ended_at")
+	var stop := -1.0
+	if not hidden and info.has("ended_at"):
+		stop = maxf((info["ended_at"] - at).dot(direction), 0.0)
+	elif not hidden:
+		stop = _shell_stop(shell as Bullet, at, now, info)
+		if stop >= 0.0 and not info.get("ended", false):
+			info["ended"] = true
+			predict_hit(shell as Bullet, at + direction * stop)  # its end, shown at once, where it stops
+		elif stop < 0.0:
+			info["ended"] = false  # (what stopped it has gone: on it flies)
+		if stop >= 0.0 and info.get("sticky", false):
+			info["ended_at"] = at + direction * stop
 	var clear := not hidden and stop < 0.0
 	shell.visible = clear
 	if not clear:
@@ -547,45 +599,134 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 		if drilled_to >= 0.0:
 			stop = minf(stop, maxf(drilled_to - (from - start).dot(direction), 0.0))
 	elif length > 0.0:
-		# Its lanes lie across its way as Bullet._check_tile_collision has them.
+		# The walls it reaches, as Bullet._solid_tiles_touched has them: its tile
+		# lanes, where it is and a little ahead.
 		var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
 		var lanes: Array[float] = shell.collision_lane_offsets
+		var tile_lanes: Array[float] = shell.tile_lane_offsets if not shell.tile_lane_offsets.is_empty() else lanes
 		if level_manager and not info["pierces"]:
 			var done := 0.0
 			while done < minf(length, stop):
-				done = minf(done + 8.0, length)
-				for lane: float in lanes:
-					var cell := level_manager.world_to_tile(from + direction * done + across * lane)
-					var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
-					if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
-						stop = minf(stop, done)
-		var half := BaseTank.HITBOX_SIZE * 0.5
-		var met: BaseTank = null
+				done = minf(done + AP_STEP, length)
+				for ahead: float in [0.0, 6.0]:
+					for lane: float in tile_lanes:
+						var cell := level_manager.world_to_tile(from + direction * (done + ahead) + across * lane)
+						var tile: Dictionary = level_manager._fg_tile_data.get(cell, {})
+						if not tile.is_empty() and LevelData.is_solid_tile(LevelData.get_tile_category(int(tile.get("code", 0)))):
+							stop = minf(stop, done)
+		# Then the enemies' shells and tanks it meets as shown here now, on the
+		# way it has come since the last look (what it got past, it got past),
+		# as the host judges it (Bullet._meet_as_seen): a wall first, then a
+		# shell, then a tank, where more are at once.
+		var start: Vector2 = info["start"]
+		var looked := maxf(float(info.get("looked", -INF)) - (from - start).dot(direction), 0.0)
+		info["looked"] = (to - start).dot(direction)
+		var own_half := Bullet.box_half(direction, lanes)
+		var met: Node2D = null
+		var met_at := INF
+		for theirs: Bullet in _shown_enemy_shells():
+			var touch := _first_touch(from, direction, looked, length,
+					own_half + Bullet.box_half(theirs.direction, theirs.collision_lane_offsets), theirs.global_position)
+			if touch >= 0.0 and touch < met_at:
+				met = theirs
+				met_at = touch
 		for node in get_tree().get_nodes_in_group("enemies"):
 			var tank := node as BaseTank
 			if tank == null or not tank.is_solid():
 				continue
-			var offset := tank.global_position - from
-			var ahead := offset.dot(direction)
-			for lane: float in lanes:
-				if ahead > 0.0 and ahead - half < length and absf(offset.dot(across) - lane) < half \
-						and maxf(ahead - half, 0.0) < stop:
-					stop = maxf(ahead - half, 0.0)
-					met = tank
-		if met:
-			note_own_hit(met)  # it stops on that one before anything else
+			var touch := _first_touch(from, direction, looked, length,
+					own_half + Vector2.ONE * BaseTank.HITBOX_SIZE * 0.5, tank.global_position)
+			if touch >= 0.0 and touch < met_at:
+				met = tank
+				met_at = touch
+		info["sticky"] = met != null and met_at < stop
+		if info["sticky"]:
+			stop = met_at
+			var end := from + direction * stop
+			if met is Bullet:
+				clash(shell, met as Bullet, shell.damage, end)
+			else:
+				note_own_hit(met)  # it stops on that one before anything else
+				guess_kill(met as BaseTank, shell.tank_damage(), shell, end)
 	return stop if stop < INF else -1.0
 
 
+## How far along [param way] from [param from] a box first touches
+## [param target] (within [param reach] of it on each axis: the two boxes' half
+## sizes added), looking from [param looked] to [param length] along; -1 if it
+## doesn't there.
+static func _first_touch(from: Vector2, way: Vector2, looked: float, length: float, reach: Vector2,
+		target: Vector2) -> float:
+	var along_reach := reach.y if way.x == 0.0 else reach.x
+	var across_reach := reach.x if way.x == 0.0 else reach.y
+	var offset := target - from
+	if absf(offset.dot(Vector2(absf(way.y), absf(way.x)))) >= across_reach:
+		return -1.0
+	var ahead := offset.dot(way)
+	if ahead + along_reach <= looked or ahead - along_reach >= length:
+		return -1.0
+	return maxf(ahead - along_reach, looked)
+
+
+## The enemies' shells shown here, those guessed gone (clash) aside.
+func _shown_enemy_shells() -> Array[Bullet]:
+	var out: Array[Bullet] = []
+	for node: Variant in _nodes.values():
+		if is_instance_valid(node) and node is Bullet and (node as Bullet).owner_player < 0 and (node as Bullet).visible:
+			out.append(node as Bullet)
+	return out
+
+
+## The enemies' shell shown here that own [param shell], at [param at], is on,
+## the nearest if more; null if none (a ghost's check, as the host judges it:
+## Bullet.shells_touch).
+func shell_met(shell: Bullet, at: Vector2) -> Bullet:
+	var met: Bullet = null
+	for theirs: Bullet in _shown_enemy_shells():
+		if Bullet.shells_touch(at, shell.direction, shell.collision_lane_offsets,
+				theirs.global_position, theirs.direction, theirs.collision_lane_offsets) \
+				and (met == null or (theirs.global_position - met.global_position).dot(shell.direction) < 0.0):
+			met = theirs
+	return met
+
+
+## Own [param shell], with [param damage] left, ends at [param end] or flies on
+## (an AP shell with more), meeting the enemies' shell [param theirs] here as
+## the host will have them meet: it judges this machine's shots by what this
+## machine shows. Theirs goes too, unless it had more damage than that (Bullet's
+## rule 6; a fire or explosion shell always goes): hidden at once, its end shown
+## where it is, till the host's word settles it (_settle_guesses).
+func clash(shell: Bullet, theirs: Bullet, damage: int, end: Vector2) -> void:
+	if theirs.damage > damage and theirs.visual_style not in ["fire", "explosion"]:
+		return
+	theirs.visible = false
+	predict_hit(theirs, theirs.global_position)
+	_guessed_clashes[theirs.get_instance_id()] = _guess(theirs, shell, end)
+
+
+## A guess of what own [param shell], ending at [param end], did to
+## [param target] (guess_kill, clash), for _settle_guesses.
+func _guess(target: Node, shell: Bullet, end: Vector2) -> Dictionary:
+	var nid := 0
+	for key: int in _nodes:
+		if _nodes[key] == target:
+			nid = key
+			break
+	return {"nid": nid, "owner": shell.owner_player, "shot": shell.net_shot, "end": end, "way": shell.direction,
+			"msec": Time.get_ticks_msec()}
+
+
 ## How far an AP shell of this machine's own gets, drilling on as the host's
-## does (Bullet._ap_on_body, LevelManager.ap_drill_tiles): from
-## [param origin], its pool is spent on each strip of wall it reaches and on
-## each enemy, from what this machine shows of them (a tank's health, its moon
-## shield's front, super-steel stopping it), worked out as far as
-## [param distance] along its way. [param walk] carries the pool left ("pool"),
-## how far it's worked out ("done"), the strips and tanks spent on already,
-## and where it stopped ("stop"). Returns that, its distance from origin, or
-## -1 while it drills on.
+## does (Bullet._ap_hit_tank, LevelManager.ap_drill_tiles): from
+## [param origin], its pool is spent on each strip of wall it reaches, on each
+## of the enemies' shells it meets (rule 6) and on each enemy, from what this
+## machine shows of them (a tank's health, its moon shield's front, super-steel
+## stopping it), worked out as far as [param distance] along its way. The host
+## judges it by what this machine shows (Bullet._meet_as_seen), so this is
+## where it goes there too. [param walk] carries the pool left ("pool"), how
+## far it's worked out ("done"), the strips, shells and tanks spent on
+## already, and where it stopped ("stop"). Returns that, its distance from
+## origin, or -1 while it drills on.
 func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) -> float:
 	if walk.has("stop"):
 		return walk["stop"]
@@ -593,10 +734,10 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 	var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
 	var on_rows := direction.x == 0.0  # its strips are rows of tiles going up or down
 	var tile_lanes: Array[float] = shell.tile_lane_offsets if not shell.tile_lane_offsets.is_empty() else shell.collision_lane_offsets
-	var half := BaseTank.HITBOX_SIZE * 0.5
 	var done: float = walk.get("done", 0.0)
 	var pool: int = walk.get("pool", 0)
 	var strips: Dictionary = walk.get("strips", {})
+	var shells: Dictionary = walk.get("shells", {})
 	var tanks: Dictionary = walk.get("tanks", {})
 	var stop := -1.0
 	while done < distance and stop < 0.0:
@@ -629,22 +770,31 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 					break
 		if stop >= 0.0:
 			break
+		# The enemies' shells it meets: each takes the other's damage.
+		for theirs: Bullet in _shown_enemy_shells():
+			if shells.has(theirs.get_instance_id()) or not Bullet.shells_touch(at, direction, shell.collision_lane_offsets,
+					theirs.global_position, theirs.direction, theirs.collision_lane_offsets):
+				continue
+			shells[theirs.get_instance_id()] = true
+			clash(shell, theirs, pool, at)
+			pool -= theirs.damage
+			if pool <= 0:
+				stop = done
+				break
+		if stop >= 0.0:
+			break
 		# The enemies it reaches (as Bullet._enemy_met).
 		for node in get_tree().get_nodes_in_group("enemies"):
 			var tank := node as BaseTank
-			if tank == null or not tank.is_solid() or tanks.has(tank.get_instance_id()):
-				continue
-			var offset := tank.global_position - at
-			var meets := false
-			for lane: float in shell.collision_lane_offsets:
-				meets = meets or (absf(offset.dot(direction)) < half and absf(offset.dot(across) - lane) < half)
-			if not meets:
+			if tank == null or not tank.is_solid() or tanks.has(tank.get_instance_id()) \
+					or not Bullet.touches_tank(at, direction, shell.collision_lane_offsets, tank.global_position):
 				continue
 			tanks[tank.get_instance_id()] = true
 			note_own_hit(tank)
 			if tank.is_bullet_blocked(direction):
 				pool = 0
 			else:
+				guess_kill(tank, pool, shell, at)
 				pool -= mini(pool, tank.health)
 			if pool <= 0:
 				stop = done
@@ -652,6 +802,7 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 	walk["done"] = done
 	walk["pool"] = pool
 	walk["strips"] = strips
+	walk["shells"] = shells
 	walk["tanks"] = tanks
 	if stop >= 0.0:
 		walk["stop"] = stop
@@ -663,6 +814,115 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 ## (_show_own_kills).
 func note_own_hit(tank: Node) -> void:
 	_own_hits[tank.get_instance_id()] = Time.get_ticks_msec()
+
+
+## One of this machine's own shells, [param shell], ends at [param end] on
+## enemy [param tank] here with [param damage] to deal. The host judges this
+## machine's shots by what it shows (Bullet._meet_as_seen), so if that's all the
+## health the tank has left, it's shown dying at once, its explosion and sound,
+## rather than a trip and a frame later (Sean, 2026-10-06: "react locally
+## first"); the host's word settles it (_show_own_kills, _settle_guesses). Not
+## guessed, the host's word to say, when it can't be sure: a moon shield's front
+## to the shot, a blink after an item, the shot not well inside the sides of
+## one driving across its way (SURE_INSIDE), or this machine shown further
+## behind the host than the host looks back (GUESS_MAX_LAG_MS). Returns true if
+## shown.
+func guess_kill(tank: BaseTank, damage: int, shell: Bullet, end: Vector2) -> bool:
+	var enemy := tank as EnemyTank
+	if enemy == null or enemy.net_gone:
+		return false
+	var guess := _guess(enemy, shell, end)
+	if int(guess["nid"]) == 0:
+		return false
+	for snapshot: Dictionary in _buffer:
+		if int(guess["nid"]) in snapshot["removed"]:
+			# The host's word that it has gone has come already: shown now (once
+			# this frame's going through what's shown is done), not a guess.
+			note_own_hit(enemy)
+			_show_heard_kills.call_deferred()
+			return true
+	if Net.ping_ms + _delay_ms > GUESS_MAX_LAG_MS:
+		return false
+	if enemy.is_invulnerable() or damage < enemy.health or enemy.is_bullet_blocked(shell.direction):
+		return false
+	# One driving across the shot's way is where the host looks for it to within
+	# a frame's driving; one standing or going along it is just where it's shown.
+	var across := Vector2(absf(shell.direction.y), absf(shell.direction.x))
+	var reach := Bullet.box_half(shell.direction, shell.collision_lane_offsets).dot(across) + BaseTank.HITBOX_SIZE * 0.5
+	var sure := SURE_INSIDE if enemy.velocity != Vector2.ZERO and absf(enemy.current_direction.dot(across)) > 0.5 else 0.5
+	if absf((enemy.global_position - end).dot(across)) > reach - sure:
+		return false
+	enemy.net_gone = true
+	enemy.visible = false
+	var shown_at := enemy.global_position
+	_play([NetWorld.EV_HIT, "tank", shown_at.x, shown_at.y] if not ThemeManager.get_tank_explode_frames().is_empty()
+			else [NetWorld.EV_EXPLOSION, shown_at.x, shown_at.y, 2.0])
+	SoundManager.play_from_host(&"tank_destroyed")
+	_guessed_kills[enemy.get_instance_id()] = guess
+	note_own_hit(enemy)
+	return true
+
+
+## The kills by this machine's own shells in the snapshots come but not shown
+## yet, shown now (_show_own_kills).
+func _show_heard_kills() -> void:
+	for snapshot: Dictionary in _buffer:
+		_show_own_kills(snapshot)
+
+
+## The host's word on the kills and clashes guessed here (guess_kill, clash),
+## in a snapshot just come. One whose tank or shell it has gone is settled
+## (_show_own_kills took a tank). One still there shows again when the host's
+## shell that was to finish it has gone, or has been seen past where it ended
+## here (GUESS_PAST), or (never seen, gone at once) a later shot's has come;
+## so does one with no word either way in GUESS_MAX_MS.
+func _settle_guesses(snapshot: Dictionary) -> void:
+	if _guessed_kills.is_empty() and _guessed_clashes.is_empty():
+		return
+	for guesses: Dictionary in [_guessed_kills, _guessed_clashes]:
+		for id: int in guesses.keys():
+			var target := instance_from_id(id) as Node2D
+			var guess: Dictionary = guesses[id]
+			if target == null or not _nodes.has(int(guess["nid"])) or int(guess["nid"]) in snapshot["removed"]:
+				guesses.erase(id)  # gone, as guessed
+			elif _guess_wrong(guess, snapshot):
+				guesses.erase(id)
+				if target is BaseTank:
+					(target as BaseTank).net_gone = false
+					target.visible = not (target as BaseTank).is_materializing
+				else:
+					target.visible = true
+				guesses_undone += 1
+
+
+## True if the snapshot just come says [param guess] (see _guessed_kills) was
+## wrong: the host's shell for that shot gone, or seen past where it ended here
+## (on this machine's own line, so it goes where it went here), or never seen
+## while a later shot's has been; or no word either way in GUESS_MAX_MS.
+func _guess_wrong(guess: Dictionary, snapshot: Dictionary) -> bool:
+	var wrong := Time.get_ticks_msec() - int(guess["msec"]) > GUESS_MAX_MS
+	var shot := int(guess["shot"])
+	var found := false
+	var later := false
+	var removed := Array(snapshot["removed"])
+	var updates: Dictionary = snapshot["updates"]
+	for nid: int in _own_shells:
+		var shell := _nodes.get(nid) as Bullet
+		if shell == null or shell.owner_player != int(guess["owner"]):
+			continue
+		if shell.net_shot >> 8 == shot >> 8 and (shell.net_shot - shot) & 0xff in range(1, 128):
+			later = true
+		if shell.net_shot != shot:
+			continue
+		found = true
+		if nid in removed:
+			wrong = true  # its shell gone, what it was to finish not
+		elif updates.has(nid) and _own_shells[nid].has("born"):
+			var state: Array = _states[nid]
+			var change: Dictionary = updates[nid]
+			var now_at := Vector2(change.get(0, state[0]), change.get(1, state[1]))
+			wrong = wrong or (now_at - (guess["end"] as Vector2)).dot(guess["way"]) > GUESS_PAST  # on past it
+	return wrong or (later and not found)
 
 
 ## A snapshot just come says enemies have gone. One that this machine's own
@@ -688,25 +948,32 @@ func _show_own_kills(snapshot: Dictionary) -> void:
 			left.append(nid)
 			continue
 		_own_hits.erase(tank.get_instance_id())
+		# A kill guessed here showed its explosion and sound already: only its score is news.
+		var guessed := _guessed_kills.has(tank.get_instance_id())
+		_guessed_kills.erase(tank.get_instance_id())
 		var at := tank.global_position
 		_despawn(nid)
 		var heard := false
 		var rest: Array = []
 		for event: Array in events:
 			var its := false
+			var shown := false
 			match int(event[0]):
 				NetWorld.EV_HIT:
 					its = str(event[1]) == "tank" and Vector2(event[2], event[3]).distance_to(at) <= KILL_NEAR
+					shown = guessed
 				NetWorld.EV_EXPLOSION:
 					its = float(event[3]) > 1.0 and Vector2(event[1], event[2]).distance_to(at) <= KILL_NEAR
+					shown = guessed
 				NetWorld.EV_KILL_TEXT:
 					its = Vector2(event[3], event[4]).distance_to(at) <= KILL_NEAR
 				NetWorld.EV_SOUND:
 					its = not heard and str(event[1]) == "tank_destroyed"
 					heard = heard or its
-			if its:
+					shown = guessed
+			if its and not shown:
 				_play(event)
-			else:
+			elif not its:
 				rest.append(event)
 		events = rest
 	snapshot["removed"] = left

@@ -370,6 +370,8 @@ func _opponent_ahead(group: String, direction: Vector2, distance: float) -> bool
 ## Something to bump into: not airborne, not still materializing. (A client's
 ## tanks show the host's and touch nothing, so there their state tells.)
 func is_solid() -> bool:
+	if net_gone:
+		return false
 	if Net.is_client():
 		return not is_materializing and not is_flying
 	return collision_layer != 0
@@ -412,6 +414,11 @@ func _shot_row(row_offset: float) -> float:
 
 func _shot_number() -> int:
 	return -1
+
+## Host: for a client's own shot, which client's screen it's judged by as it
+## flies (Bullet.net_view); [] for any other.
+func _shot_view() -> Array:
+	return []
 
 ## On a client: [param shell], a shot of this machine's own tank, is about to
 ## fly here as a ghost (PlayerTank tells the host).
@@ -467,6 +474,7 @@ func _spawn_bullet(
 	bullet.accel = accel
 	bullet.max_speed = max_speed
 	bullet.net_shot = _shot_number()
+	bullet.net_view = _shot_view()
 	bullet.global_position = spawn_position
 
 	# On a client this is its own tank's shot, fired here at once (lag
@@ -852,6 +860,11 @@ func net_apply(state: Array) -> void:
 ## The add-ons named by [param bits] (NET_ADDON_BITS), put on and taken off.
 func _net_apply_addons(_bits: int) -> void:
 	pass
+
+## On a client: shown dead already, its death guessed from this machine's own
+## shot before the host's word of it (NetClientWorld.guess_kill): hidden, and
+## nothing here meets it, until the host's word settles it.
+var net_gone := false
 
 ## A client's tank this machine drives itself (PlayerTank): its facing and
 ## motion are its own, not the host's.

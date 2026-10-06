@@ -4,7 +4,9 @@ extends Node
 ## Thirty times a second it gathers every replicated entity, the map cells that
 ## changed, the game state and the events since, and sends each client what
 ## that client doesn't have yet: all of it to a client new to this world, only
-## the changes to one already following it.
+## the changes to one already following it. It keeps the last second of the
+## tanks and shells it sent, so a client's own shots are judged by what that
+## client's screen showed as they flew (seen_at; Bullet._meet_as_seen).
 ##
 ## Flow control: a client that hasn't acknowledged the snapshots sent it in the
 ## last MAX_UNACKED sends, or whose connection still has MAX_PENDING bytes
@@ -18,6 +20,16 @@ const MAX_PENDING := 48 * 1024
 ## Sounds and effects that pile up for a stalled client beyond this are dropped:
 ## a client that far behind would only play them late.
 const MAX_QUEUED_EVENTS := 256
+## How long back the host keeps the tanks and shells it sent (seen_at), ms: a
+## client's own shots are judged by what its screen showed, and a screen can be
+## that far behind (a trip, its smoothing, a shot held up here).
+const SEEN_KEEP_MS := 1000.0
+## What's kept of each (seen_at): a tank's [SEEN_TANK, where, facing, solid (it
+## can be hit), its moon shield on, health, an enemy's, blinking (an item's
+## invulnerability)], a shell's [SEEN_SHELL, where, way, collision lanes, a
+## player's, damage, fire or explosion (it goes on meeting anything)].
+const SEEN_TANK := 0
+const SEEN_SHELL := 1
 
 ## The host world now running, for the static recorders below.
 static var active: NetHostWorld = null
@@ -36,6 +48,15 @@ var epoch := 0
 var _frame := 0
 var _next_nid := 1
 var _views: Dictionary = {}   # peer id -> ClientView
+## The tanks and shells as each snapshot had them, oldest first, SEEN_KEEP_MS
+## of them: [the snapshot's time (its SNAP_TIME), {instance id: what's kept}].
+var _seen: Array = []
+## Per client (peer id): the tanks and shells its own shots, judged by what its
+## screen showed, have finished (instance id -> true). Its screen shows them gone
+## at once, so its later shots aren't judged to meet them.
+var _gone_for: Dictionary = {}
+var _seen_asked: Array = []
+var _seen_answer: Array = []
 
 
 ## What one client holds of this world.
@@ -78,13 +99,15 @@ func _physics_process(_delta: float) -> void:
 	_sync_views()
 	if _views.is_empty():
 		return
+	var now := Time.get_ticks_msec()
 	var entities := _gather()
+	_keep_seen(now)
 	var game_state := _game_state()
 	for peer: int in _views:
 		var view: ClientView = _views[peer]
 		if not _ready_for(peer, view):
 			continue
-		var snapshot := _snapshot_for(view, entities, game_state)
+		var snapshot := _snapshot_for(view, entities, game_state, now)
 		var body := var_to_bytes(snapshot)
 		var packet := PackedByteArray()
 		packet.resize(4)
@@ -129,6 +152,7 @@ func _sync_views() -> void:
 	for peer: int in _views.keys():
 		if peer not in ids:
 			_views.erase(peer)
+			_gone_for.erase(peer)
 	for peer in ids:
 		if not _views.has(peer):
 			_views[peer] = ClientView.new()
@@ -159,6 +183,86 @@ func _gather() -> Dictionary:
 	return out
 
 
+## Keeps the tanks and shells as the snapshot of [param now] has them, for
+## seen_at, and lets go of those older than SEEN_KEEP_MS (all but one: a moment
+## between it and the next is still worked out).
+func _keep_seen(now: int) -> void:
+	var kept := {}
+	for node: Node in get_tree().get_nodes_in_group(NetWorld.GROUP):
+		if node.is_queued_for_deletion() or not node.is_inside_tree():
+			continue
+		if node is BaseTank:
+			var tank := node as BaseTank
+			var enemy := tank as EnemyTank
+			kept[tank.get_instance_id()] = [SEEN_TANK, tank.global_position, tank.current_direction, tank.is_solid(),
+					enemy != null and enemy.has_moon_shield, tank.health, enemy != null,
+					enemy != null and enemy.is_invulnerable()]
+		elif node is Bullet:
+			var shell := node as Bullet
+			kept[shell.get_instance_id()] = [SEEN_SHELL, shell.global_position, shell.direction,
+					shell.collision_lane_offsets, shell.is_player_bullet, shell.damage,
+					shell.ignites_ground or shell.explodes]
+	_seen.append([float(now), kept])
+	while _seen.size() > 2 and now - float(_seen[1][0]) > SEEN_KEEP_MS:
+		_seen.pop_front()
+	if _frame % 60 == 0:
+		# What's finished that no snapshot kept has any more can't come up again.
+		for peer: int in _gone_for:
+			var gone: Dictionary = _gone_for[peer]
+			for id: int in gone.keys():
+				if not _seen.any(func(entry: Array) -> bool: return (entry[1] as Dictionary).has(id)):
+					gone.erase(id)
+	_seen_asked = []
+
+
+## The tanks and shells as the screen of client [param peer] showed them at
+## [param time] (the host's clock, ms; <= 0: as the newest snapshot had them),
+## worked out as that client does between the two snapshots around it
+## (NetClientWorld._glide: the places glide, the rest as the earlier one had it),
+## less those its own shots have finished (mark_gone). Further back than what's
+## kept, as the oldest had them. [[instance id, what's kept (SEEN_TANK,
+## SEEN_SHELL)], ...].
+func seen_at(time: float, peer: int) -> Array:
+	var asked := [Engine.get_physics_frames(), time, peer, _seen.size()]
+	if asked == _seen_asked:
+		return _seen_answer
+	var out: Array = []
+	if not _seen.is_empty():
+		var at := _seen.size() - 1
+		if time > 0.0:
+			at = 0
+			for i in range(_seen.size() - 1, -1, -1):
+				if float(_seen[i][0]) <= time:
+					at = i
+					break
+		var before: Dictionary = _seen[at][1]
+		var after: Dictionary = _seen[at + 1][1] if at + 1 < _seen.size() else {}
+		var span: float = float(_seen[at + 1][0]) - float(_seen[at][0]) if at + 1 < _seen.size() else 0.0
+		var weight := clampf((time - float(_seen[at][0])) / span, 0.0, 1.0) if span > 0.0 and time > 0.0 else 0.0
+		var gone: Dictionary = _gone_for.get(peer, {})
+		for id: int in before:
+			if gone.has(id):
+				continue
+			var kept: Array = before[id]
+			if after.has(id) and weight > 0.0:
+				kept = kept.duplicate()
+				kept[1] = (kept[1] as Vector2).lerp(after[id][1], weight)
+			out.append([id, kept])
+	_seen_asked = asked
+	_seen_answer = out
+	return out
+
+
+## Client [param peer]'s own shot, judged by what its screen showed, has
+## finished tank or shell [param id]: its screen shows it gone at once, so its
+## later shots don't meet it.
+func mark_gone(peer: int, id: int) -> void:
+	if not _gone_for.has(peer):
+		_gone_for[peer] = {}
+	_gone_for[peer][id] = true
+	_seen_asked = []
+
+
 ## A fresh id: 16 bits, counting up, so one is not reused while a client could
 ## still hold the entity that had it.
 func _new_nid(in_use: Dictionary) -> int:
@@ -170,12 +274,12 @@ func _new_nid(in_use: Dictionary) -> int:
 	return 1
 
 
-func _snapshot_for(view: ClientView, entities: Dictionary, game_state: Dictionary) -> Array:
+func _snapshot_for(view: ClientView, entities: Dictionary, game_state: Dictionary, now: int) -> Array:
 	var snapshot := []
 	snapshot.resize(NetWorld.SNAP_SIZE)
 	snapshot[NetWorld.SNAP_SEQ] = _sequence
 	snapshot[NetWorld.SNAP_EPOCH] = epoch
-	snapshot[NetWorld.SNAP_TIME] = Time.get_ticks_msec()
+	snapshot[NetWorld.SNAP_TIME] = now
 	snapshot[NetWorld.SNAP_FLAGS] = 0
 	if view.full:
 		view.full = false

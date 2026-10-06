@@ -457,6 +457,16 @@ func _shot_row(row_offset: float) -> float:
 func _shot_number() -> int:
 	return -1 if _client_shot.is_empty() else int(_client_shot[3])
 
+## Host: a client's own shot is judged by what that client's screen showed as
+## it flew there: its controller, and the run of reports and the frame it was
+## fired at (the report that came with it, else the newest).
+func _shot_view() -> Array:
+	if _client_shot.is_empty():
+		return []
+	var report: Array = _client_shot[2]
+	var frame := int(report[0]) if not report.is_empty() else PlayerInput.remote_report_frame(player_id)
+	return [PlayerInput.seats[player_id], int(_client_shot[5]), frame]
+
 func _shooter_report() -> Array:
 	if Net.is_client() or not PlayerInput.remote_predicts(player_id):
 		return []

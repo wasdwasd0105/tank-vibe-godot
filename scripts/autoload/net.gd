@@ -39,7 +39,7 @@ enum Role { OFFLINE, HOST, CLIENT }
 enum Transport { TCP, UDP }
 
 ## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 6
+const PROTOCOL := 7
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -59,12 +59,15 @@ const PING_SAMPLES := 5
 ## flags, facing, last correction taken, the physics frame it was there (0-255,
 ## wrapping), x and y as 32-bit floats), then the shots each one's tank has
 ## fired here (3 each: a count per fire button, 0-255, wrapping; and the row
-## the latest of each left from, 0 left to 2 right, two bits each).
-const INPUT_SIZE := 42
+## the latest of each left from, 0 left to 2 right, two bits each), then the
+## moment of the host's world this machine shows just now (4: the host's clock,
+## ms; 0 none), which the host judges its shots by (NetHostWorld.seen_at).
+const INPUT_SIZE := 46
 const REPORT_AT := 12
 const REPORT_SIZE := 12
 const SHOTS_AT := 36
 const SHOTS_SIZE := 3
+const VIEW_AT := 42
 ## A report's flags: there is one (the tank drives here just now), it's moving,
 ## and this machine runs its own tanks at all (its lag compensation on).
 const REPORT_HAS := 1
@@ -190,6 +193,9 @@ var input_blocked := false
 ## "facing", "moving", "override", "frame"}, or {} for none. They go out with
 ## the inputs, and the host's copies follow them.
 var _tank_reports: Array = [{}, {}]
+## Client: the moment of the host's world shown here just now, on the host's
+## clock (ms; NetClientWorld sets it each frame), or 0 while none is.
+var client_view_time := 0.0
 ## Client: the trip to the host and back, ms: the middle one of the latest
 ## PING_SAMPLES (a stall here, as when a stage loads, is one bad trip), 0 until
 ## timed.
@@ -604,6 +610,7 @@ func join(address: String, p_port: int, p_name: String, password: String = "") -
 	_presses = [[0, 0], [0, 0]]
 	_shots = [[0, 0], [0, 0]]
 	_shot_rows = [[1, 1], [1, 1]]
+	client_view_time = 0.0
 	_sent_input = PackedByteArray()
 	_latest_snapshot = -1
 	_ping_timer = PING_EVERY  # the first once the host's screen has loaded here
@@ -779,6 +786,7 @@ func _end(reason: String) -> void:
 	_joined = false
 	input_blocked = false
 	_tank_reports = [{}, {}]
+	client_view_time = 0.0
 	ping_ms = 0.0
 	_ping_timer = 0.0
 	_ping_samples.clear()
@@ -1299,8 +1307,9 @@ func _send_input() -> void:
 ## the direction, both fire buttons held and a press counter each, then per
 ## local player whether this machine runs its own tanks (lag compensation) and
 ## its tank as it drives here, if it drives one, then the shots its tank fired
-## here (note_shot). Idle while this machine's menu or the map question has the
-## keys.
+## here (note_shot), then the moment of the host's world shown here
+## (client_view_time). Idle while this machine's menu or the map question has
+## the keys.
 func _input_message() -> PackedByteArray:
 	var blocked := input_blocked or map_prompt_open
 	for slot in 2:
@@ -1341,6 +1350,7 @@ func _input_message() -> PackedByteArray:
 		bytes[shots] = _shots[slot][0]
 		bytes[shots + 1] = _shots[slot][1]
 		bytes[shots + 2] = int(_shot_rows[slot][0]) | int(_shot_rows[slot][1]) << 2
+	bytes.encode_u32(VIEW_AT, clampi(roundi(client_view_time), 0, 0xffffffff))
 	return bytes
 
 
@@ -1355,6 +1365,7 @@ func _c_input(bytes: PackedByteArray) -> void:
 		return
 	_heard(sender)
 	acks[sender] = bytes.decode_s32(0)
+	var view := float(bytes.decode_u32(VIEW_AT))
 	for slot in 2:
 		var at := 4 + slot * 4
 		var direction := int(bytes[at]) - 1
@@ -1366,7 +1377,7 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var position := Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8))
 		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
 		PlayerInput.set_remote_report(sender, slot, flags & REPORT_HAS != 0 and sane, flags & REPORT_PREDICTS != 0,
-				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]))
+				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]), view)
 		var shots := SHOTS_AT + slot * SHOTS_SIZE
 		var rows := int(bytes[shots + 2])
 		PlayerInput.set_remote_shots(sender, slot, [int(bytes[shots]), int(bytes[shots + 1])], [rows & 3, (rows >> 2) & 3])

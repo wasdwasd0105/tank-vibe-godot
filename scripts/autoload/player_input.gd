@@ -36,6 +36,9 @@ const CLOCK_SLACK := 1.0
 const CLOCK_FELL := 2.0
 ## The most shots of a client's own kept waiting to be fired here.
 const MAX_DUE_SHOTS := 8
+## How many of a client's frames are kept with the moment of the host's world
+## its screen showed in each (four seconds of them).
+const MAX_VIEWS := 240
 
 signal seats_changed
 
@@ -85,10 +88,16 @@ class RemotePad:
 	## here, oldest first (PlayerTank._fire_client_shots): [fire button, row
 	## (0 left, 1 middle, 2 right), the report that came with it (where it had
 	## the tank, as reports has them; [] none), its number (button * 256 + its
-	## count), when it came here (msec)].
+	## count), when it came here (msec), the run of reports it came in].
 	var shots: Array[int] = [0, 0]
 	var shots_heard := false
 	var shots_due: Array = []
+	## The moment of the host's world the client's screen showed in each of its
+	## latest frames, oldest first, for judging its shots by what it saw
+	## (view_time): [run of reports, frame (as reports count them), the host's
+	## clock then, ms]. Not played away like reports: its shells in flight go on
+	## needing them.
+	var views: Array = []
 
 
 func _ready() -> void:
@@ -267,9 +276,10 @@ func set_remote(peer: int, slot: int, direction: int, held: Array, presses: Arra
 ## the client at its physics frame [param frame] (0-255, wrapping), queued for
 ## the host's copy ([param has] false: it doesn't drive one there just now); and
 ## whether that client runs its own tank at all ([param predicts]: its lag
-## compensation is on).
+## compensation is on); and the moment of the host's world its screen showed
+## then, [param view] (the host's clock, ms; 0 none).
 func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position: Vector2, facing: int,
-		moving: bool, override: int, frame: int) -> void:
+		moving: bool, override: int, frame: int, view: float = 0.0) -> void:
 	var pad: RemotePad = _remote.get(controller_key(peer, slot))
 	if pad == null:
 		return
@@ -309,6 +319,10 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
 	if pad.reports.size() > MAX_QUEUED_REPORTS:
 		pad.reports.pop_front()
+	if view > 0.0:
+		pad.views.append([pad.report_run, frame, view])
+		if pad.views.size() > MAX_VIEWS:
+			pad.views.pop_front()
 
 
 ## Client [param peer]'s local player [param slot]'s tank has fired
@@ -332,7 +346,8 @@ func set_remote_shots(peer: int, slot: int, shots: Array, rows: Array) -> void:
 			continue  # an older count (never, in order as messages come)
 		for i in new:
 			var number := (pad.shots[b] + 1 + i) & 0xff
-			pad.shots_due.append([b, clampi(int(rows[b]), 0, 2), report, b * 256 + number, Time.get_ticks_msec()])
+			pad.shots_due.append([b, clampi(int(rows[b]), 0, 2), report, b * 256 + number, Time.get_ticks_msec(),
+					pad.report_run])
 		pad.shots[b] = count
 	while pad.shots_due.size() > MAX_DUE_SHOTS:
 		pad.shots_due.pop_front()
@@ -370,6 +385,30 @@ func remote_pad(tank: int) -> RemotePad:
 	if not is_remote_seat(tank):
 		return null
 	return _remote.get(seats[tank])
+
+
+## The moment of the host's world (the host's clock, ms) that the screen of the
+## client with controller [param key] showed in its frame [param frame] of run
+## [param run] (as its reports count them): as it said, or from its nearest
+## frame that run, a frame on for each frame between. -1 if it never said.
+func view_time(key: int, run: int, frame: int) -> float:
+	var pad: RemotePad = _remote.get(key)
+	if pad == null:
+		return -1.0
+	var nearest: Array = []
+	for i in range(pad.views.size() - 1, -1, -1):
+		var entry: Array = pad.views[i]
+		if int(entry[0]) != run:
+			continue
+		if int(entry[1]) == frame:
+			return float(entry[2])
+		if nearest.is_empty() or absi(int(entry[1]) - frame) < absi(int(nearest[1]) - frame):
+			nearest = entry
+		if int(entry[1]) < frame:
+			break  # the older ones are further off
+	if nearest.is_empty():
+		return -1.0
+	return float(nearest[2]) + (frame - int(nearest[1])) * 1000.0 / Engine.physics_ticks_per_second
 
 
 ## Forgets client [param peer]'s controllers and frees the seats they held.

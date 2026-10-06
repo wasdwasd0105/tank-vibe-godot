@@ -31,6 +31,8 @@ var _client_at := Vector2.ZERO
 var _client_facing := Vector2.UP
 var _client_moving := false
 var _client_override := 0
+## The moment of the host's world its screen shows, as its reports say (0 none).
+var _client_view := 0.0
 ## The client's own shots as it counts them, per fire button, and the row of
 ## the latest of each (_client_fires).
 var _client_shots := [0, 0]
@@ -73,7 +75,7 @@ func _report(local: Vector2, facing: Vector2, moving: bool = true, override: int
 func _send_report(local: Vector2, facing: Vector2, moving: bool, override: int) -> void:
 	_client_frame += 1
 	PlayerInput.set_remote_report(PEER, 0, _client_has, _client_predicts, _at(local), BaseTank.FACINGS.find(facing),
-			moving, override, _client_frame & 0xff)
+			moving, override, _client_frame & 0xff, _client_view)
 
 
 ## The client's report each frame, ahead of the tanks' (this node comes first).
@@ -134,6 +136,92 @@ func _client_fires(local: Vector2, facing: Vector2, button: int = 0, row: int = 
 func _client_shells() -> Array:
 	return get_tree().get_nodes_in_group(NetWorld.GROUP).filter(
 			func(node: Node) -> bool: return node is Bullet and node.owner_player == 0 and not node.is_queued_for_deletion())
+
+
+## Its own shot fired here at once with [param action], flown on frame by
+## frame till it ends: its ghost (null if none).
+func _fly_shot(world: NetClientWorld, action: String = "p1_shoot") -> Bullet:
+	_player.can_shoot = true
+	Input.action_press(action)
+	_fire_here()
+	Input.action_release(action)
+	var shot: Bullet = world._ghosts[-1]["node"] if not world._ghosts.is_empty() else null
+	if shot:
+		shot.set_physics_process(false)
+		for i in 120:
+			shot._fly_ghost(1.0 / 60.0)
+			if not shot.visible:
+				break
+	return shot
+
+
+## An enemy tank shown here as the host's entity [param nid], with
+## [param hp] health, at [param local].
+func _shown_enemy(world: NetClientWorld, nid: int, local: Vector2, hp: int) -> EnemyTank:
+	var enemy := _spawn_enemy(local)
+	enemy.health = hp
+	enemy.current_direction = Vector2.UP
+	world._nodes[nid] = enemy
+	world._states[nid] = enemy.net_state()
+	world._types[nid] = NetWorld.T_ENEMY
+	return enemy
+
+
+## A shell of the enemies' shown here as the host's entity [param nid], at
+## [param local], going [param way].
+func _shown_enemy_shell(world: NetClientWorld, nid: int, local: Vector2, way: Vector2) -> Bullet:
+	var theirs: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	theirs.net_setup([BaseTank.FACINGS.find(way), "regular", [0.0], -1, 256.0, -1.0, false, 0.0, 0.0, -1, 1])
+	_game.get_node("Entities/Bullets").add_child(theirs)
+	theirs.set_physics_process(false)
+	NetClientWorld._strip_physics(theirs)
+	theirs.global_position = _at(local)
+	world._nodes[nid] = theirs
+	world._states[nid] = [theirs.global_position.x, theirs.global_position.y]
+	world._types[nid] = NetWorld.T_BULLET
+	return theirs
+
+
+## What [param seen] (NetHostWorld.seen_at) keeps of [param node], or [].
+func _seen_of(seen: Array, node: Object) -> Array:
+	for each: Array in seen:
+		if int(each[0]) == node.get_instance_id():
+			return each[1]
+	return []
+
+
+## The host's snapshot comes to [param world], saying [param removed] have
+## gone, with [param events], and entities [param moved] (nid -> [x, y]) are
+## there; its time far off, so only what's shown at once shows. (The made-up
+## time is no clock to go by: the world's is kept.)
+func _host_says(world: NetClientWorld, removed: Array, events: Array, moved: Dictionary = {}) -> void:
+	var packet := []
+	packet.resize(NetWorld.SNAP_SIZE)
+	packet[NetWorld.SNAP_SEQ] = 1
+	packet[NetWorld.SNAP_EPOCH] = 1
+	packet[NetWorld.SNAP_TIME] = Time.get_ticks_msec() + 100000
+	packet[NetWorld.SNAP_FLAGS] = 0
+	packet[NetWorld.SNAP_MAP] = []
+	packet[NetWorld.SNAP_SPAWNS] = []
+	var updates := StreamPeerBuffer.new()
+	for nid: int in moved:
+		world._templates[nid] = world._states[nid].duplicate()
+		NetWorld.put_update(updates, nid, moved[nid], world._states[nid])
+	packet[NetWorld.SNAP_UPDATES] = updates.data_array
+	packet[NetWorld.SNAP_REMOVED] = PackedInt32Array(removed)
+	packet[NetWorld.SNAP_TILES] = PackedInt32Array()
+	packet[NetWorld.SNAP_GAME] = {}
+	packet[NetWorld.SNAP_EVENTS] = events
+	var was := [world._started, world._epoch, world._clock_offset, world._have_clock, world._late.duplicate()]
+	world._started = true
+	world._epoch = 1
+	world._on_packet(var_to_bytes(packet))
+	world._buffer.clear()
+	world._started = was[0]
+	world._epoch = was[1]
+	world._clock_offset = was[2]
+	world._have_clock = was[3]
+	world._late = was[4]
 
 
 ## Fires as the client's own tank would on a client: its shot predicted here.
@@ -588,8 +676,9 @@ func _run() -> void:
 		and shells[3].global_position.y <= up_barrel.y and shells[3].global_position.y > up_barrel.y - shells[3].speed / 30.0,
 		"turned and fired at once: the shell goes its new way, out of its barrel that way")
 	var args := shell.net_spawn_args() if shell else []
-	check(args.size() == 10 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed) and args[9] == shell.net_shot,
-		"the clients learn whose shell it is, how it flies and its number: %s" % str(args))
+	check(args.size() == 12 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed) and args[9] == shell.net_shot
+		and args[10] == shell.damage and args[11] == Array(shell.collision_lane_offsets),
+		"the clients learn whose shell it is, how it flies, its number, its damage and the lanes it hits on: %s" % str(args))
 	for each: Node in _client_shells():
 		each.queue_free()
 	# A shot of a kind with its shells in flight here at their limit waits; then
@@ -636,6 +725,139 @@ func _run() -> void:
 	_player.apply_mine_slow()
 	check(_player.net_state()[3] & PlayerTank.NET_SLOWED != 0, "and a mine's slowing, so the client drives slow too")
 	_player.clear_mine_slow()
+
+	print("\n[D2] Its shots judged by what its screen showed (lag compensation: favor the shooter)")
+	# Each shell has its own box, as Bullet.touches_tank and shells_touch work it
+	# out (the scene's one shape resource would be every shell's).
+	var tall: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	tall.direction = Vector2.UP
+	tall.collision_lane_offsets = [-16.0, 16.0]
+	var flat: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	flat.direction = Vector2.RIGHT
+	flat.collision_lane_offsets = [0.0]
+	for each: Bullet in [tall, flat]:
+		_game.get_node("Entities/Bullets").add_child(each)
+		each.set_physics_process(false)
+	var tall_box: Vector2 = (tall.get_node("CollisionShape2D").shape as RectangleShape2D).size
+	var flat_box: Vector2 = (flat.get_node("CollisionShape2D").shape as RectangleShape2D).size
+	check(tall_box == Bullet.box_half(Vector2.UP, tall.collision_lane_offsets) * 2.0 and tall_box == Vector2(42, 10)
+		and flat_box == Vector2(10, 10), "each shell's box is its own: %s for a two-lane one going up, %s for a one-lane one" % [tall_box, flat_box])
+	tall.queue_free()
+	flat.queue_free()
+	var copied: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	copied.net_setup([0, "regular", [0.0], 1, 256.0, -1.0, false, 0.0, 0.0, 5, 1, [-16.0, 16.0]])
+	check(Array(copied.collision_lane_offsets) == [-16.0, 16.0] and Array(copied.visual_lane_offsets) == [0.0]
+		and copied.tile_lane_offsets == BaseTank.BODY_LANE_OFFSETS,
+		"a client's copy of a shot drawn as one shell meets things on its two lanes, as the host's shell does")
+	copied.free()
+	Net.client_view_time = 123456.0
+	var message := Net._input_message()
+	check(message.size() == Net.INPUT_SIZE and message.decode_u32(Net.VIEW_AT) == 123456,
+		"a client's input message says the moment of the host's world its screen shows")
+	Net.client_view_time = 0.0
+	var pad := PlayerInput.remote_pad(0)
+	var seat: int = PlayerInput.seats[0]
+	_client_view = 5000.0
+	_send_report(home, Vector2.UP, false, _player.net_override)
+	var said := PlayerInput.remote_report_frame(0)
+	check(is_equal_approx(PlayerInput.view_time(seat, pad.report_run, said), 5000.0)
+		and is_equal_approx(PlayerInput.view_time(seat, pad.report_run, said + 3), 5000.0 + 3000.0 / Engine.physics_ticks_per_second)
+		and PlayerInput.view_time(seat, pad.report_run + 1, said) < 0.0,
+		"the host keeps the moment each of its frames showed: as said, a frame on for each frame past the nearest; none from another run")
+	# What the host sent it, kept: a tank as it was then, and as it is now.
+	var host_world := NetHostWorld.new()
+	host_world.setup(_game, _lm, null)
+	_game.add_child(host_world)
+	var seen_there := _at(home + Vector2(0, -220))
+	var drove_off := _spawn_enemy(home + Vector2(0, -220))
+	await _wait_frames(2)
+	host_world._keep_seen(10000)
+	drove_off.global_position = seen_there + Vector2(200, 0)  # it drove off since, here
+	host_world._keep_seen(10034)
+	var seen := _seen_of(host_world.seen_at(10017.0, PEER), drove_off)
+	check(not seen.is_empty() and (seen[1] as Vector2).distance_to(seen_there + Vector2(100, 0)) < 0.01 and bool(seen[3]) and bool(seen[6]),
+		"what its screen showed between two snapshots: the tank midway, as that client glides it")
+	check((_seen_of(host_world.seen_at(9000.0, PEER), drove_off)[1] as Vector2).distance_to(seen_there) < 0.01
+		and (_seen_of(host_world.seen_at(0.0, PEER), drove_off)[1] as Vector2).distance_to(seen_there + Vector2(200, 0)) < 0.01,
+		"before the oldest kept: as the oldest had it; no moment said: as the newest has it")
+	# Its screen shows that tank where it was; it fires straight up at it. Here
+	# the tank has driven off, and another (not on its screen) is in the way.
+	var unseen := _spawn_enemy(home + Vector2(0, -120))
+	var unseen_hp := unseen.health
+	await _wait_frames(2)
+	_client_view = 10000.0
+	_place(home, Vector2.UP)
+	_report(home, Vector2.UP, false)
+	await _wait_frames(2)
+	for old: Node in _client_shells():
+		old.queue_free()
+	_client_fires(home, Vector2.UP)
+	await tree.physics_frame
+	var judged: Bullet = _client_shells()[0] if _client_shells().size() == 1 else null
+	check(judged != null and judged.net_view.size() == 3 and int(judged.net_view[0]) == seat,
+		"the host's shell for a client's own shot knows whose screen it's judged by")
+	var ended := [Vector2.INF]
+	var judged_step := judged.speed / Engine.physics_ticks_per_second if judged else 0.0
+	if judged:
+		judged.tree_exiting.connect(func() -> void: ended[0] = judged.global_position)
+	await _wait_frames(70)
+	check(not is_instance_valid(drove_off) or drove_off.is_queued_for_deletion(),
+		"it hits the tank where that client's screen had it: the tank is killed, %.0f px off its way here" % 200.0)
+	check(absf(ended[0].y - (seen_there.y + BaseTank.HITBOX_SIZE * 0.5 + Bullet.BULLET_LENGTH * 0.5)) <= judged_step,
+		"its shell ends where it met that tank on that screen (%s)" % str(ended[0] - _lm.global_position))
+	check(is_instance_valid(unseen) and unseen.health == unseen_hp,
+		"and passes the one here that wasn't on that screen, untouched")
+	# The tank it killed shows gone on its screen at once: its next shot that way
+	# flies on where the tank was.
+	var past_shot_at := [Vector2.INF]
+	_client_fires(home, Vector2.UP)
+	await tree.physics_frame
+	var second: Bullet = _client_shells()[0] if _client_shells().size() == 1 else null
+	if second:
+		second.tree_exiting.connect(func() -> void: past_shot_at[0] = second.global_position)
+	await _wait_frames(70)
+	check(past_shot_at[0].y < ended[0].y - BaseTank.HITBOX_SIZE,
+		"the next shot that way flies on where that tank was: gone for that client (%s)" % str(past_shot_at[0] - _lm.global_position))
+	unseen.queue_free()
+	# A shell of the enemies' on its way as that screen had it, gone off
+	# elsewhere here since: the two meet there, as that screen showed.
+	var enemy_shell: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	enemy_shell.direction = Vector2.DOWN
+	enemy_shell.is_player_bullet = false
+	enemy_shell.owner_player = -1
+	enemy_shell.collision_lane_offsets = [0.0]
+	enemy_shell.visual_lane_offsets = [0.0]
+	enemy_shell.set_collision_layer_value(6, true)
+	for layer: int in [1, 3, 5, 8]:
+		enemy_shell.set_collision_mask_value(layer, true)
+	_game.get_node("Entities/Bullets").add_child(enemy_shell)
+	enemy_shell.set_physics_process(false)
+	var meet_at := _at(home + Vector2(0, -200))
+	enemy_shell.global_position = meet_at
+	host_world._keep_seen(20000)
+	enemy_shell.global_position = meet_at + Vector2(300, 0)
+	host_world._keep_seen(20034)
+	_client_view = 20000.0
+	await _wait_frames(2)
+	var clash_end := [Vector2.INF]
+	var enemy_shell_id := enemy_shell.get_instance_id()
+	enemy_shell.tree_exiting.connect(func() -> void: clash_end[0] = enemy_shell.global_position)
+	_client_fires(home, Vector2.UP)
+	await tree.physics_frame
+	var third: Bullet = _client_shells()[0] if _client_shells().size() == 1 else null
+	var third_end := [Vector2.INF]
+	if third:
+		third.tree_exiting.connect(func() -> void: third_end[0] = third.global_position)
+	await _wait_frames(50)
+	check(clash_end[0].distance_to(meet_at) < 0.01 and absf(third_end[0].y - meet_at.y) < Bullet.BULLET_LENGTH,
+		"an enemies' shell on its way as that screen had it: the two meet there, both gone, theirs where that screen had it")
+	check(host_world._gone_for.get(PEER, {}).has(enemy_shell_id), "and gone for that client")
+	_client_view = 0.0
+	_report(home, Vector2.RIGHT, false)  # (its reports every frame, as [D] left them)
+	for old: Node in _client_shells():
+		old.queue_free()
+	host_world.queue_free()
+	await tree.physics_frame
 
 	print("\n[E] A client with its lag compensation off: its keys drive the copy, as before")
 	_place(home, Vector2.RIGHT)
@@ -778,6 +1000,13 @@ func _run() -> void:
 	world.setup(_game, _lm, null, {"bullets": bullets}, fx)
 	_game.add_child(world)
 	check(NetClientWorld.of(tree) == world, "the game's client world")
+	world._shown_time = 5000.0
+	world._buffer = [{"time": 5033.0}]
+	check(is_equal_approx(world._view_time(5016.0), 5016.0) and is_equal_approx(world._view_time(5100.0), 5033.0)
+		and is_equal_approx(world._view_time(4990.0), 5000.0),
+		"the moment of the host's world shown (the host judges its shots by it): on from the snapshot shown towards the next")
+	world._buffer.clear()
+	check(is_equal_approx(world._view_time(5016.0), 5000.0), "no next one come yet: the one shown")
 	var own: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
 	own.net_setup([BaseTank.FACINGS.find(Vector2.RIGHT), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0])
 	_game.get_node("Entities/Bullets").add_child(own)
@@ -1041,7 +1270,7 @@ func _run() -> void:
 				break
 			for t in 2:
 				seen_past[t] = seen_past[t] or drill.global_position.y < line[t].global_position.y
-	var near_edge := line[2].global_position.y + BaseTank.HITBOX_SIZE * 0.5
+	var near_edge := line[2].global_position.y + BaseTank.HITBOX_SIZE * 0.5 + Bullet.BULLET_LENGTH * 0.5  # (where their shapes meet)
 	check(drill != null and drill.pierces and seen_past == [true, true] and not drill.visible
 		and drill.global_position.y <= near_edge and drill.global_position.y > near_edge - 8.0,
 		"an AP shell drills on through tanks of 1 and 2 HP, seen past them, and stops in one of 9 (its pool of 8): %s" % str(
@@ -1145,6 +1374,33 @@ func _run() -> void:
 	check(not world.node_for(97).visible and world._own_hits.has(line[0].get_instance_id()),
 		"one drawn ahead reaching a tank here first: that tank noted too")
 	world._despawn(97)
+	# One drawn ahead meeting a shell of the enemies' here: the two meet at once,
+	# as the host will have them.
+	var aside := _at(home + Vector2(240, 0))
+	var oncoming := _shown_enemy_shell(world, 116, home + Vector2(240, -60), Vector2.DOWN)
+	world._spawn(117, NetWorld.T_BULLET, [BaseTank.FACINGS.find(Vector2.UP), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0, 998, 1],
+			[aside.x, aside.y])
+	(world.node_for(117) as Bullet).set_physics_process(false)
+	world._place(117, world.node_for(117), aside)
+	var drawn_end: Vector2 = world._own_shells[117].get("ended_at", Vector2.INF)
+	check(not world.node_for(117).visible and not oncoming.visible and world._guessed_clashes.has(oncoming.get_instance_id())
+		and absf(drawn_end.y - (oncoming.global_position.y + Bullet.BULLET_LENGTH)) < 0.01,
+		"one drawn ahead meeting a shell of the enemies' here: both gone at once, it ending where they touch")
+	world._despawn(117)
+	world._despawn(116)
+	world._guessed_clashes.clear()
+	# What comes onto the way it has flown already doesn't stop it: it got past.
+	world._spawn(118, NetWorld.T_BULLET, [BaseTank.FACINGS.find(Vector2.UP), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0, 997, 1],
+			[aside.x, aside.y])
+	var clear_shot := world.node_for(118) as Bullet
+	clear_shot.set_physics_process(false)
+	world._place(118, clear_shot, aside)
+	var behind_it := _spawn_enemy(home + Vector2(240, -20))
+	world._place(118, clear_shot, aside)
+	check(clear_shot.visible and not world._own_hits.has(behind_it.get_instance_id()),
+		"a tank coming onto the way it has flown already, behind it: it flies on")
+	behind_it.queue_free()
+	world._despawn(118)
 	world._predicted_hits.clear()
 	# A moon shield's front stops it, as on the host.
 	line[0].has_moon_shield = true
@@ -1187,6 +1443,217 @@ func _run() -> void:
 		"mines are left to the host: none laid here")
 	GameManager.player_secondary_weapon_types[0] = kind
 	GameManager.player_secondary_weapon_counts[0] = count
+	SoundManager._predicted.clear()
+
+	# Its own kills reacted to here first (Sean: "react locally first"): a shot
+	# taking a tank's last health shows it dying at once, its explosion and
+	# sound; the host's word settles it.
+	for i in 2:
+		await tree.physics_frame
+	var above := home + Vector2.UP * (BaseTank.TANK_SIZE * 0.5 + 80.0)
+	var victim := _shown_enemy(world, 98, above, 1)
+	var effects_before := fx.get_child_count()
+	var heard_at := Time.get_ticks_msec()
+	var my_shot := _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and victim.net_gone and not victim.visible and not victim.is_solid()
+		and world._guessed_kills.has(victim.get_instance_id()) and fx.get_child_count() >= effects_before + 2
+		and int(SoundManager._last_played.get(&"tank_destroyed", 0)) >= heard_at,
+		"a shot taking a tank's last health: shown dying here at once, its explosion and sound, not a trip later")
+	var victim_at := victim.global_position
+	var big_boom: Array = [NetWorld.EV_HIT, "tank", victim_at.x, victim_at.y] if not ThemeManager.get_tank_explode_frames().is_empty() \
+			else [NetWorld.EV_EXPLOSION, victim_at.x, victim_at.y, 2.0]
+	await tree.create_timer(0.1).timeout  # (past the sound's repeat guard)
+	effects_before = fx.get_child_count()
+	var boom_heard := int(SoundManager._last_played.get(&"tank_destroyed", 0))
+	_host_says(world, [98], [[NetWorld.EV_SOUND, "tank_destroyed"], [NetWorld.EV_KILL_TEXT, 100, 1, victim_at.x, victim_at.y], big_boom])
+	check(not world._nodes.has(98) and world._guessed_kills.is_empty() and fx.get_child_count() == effects_before + 1
+		and int(SoundManager._last_played.get(&"tank_destroyed", 0)) == boom_heard,
+		"the host's word of it comes: its score shows, its explosion and sound not again")
+	for i in 2:
+		await tree.physics_frame
+	# More health left than the my_shot takes: no guess.
+	var tough := _shown_enemy(world, 99, above, 2)
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and not tough.net_gone and tough.visible and world._guessed_kills.is_empty(),
+		"a tank with more health left than the shot takes: no guess, the host's word will say")
+	world._despawn(99)
+	for i in 2:
+		await tree.physics_frame
+	# A shell of the enemies' head-on on the way: the two meet here as the host
+	# will have them meet (it judges this machine's shots by what this machine
+	# shows), both gone at once, their ends shown; the tank behind lives.
+	var dueller := _shown_enemy(world, 100, above, 1)
+	var theirs := _shown_enemy_shell(world, 110, home + Vector2.UP * 70.0, Vector2.DOWN)
+	world._predicted_hits.clear()
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and absf(my_shot.global_position.y - theirs.global_position.y) < Bullet.BULLET_LENGTH
+		and not theirs.visible and world._guessed_clashes.has(theirs.get_instance_id()) and world._predicted_hits.size() == 2,
+		"a shell of the enemies' head-on on the way: the two meet here at once, both gone, both ends shown")
+	check(not dueller.net_gone and dueller.visible, "and the tank behind it lives: no kill")
+	_host_says(world, [110], [])
+	check(world._guessed_clashes.is_empty() and not theirs.visible, "the host's word of theirs gone: settled")
+	world._despawn(110)
+	world._despawn(100)
+	# The host's word that they didn't meet: its shell gone, theirs still there.
+	var stray := _shown_enemy_shell(world, 111, home + Vector2.UP * 70.0, Vector2.DOWN)
+	my_shot = _fly_shot(world)
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(112, NetWorld.T_BULLET, my_shot.net_spawn_args(), [muzzle.x, muzzle.y])
+	(world.node_for(112) as Bullet).set_physics_process(false)
+	var undone := world.guesses_undone
+	_host_says(world, [112], [])
+	check(stray.visible and world._guessed_clashes.is_empty() and world.guesses_undone == undone + 1,
+		"its shell gone on the host and theirs still there: theirs shows again")
+	world._despawn(112)
+	world._despawn(111)
+	world._predicted_hits.clear()
+	# An AP shell meeting one: theirs goes, it flies on a point the poorer.
+	GameManager.player_secondary_weapon_types[0] = "ap"
+	GameManager.player_secondary_weapon_counts[0] = 9
+	_player.active_ap_bullets = 0
+	for i in 2:
+		await tree.physics_frame
+	var met_by_ap := _shown_enemy_shell(world, 113, home + Vector2.UP * 90.0, Vector2.DOWN)
+	_player.can_shoot = true
+	Input.action_press("p1_shoot2")
+	_fire_here()
+	Input.action_release("p1_shoot2")
+	var through: Bullet = world._ghosts[-1]["node"] if not world._ghosts.is_empty() else null
+	if through:
+		through.set_physics_process(false)
+		for i in 20:
+			through._fly_ghost(1.0 / 60.0)
+	check(through != null and through.pierces and through.visible and through.global_position.y < met_by_ap.global_position.y - 20.0
+		and not met_by_ap.visible and int(through.net_walk.get("pool", 0)) == through.damage - 1,
+		"an AP shell meeting one: theirs gone, it flies on with a point less (%s of %d)" % [
+			str(through.net_walk.get("pool", -1)) if through else "none", through.damage if through else -1])
+	world._despawn(113)
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._guessed_clashes.clear()
+	world._predicted_hits.clear()
+	GameManager.player_secondary_weapon_types[0] = kind
+	GameManager.player_secondary_weapon_counts[0] = count
+	for i in 2:
+		await tree.physics_frame
+	# One driving across the shot, or facing it: where it's shown is where the
+	# host judges the shot to hit it: guessed.
+	var leaving := _shown_enemy(world, 101, above + Vector2(20, 0), 1)
+	leaving.move_speed = 200.0
+	world._states[101][2] = BaseTank.FACINGS.find(Vector2.RIGHT)
+	world._states[101][3] = int(world._states[101][3]) | BaseTank.NET_MOVING
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and leaving.net_gone,
+		"one driving across the shot, hit where it's shown: guessed (the host judges by what's shown here)")
+	world._despawn(101)
+	world._guessed_kills.clear()
+	for i in 2:
+		await tree.physics_frame
+	var facing_me := _shown_enemy(world, 107, above, 1)
+	facing_me.current_direction = Vector2.DOWN
+	world._states[107][2] = BaseTank.FACINGS.find(Vector2.DOWN)
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and facing_me.net_gone, "one facing the shot: guessed too")
+	world._despawn(107)
+	world._guessed_kills.clear()
+	for i in 2:
+		await tree.physics_frame
+	# Not sure enough to guess: a tank the shot only grazes (the host's look at
+	# this screen may be a frame off), or this machine shown further behind the
+	# host than the host looks back.
+	var grazing := Bullet.box_half(Vector2.UP, BaseTank.MID_ROW_COLLISION_OFFSETS).x + BaseTank.HITBOX_SIZE * 0.5 - 2.0
+	var grazed := _shown_enemy(world, 108, above + Vector2(grazing, 0), 1)
+	grazed.current_direction = Vector2.RIGHT
+	grazed.velocity = Vector2.RIGHT  # (driving across the shot's way)
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and world._own_hits.has(grazed.get_instance_id()) and not grazed.net_gone,
+		"one driving across the shot's way that the shot only grazes: it ends there, but no guess")
+	world._despawn(108)
+	for i in 2:
+		await tree.physics_frame
+	var standing := _shown_enemy(world, 119, above + Vector2(grazing, 0), 1)
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and standing.net_gone,
+		"one standing there (just where it's shown, on both machines): guessed")
+	world._despawn(119)
+	world._guessed_kills.clear()
+	for i in 2:
+		await tree.physics_frame
+	var ping_was := Net.ping_ms
+	Net.ping_ms = NetClientWorld.GUESS_MAX_LAG_MS
+	var far_behind := _shown_enemy(world, 109, above, 1)
+	my_shot = _fly_shot(world)
+	check(my_shot != null and not my_shot.visible and not far_behind.net_gone,
+		"shown further behind the host than it looks back: no guess")
+	Net.ping_ms = ping_was
+	world._despawn(109)
+	for i in 2:
+		await tree.physics_frame
+	# A wrong guess: the host's shell for that shot gone, the tank still there.
+	var lucky := _shown_enemy(world, 102, above, 1)
+	my_shot = _fly_shot(world)
+	check(lucky.net_gone, "(guessed)")
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(103, NetWorld.T_BULLET, my_shot.net_spawn_args(), [muzzle.x, muzzle.y])
+	(world.node_for(103) as Bullet).set_physics_process(false)
+	undone = world.guesses_undone
+	_host_says(world, [103], [])
+	check(not lucky.net_gone and lucky.visible and lucky.is_solid() and world._guessed_kills.is_empty()
+		and world.guesses_undone == undone + 1,
+		"its shell gone on the host and the tank still there: it shows again")
+	world._despawn(103)
+	world._despawn(102)
+	for i in 2:
+		await tree.physics_frame
+	# The host's shell for it seen on past where it ended here: it shows again.
+	var missed := _shown_enemy(world, 114, above, 1)
+	my_shot = _fly_shot(world)
+	var ended_here := my_shot.global_position if my_shot else Vector2.ZERO
+	check(missed.net_gone, "(guessed)")
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(115, NetWorld.T_BULLET, my_shot.net_spawn_args(), [muzzle.x, muzzle.y])
+	(world.node_for(115) as Bullet).set_physics_process(false)
+	var on_past := ended_here + Vector2.DOWN * 20.0
+	_host_says(world, [], [], {115: [on_past.x, on_past.y]})
+	check(missed.net_gone, "the host's shell for it short of where it ended here: still guessed")
+	on_past = ended_here + Vector2.UP * (NetClientWorld.GUESS_PAST + 8.0)
+	undone = world.guesses_undone
+	_host_says(world, [], [], {115: [on_past.x, on_past.y]})
+	check(not missed.net_gone and missed.visible and world.guesses_undone == undone + 1,
+		"the host's shell for it seen past where it ended here: it shows again")
+	world._despawn(115)
+	world._despawn(114)
+	for i in 2:
+		await tree.physics_frame
+	# No word either way for long: it shows again.
+	var silent := _shown_enemy(world, 104, above, 1)
+	my_shot = _fly_shot(world)
+	world._guessed_kills[silent.get_instance_id()]["msec"] -= int(NetClientWorld.GUESS_MAX_MS) + 1
+	_host_says(world, [], [])
+	check(not silent.net_gone and silent.visible, "no word either way for %.1f s: it shows again" % (NetClientWorld.GUESS_MAX_MS / 1000.0))
+	world._despawn(104)
+	for i in 2:
+		await tree.physics_frame
+	# An AP shell guesses each tank its pool would kill on the way.
+	var pair: Array[EnemyTank] = [_shown_enemy(world, 105, above, 1), _shown_enemy(world, 106, above + Vector2.UP * 70.0, 1)]
+	GameManager.player_secondary_weapon_types[0] = "ap"
+	GameManager.player_secondary_weapon_counts[0] = 9
+	_player.active_ap_bullets = 0
+	my_shot = _fly_shot(world, "p1_shoot2")
+	check(my_shot != null and my_shot.pierces and pair.all(func(enemy: EnemyTank) -> bool: return enemy.net_gone),
+		"an AP shell guesses each tank its pool kills on the way")
+	world._despawn(105)
+	world._despawn(106)
+	GameManager.player_secondary_weapon_types[0] = kind
+	GameManager.player_secondary_weapon_counts[0] = count
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._guessed_kills.clear()
+	world._guessed_clashes.clear()
+	world._own_hits.clear()
+	world._predicted_hits.clear()
 	SoundManager._predicted.clear()
 
 	print("\n[I] How far behind the host the world is shown (SMOOTHING)")
