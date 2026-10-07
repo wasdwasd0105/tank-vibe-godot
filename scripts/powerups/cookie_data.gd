@@ -161,15 +161,17 @@ const RAPID_FIRE_CONFIG: Dictionary = {
 	},
 }
 
-## Fire gun config by weapon level (0-3). A fire bullet flies straight and, on
-## death, ignites (or grows) a ground-fire field. Growth/shape/burn-time are the
-## field's job; weapon level only affects fire rate, in-flight cap, and `damage`
-## (how much the fire bullet subtracts from a crossed enemy bullet — rule 6).
+## Fire gun config by weapon level (0-3), as Tank.exe's (weapon 2): the shell
+## leaves at 622 px/s and slows by 178 px/s a second, dropping its patch of
+## fire wherever it dies, 496 px out at most (LevelManager.ignite_fire_patch).
+## Its damage is 1 at every level (the original's HP); its level is the
+## strength of the fire it drops: how long that burns, and whether it spreads.
+## The cooldowns are the remake's (the original's go by the speed level).
 const FIRE_FIRE_CONFIG: Dictionary = {
-	0: { "cooldown": 0.27,  "speed": 520.0, "range_px": 480.0, "max_in_flight": 3, "damage": 1 },
-	1: { "cooldown": 0.225, "speed": 520.0, "range_px": 480.0, "max_in_flight": 4, "damage": 1 },
-	2: { "cooldown": 0.18,  "speed": 520.0, "range_px": 480.0, "max_in_flight": 5, "damage": 2 },
-	3: { "cooldown": 0.135, "speed": 520.0, "range_px": 480.0, "max_in_flight": 6, "damage": 2 },
+	0: { "cooldown": 0.27,  "speed": 622.2, "accel": -177.8, "range_px": 496.0, "max_in_flight": 3, "damage": 1, "level": 0 },
+	1: { "cooldown": 0.225, "speed": 622.2, "accel": -177.8, "range_px": 496.0, "max_in_flight": 4, "damage": 1, "level": 1 },
+	2: { "cooldown": 0.18,  "speed": 622.2, "accel": -177.8, "range_px": 496.0, "max_in_flight": 5, "damage": 1, "level": 2 },
+	3: { "cooldown": 0.135, "speed": 622.2, "accel": -177.8, "range_px": 496.0, "max_in_flight": 6, "damage": 1, "level": 3 },
 }
 
 ## Explosion gun config by weapon level (0-3), as Tank.exe's (weapon 4): the

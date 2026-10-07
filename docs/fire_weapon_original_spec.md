@@ -1,154 +1,504 @@
-# Original Fire Weapon — Reverse-Engineered Spec
+# Fire Weapon — the original's rules, and the remake's
 
-**Unit conventions used throughout.** The original runs a fixed-timestep loop: every logic frame consumes **20 "ticks" (MoveCount units)**; at the default game speed **1 tick = 0.75 real ms** (logic frame = 15 ms, 66.7 Hz). One original tile = 16 px; one remake tile = 32 px (double everything spatial). All conversions below use default speed. *(Evidence: DXTimerTimer @0x4c7960, `units = min(ms,100)·SPEED/75`, SPEED table {83,100,117,133,150} default 100; `Engine.Move(20)` @0x4c7d1b.)*
+How Tank.exe v1.22's fire weapon and ground fire work, rule for rule, read from the binary (`Tank V1.22/Tank.exe`), and what the remake does. The first version of this spec (2026-09-24) had about a dozen things wrong, the main one that enemy tanks are side −1 (they're side 0, so their fire melts ice too). Sean asked to recheck whether fire breaks the ice and the fire logic (2026-10-08): every rule below was re-read from the code, and the remake's fire, which had followed Sean's early draft rules (a field growing a ring at a time), was ported to the original's (Part B).
 
-> ⚠️ One sub-report quoted bullet timings "in ms" by assuming 1 tick = 1 ms. The engine-level analysis (three independent traces) is authoritative: **1 tick = 0.75 ms**. Both raw ticks and converted seconds are given below.
+Each rule carries its address and a tag: **[CONFIRMED]** (the first spec said so and the code agrees), **[CORRECTED]** (old -> new), **[NEW]**, **[UNCONFIRMED]**.
+
+## Part A — The original
+
+### 0. What changed from the first spec
+
+| # | Old claim | Verified rule | Where |
+|---|---|---|---|
+| 1 | Enemy tanks are side -1 | **Side 0.** TEnemyTank.Create calls the tank ctor (which writes -1 at 0x4917a4), then writes **0** | 0x494b78 |
+| 2 | Only player fire melts ice; enemy and grass fire never | **Any fire with owner >= 0** melts the ice under it: player fire, **enemy fire**, and their spread children. Only grass-chain fire (owner -1) never melts | 0x497a4e-0x497a80 |
+| 3 | 1.125 s window vs enemy fire, 0.5625 s vs player fire | 750 ticks vs **any owner >= 0** fire (player fire on enemies, **enemy fire on players**). 1500 ticks only vs grass-chain fire (-1), which burns **both** sides. Enemies are immune to enemy fire | 0x491d34-0x491d48 |
+| 4 | Enemy fire (if -1) draws above tanks | Enemy fire: row 1 (orange), Z -1, **below** tanks. Only grass-chain fire draws above tanks (row 0, red, Z 9) | 0x497b34 |
+| 5 | Only player fire can diffuse | **Enemy fire can diffuse too** (gate is owner >= 0, strength >= 1, fuel >= 7000) | 0x49771e |
+| 6 | Stamp centre = Round(X/16) ("Round better-evidenced") | **Trunc**(X/16), Trunc(Y/16) of the shell's top-left. The inner 2x2 is the 4 tiles round the tile corner nearest the shell's centre | 0x493b5a, 0x493b6d |
+| 7 | One fire grid | **Three grids, one per side** (owner >0 / =0 / <0). Restacking only merges same-side fires. A player fire and an enemy fire can burn on the same tile | 0x490a3c, 0x490a70 |
+| 8 | Spread gives (myFuel - neighbourFuel)/4 per neighbour | Uses the giver's fuel **at the start of the pulse** (F0) for all 4 neighbours, so a fire with 4 open empty neighbours gives away nearly all its fuel in one pulse. New children are never registered, so later pulses into the same tile stack more children there | 0x49775e, 0x4978c8-0x497912 |
+| 9 | Cooldown -60 per logic frame: 0.27 / 0.225 / 0.18 / 0.135 s | -60 per **think**, and tanks think every other frame: **0.54 / 0.45 / 0.36 / 0.27 s** at speed level 0-3. Goes by speed level, not gun level | 0x491e22, 0x4c7bb7, 0x49355f |
+| 10 | Range 244 px (integral) | **61 moves, 248 px** (15.5 cells; 496 remake px) | 0x493fc8 |
+| 11 | Shell degrades steel one stage (40..55 -> +4) | Hard brick 40..51 -> +4; its **last stage 52..55 is destroyed** (-1) | 0x494200-0x494233 |
+| 12 | A tank hit stamps the patch centred on the tank | Centred on the **shell's** position at impact, at the tank's near edge | 0x493a28 |
+| 13 | Grass-chain children are visible and burn at once | Visible at once, but **harmless for 100 ticks** (6 frames) | 0x4979f0, 0x497a85 |
+| 14 | No sound while burning | Each burn that a tank survives plays **HitTank (wave 10)** and runs the whole generic hit path | 0x4926c9 |
+| 15 | Round vs Trunc, eagle immunity: UNCERTAIN | Both settled: Trunc (#6), and the eagle is proven fire-proof (section 7) | |
+
+Port-facing consequences of #1 to #5 are listed in section 8.
 
 ---
 
-## 1. Fire bullet (TArmsSprite, weapon type 2)
+### Units and engine
 
-| Property | Original value | Converted (real time / remake px) |
+- **Ticks.** 1 tick = 0.75 ms at default speed. One logic frame = 20 ticks = 15 ms. Engine.Move(20) runs every frame (0x4c7d20). Tanks "think" (commands, firing, cooldown) only on even frames (0x4c7bb7). [CONFIRMED]
+- **Map.** 1 original px = 2 remake px. One original cell (16 px) = one remake tile (32 px). The playfield is cells 1..40 x 1..30 (remake 0..39 x 0..29). Cells 0/41 and 0/31 are border (wall id 64). [CONFIRMED]
+- **Sprite update order.** A sprite's X/Y is its top-left. Engine.Move iterates its list with the count read once (0x468ee3), so a sprite created during Move gets its first DoMove next frame. Shells are created in the think, which runs before Move, so they move in their creation frame. [NEW]
+- **Collisions.** Only three sprites ever start a collision test (TSprite.Collision 0x468d34): tanks (0x492272), shells (0x493e14) and mines (0x49a41b). Fires, flags and cookies never do. [NEW]
+  - The target must be Collisioned (+0x54) and not dead (Collision2 0x468dbc).
+  - Rect overlap is strict (0x4681f0).
+  - The "Done" flag doesn't stop the outer loop, so the starter's DoCollision runs for **every** overlapping sprite each frame.
+
+**Wall ids** (layer `[0x4d74cc]`; remake code = id + 1). Naming follows enemy_ai_original_spec.md:
+
+| Ids | Meaning |
+|---|---|
+| -1 | empty |
+| 8-11 | grass |
+| 12-15 | burned grass |
+| 24-27 | brick |
+| 28-35 | half brick |
+| 36-39 | quarter brick |
+| 40-43 | hard brick |
+| 44-55 | damaged hard brick |
+| 56-59 | iron |
+| 60-63 | super steel |
+| 64 | border |
+
+**Ice/water layer** `[0x4d74c8]`: 0-3 ice, 4-7 water, -1 none.
+
+---
+
+### 1. The fire shell (TArmsSprite, weapon 2)
+
+| Property | Original | Remake | Address | Status |
+|---|---|---|---|---|
+| HP (damage) | 1. SetLevel changes HP only for armor (3) and explosive (4), never fire | 1 | 0x4937b3 (table 0x4d2c30), 0x494088 | CONFIRMED |
+| Speed | 7000 units; px/tick = speed/30000. That is 4.667 px a frame at the start | 622 px/s at the start | 0x4937c0, 0x493d7e | CONFIRMED |
+| Deceleration | speed += -1500 * 20 div 1000 = **-30 a frame**; capped at max 7000 | about -178 px/s^2 | 0x493f84-0x493fc2 | CONFIRMED |
+| Lifetime | 1200 ticks; -20 a frame, dies on the frame it is <= 0, so **61 moves**; last speed 5200 | 0.915 s | 0x4937cd, 0x493fc8-0x493fdf | CONFIRMED (frame count NEW) |
+| Range | sum of 61 steps = **248.07 px** (15.5 cells) | **496 px** | — | CORRECTED (old 244 / 488) |
+| Collision box | 16x16 sprite inset 1 px = 14x14 | 28x28 | 0x494004 | CONFIRMED |
+| Spread / side offset | none. Lateral offset applies only to weapons 0/1 | — | 0x49341c-0x4934e0 | CONFIRMED |
+| Muzzle position | X = tank.X + (dx+1)*8, Y = tank.Y + (dy+1)*8 (16x16 shell at the front centre of the 32x32 tank) | ×2 | 0x4934e3-0x493545 | NEW |
+| Level | shell.+0xdc := tank gun level (+0x128, 0..3) | — | 0x4933f0 | CONFIRMED |
+| Owner | shell.+0x74 := tank.+0x74 (players 1/2, enemies 0). 0x493375 is the same copy for mines | — | 0x4933de | CONFIRMED |
+| Heat | +8 to tank.+0xf8 per shot. Tank fires only while heat < cap, cap = 24 + 8 * gun level (0x492d7c). Heat is shared with all the tank's weapons. Refunded when the shell dies (by tank UID) | **3 + gun level fire shells in flight** | 0x49354d, 0x491946, 0x493a2d-0x493a59 | CONFIRMED |
+| Cooldown | tank.+0xfc += 180 * (6 - speed level). The base think subtracts 60 if > -180. Fire allowed at <= 0. Think = every 2nd frame, so the period is **6*(6-s) frames** | **0.54 / 0.45 / 0.36 / 0.27 s** at speed level 0..3 (players clamp 0..3; enemies -4..4, 0x492ec1) | 0x49355f-0x493573, 0x491e16-0x491e22 | CORRECTED (old: half) |
+| Ammo | 30 a pickup, cap 5 * 30 = 150, -1 a shot. A Fire cookie with another weapon held zeroes ammo first. With ammo 0, the special-fire command fires the plain gun | — | 0x492f60, 0x495d11-0x495d56, 0x49357f, 0x491962 | CONFIRMED |
+| Sprite | `B_Fire` 128x16. 8 patterns = 2 frames x 4 directions. AnimSpeed 0.03/tick (25 ms a frame). Z 7. Hidden at creation, shown on its first move | — | 0x4937e2-0x493838, 0x493549, 0x493d5f | CONFIRMED |
+| Impact | Die swaps to `_B_32A` (image 7, table 0x4d2cd8), re-centred, non-looped. About 13 frames (0.2 s) | — | 0x493a5f-0x493ade | CONFIRMED |
+| Sound | S_Fire (wave 2) on firing, enemies too (weapon != 0). Nothing on drop | — | 0x49358d-0x4935ab | CONFIRMED |
+
+**Where it drops.** Every death goes through `TArmsSprite.Die` (0x4939f4). Die runs once (0x4939fa), stops the shell, calls the ignition stamp (0x493a28) at the shell's **current X/Y**, refunds heat, then shows the impact image. A shell dies on the first of these: [CONFIRMED]
+
+- **Lifetime.** After its 61st move.
+- **Walls.** In its own DoMove, per frame, after moving (0x493e19-0x493f81):
+  - TileHit (0x4940e4) runs on every wall cell under the shell:
+    - 1 or 2 columns: by Round(X/8)+1, so it straddles when X is about 16k+8.
+    - 2 rows: Trunc(Y/16) and +1.
+    - Horizontal flight swaps the axes.
+  - The shell takes the **max** result as damage (source 0).
+  - **All** touched cells are changed, so one shot can break two bricks.
+- **Clash** (0x4951f0), started by any shell's collision test:
+  - Hits only TLifeSprite targets (tanks, shells, the flag; 0x4938a0) that are not SameSide (0x493893).
+  - Damage n = min(both HPs) to each: the other first, then the shell.
+  - The fire shell (HP 1) therefore always dies.
+  - It deals 1 HP to a tank, or takes 1 HP off an enemy shell (kills HP-1 shells; armor shells survive with a clink, wave 12, 0x493982).
+  - A shielded tank (+0xbd) takes no HP, but the shell still dies.
+  - Its box is then 44x44 (0x49306b), so the shell dies 6 px early.
+- **Fire is invisible to shells.** Shells ignore fires, mines and cookies: none of these is a TLifeSprite. [NEW]
+
+**TileHit with HP 1** (0x4940e4). All results kill the fire shell, except "pass". The tile change happens **before** the stamp in the same frame, so a brick just broken to a half brick (or a destroyed cell) can take fire at once.
+
+| Wall id | Effect | Address |
 |---|---|---|
-| Damage / HP | 1 (table @0x4d2c30) | 1 HP; does **not** scale with gun level |
-| Muzzle speed | 7000 speed-units = 0.2333 px/tick | **311 px/s** original → **622 px/s** remake |
-| Deceleration | −1.5 speed-units/tick (table @0x4d2c60) | −88.9 px/s² → **−178 px/s²** remake |
-| End-of-life speed | 5200 units | 231 px/s → 462 px/s remake |
-| Lifetime | 1200 ticks (@0x4d2c90) | **0.9 s** |
-| Max range | ∫v dt = **244 px ≈ 15.25 tiles** (distance is speed-independent) | **488 px ≈ 15.25 remake tiles** |
-| Fire-rate cooldown | 180·(6−speedLevel) cooldown-units, −60/logic frame | **0.27 / 0.225 / 0.18 / 0.135 s** at speed level 0/1/2/3 |
-| In-flight cap ("heat") | cost 8, cap 24+8·gunLevel; refunded on bullet death (@0x493a41) | **3 / 4 / 5 / 6 simultaneous fire bullets** at gun level 0–3 |
-| Ammo | 30 per pickup, cap 150 (= 5× pack, @0x4d2c18); −1 per shot | same |
-| Spread / lateral offset | **none** — spread tables apply only to Normal/Rapid (@0x49341c) | single straight bullet, no drift |
-| Collision box | 14×14 (16px sprite inset 1px/side, @0x494004) | 28×28 remake |
-| Sprite | `B_Fire` 128×16, 8 patterns = **2 frames × 4 directions**, AnimSpeed 0.03 fr/tick | ~**25 ms per frame** (2-frame flicker), Z=7 |
-| Impact anim | `_B_32A` (imagelist idx 7, @0x4d2cd8) | play a 32px impact flash at drop point |
-| Sound | wave 2 `S_Fire`, played **on shot only** (@0x4935a4); no burn loop | |
-| Upgrade scaling | Gun level (0–3, from Power-Up/LEVEL-UP cookies, **not** from re-picking the Fire cookie) is copied onto the bullet (`+0xdc`) and only affects the **ground fire** it leaves (fuel, spread rate) plus the in-flight cap. Speed/range/damage never change. | |
-
-**Movement & drop behavior.** The bullet flies straight, decelerating linearly. It "drops" (dies → ignites) on the **first** of: lifetime expiry (~15.25 tiles), hitting a wall tile it can't pass, hitting a tank, clashing with an opposing bullet, or the map border. Death always routes through `TArmsSprite.Die` (@0x4939f4), which for weapon 2 calls the ignition routine (@0x493b44) **at the bullet's current position**, then plays `_B_32A`. Range is therefore time-based (1200 ticks), not distance-tracked — but since decay is deterministic it is equivalent to a fixed ~15-tile range.
-
-Wall behavior (TileHit @0x4940e4, damage-1 bullet): passes freely over all tile ids ≤23 (floor/ice/grass/scorch) and ≥68; **half-breaks one intact brick** (24..27 → half-broken variant facing shot direction) and dies; advances a half/corner brick one stage and dies; **degrades steel one hardness stage** (40..55 → +4) and dies; dies with no effect on super-steel (56..59) and border (60..67). It igniting "the wall face" is emergent: the 12-tile patch is stamped around the impact point and brick/steel tiles inside the stamp are simply skipped.
+| <= 23, -1, >= 68 | pass, no change | 0x494297 |
+| 24-27 brick | -> half brick 28 + 2*dir + Random(2) | 0x494169-0x494192 |
+| 28-35 half brick | -> table 0x4d2d94[dir][variant]: a quarter brick 36-39, or -1 | 0x49419c-0x4941dc |
+| 36-39 quarter brick | -> -1 | 0x4941e6 |
+| 40-51 hard brick | -> id + 4 (one stage) | 0x494237-0x494261 |
+| 52-55 hard brick, last stage | **-> -1** (hardness 1 <= HP 1) | 0x494200-0x494233 (CORRECTED) |
+| 56-59 iron | no change (needs HP >= 6) | 0x494269-0x494289 |
+| 60-67 super steel / border | no change | 0x494290 |
 
 ---
 
-## 2. Ignition patterns
+### 2. The ignition stamp (0x493b44)
 
-**Single universal stamp — every death cause uses the same routine** (@0x493b44):
+Only Die calls it (0x493a28).
 
-- Center tile = `Round(bullet.X/16), Round(bullet.Y/16)` *(one trace read this as Trunc; Round is better-evidenced — minor UNCERTAIN, only matters for a half-tile bias)*.
-- Loop `dx,dy ∈ [−1..2]` (4×4) with corner exclusion `dx+dy ∈ [−1..3]` and `dy−dx ∈ [−2..2]` → **exactly 12 tiles = 4×4 minus the 4 corners**. Clamped to playfield x∈1..40, y∈1..30.
-- Per tile, the wall-layer tile must be in [−1..23] or [28..35]; **intact brick (24..27), steel/fortification/border (≥36) are skipped** (fire never sits on solids). Note: the original placement gate does **not** check the water/overlay layer — only *spread* does. Whether fire could visually sit on water is UNCERTAIN (tile-id semantics ≤23 not fully recovered).
-- **Range-end drop, wall hit, tank hit, bullet-vs-bullet: identical pattern**, just centered wherever the bullet died. A tank hit therefore stamps the 12 tiles centered on the tank (the tank also takes 1 HP bullet damage from the clash itself).
+- **Anchor.** a = **Trunc**(shell.X/16), b = Trunc(shell.Y/16): the cell holding the shell's top-left (0x493b4e-0x493b72). [CORRECTED: was "Round"]
+  - Remake: with the shell's centre c in remake px (origin at the playfield's top-left), a = floor((c - 16)/32).
+  - The stamp's geometric centre is the tile corner nearest the shell's centre.
+- **Cells.** for dy in -1..2 (outer), dx in -1..2 (inner): cell (a+dx, b+dy). [CONFIRMED]
+  - Skip the cell unless 1 <= x <= 40 and 1 <= y <= 30 (0x493b7f-0x493b95).
+  - Skip unless dx+dy is in -1..3 and dy-dx is in -2..2 (0x493b9b-0x493bb2).
+  - That leaves 12 cells: 4x4 minus (-1,-1), (2,-1), (-1,2), (2,2).
+- **Wall gate.** Wall id must be in **[-1..23] or [28..35]** (0x493bb8-0x493bd9). [CONFIRMED]
+  - Fire can sit on empty ground, grass, burned grass and **half bricks**.
+  - It cannot sit on brick, quarter brick, hard brick, iron, super steel, border or item bricks (>= 68).
+  - The ice/water layer is **not** read, so fire lands on water and ice.
+- **Per cell**, look up the **shell's side grid**: f = Grid(shell.owner)[x][y] (0x493bdf-0x493bf6). [CORRECTED: per-side grid]
+  - **Fresh** (f = nil), 0x493bfc-0x493cb2:
+    - f := TFireSprite.Create.
+    - strength := shell level (0..3).
+    - SetOwner(shell.owner).
+    - arm := 50 if dx,dy are both in {0,1} (the inner 2x2), else 100 (the ctor default).
+    - fuel := Random(500) + 1750 + 1500*strength.
+    - AnimPos := (dx+dy+2) mod 8.
+    - X,Y := cell*16.
+    - **Register** in the shell's side grid. [CONFIRMED]
+  - **Restack** (f exists), 0x493cb9-0x493d2b. [CONFIRMED]
+    ```
+    f.strength := shell level;  SetOwner(f, shell.owner)       // P1 <-> P2 only: same side
+    fresh := Random(500) + 1750 + 1500*f.strength               // new strength
+    boost := (f.strength + 3) * fresh div 9
+    f.fuel := (boost >= f.fuel) ? fresh : f.fuel + boost
+    ```
+    Arm timer, visibility, AnimPos, terrain timer and spread timer are left alone. So a restack never re-runs the terrain step. A lower-level shell lowers the strength: a level-0 shell turns off that fire's spreading.
 
-**Fresh tile:** spawn fire with `strength := gunLevel (0..3)`, `fuel := Random(500)+1750+1500·strength` ticks, animation phase `(dx+dy+2) mod 8` (staggered so the patch doesn't blink in unison), arm delay 100 ticks (center 2×2 tiles: 50), registered in the fire grid.
+**The three fire grids** (0x490a3c get / 0x490a70 set; picked by the sign of the owner argument). [NEW]
 
-**Stacking on burning ground (the real "growth" rule):** there is **no ring-size progression**. A new volley landing on an existing fire re-sets `strength` and pumps fuel:
+| Owner | Grid | Who registers there |
+|---|---|---|
+| > 0 (P1, P2) | 0x4d7504 | stamps from player shells |
+| = 0 (enemies) | 0x4d8a04 | stamps from enemy shells |
+| < 0 (neutral) | 0x4d9f04 | **nobody**: no shell has owner < 0, and children are never registered |
+
+- Each grid is 42x32 pointers, indexed x*32 + y.
+- All three are zeroed at stage setup (0x49977c, 0x499ee6).
+- A fire unregisters itself on death and in its destructor, but only if the slot still points to itself (0x497ab5-0x497b0c, 0x497698).
+- Network clients see fire only through these grids, as tile bits: bit 0 player, bit 1 enemy, bit 2 neutral (0x490870). Unregistered children never reach clients.
+
+**Duplicates.** [NEW]
+
+- The stamp never makes two fires of one side on a tile.
+- A player fire and an enemy fire can burn on the same tile.
+- Unregistered spread children and grass children can pile up on a tile, alongside any registered fire.
+
+---
+
+### 3. The fire sprite (TFireSprite, VMT 0x49035c, size 0xcc)
+
+**Fields** (TImageSprite 0xb4 + own):
+
+| Field | Meaning |
+|---|---|
+| +0x74 | owner |
+| +0xb8 | fuel |
+| +0xbc | terrain timer |
+| +0xc0 | spread timer |
+| +0xc4 | arm timer |
+| +0xc8 | strength |
+
+It overrides only Create (0x4975bc), DoMove (0x497710) and Destroy (0x497698). It has no DoCollision of its own.
+
+**Constructor defaults** (0x4975bc). [CONFIRMED]
+
+| Field | Value | Address |
+|---|---|---|
+| Image | 11 `_B_Fire` (128x48, 24 patterns) | 0x4975d7 |
+| AnimCount | 24 div 3 = 8, looped | 0x4975f2 |
+| AnimSpeed | 0.015/tick (8 frames in 400 ms) | 0x49760d |
+| Fuel | Random(500) + 3750 | 0x497621 |
+| Terrain timer | Random(500) + 500 | 0x497636 |
+| Spread timer | Random(500) + 250 | 0x49764b |
+| Arm | 100 | 0x497660 |
+| Visible, Collisioned | False | 0x49766a |
+| Z | 9 | 0x497672 |
+| Owner | -1 (base sprite ctor, 0x468b7e) | |
+| Strength | 0 (zero-filled) | |
+
+**Kinds of fire.**
+
+| Kind | Made at | Owner | Strength | Fuel | Arm | Seen before armed | Registered | Status |
+|---|---|---|---|---|---|---|---|---|
+| Stamp, fresh | 0x493c09 | shell's (0x493c22) | shell level | Rnd(500)+1750+1500*s | 50 inner 2x2 / 100 | no | yes, own side | CONFIRMED |
+| Spread child | 0x497823 | parent's (0x49783e) | parent's | 0, then + F0 div 4 | 100 | no | **no** | CONFIRMED |
+| Grass child | 0x4979e3 | **-1** (never SetOwner) | 0 | Rnd(500)+3750 | 100 | **yes** (0x4979f0) | **no** | CONFIRMED / CORRECTED (harmless while unarmed) |
+
+**DoMove, each frame, MoveCount = 20, in this order** (0x497710):
+
 ```
-fresh := Random(500) + 1750 + 1500·strength
-boost := fresh·(strength+3)/9
-fuel  := (boost ≥ fuel) ? fresh : fuel + boost
+// (A) spread: 0x49771e-0x49791f   (section 4)
+if owner >= 0 and strength >= 1 and fuel >= 7000:
+    spreadTimer -= 20
+    if spreadTimer < 0: pulse()                              // spreadTimer += 600 - 100*strength
+
+// (B) terrain step, once: 0x497925-0x497a80   (section 5)
+if terrainTimer > 0:
+    terrainTimer -= 20
+    if terrainTimer <= 0: scorch_and_chain();  if owner >= 0: melt_own_tile()
+
+// (C) arming: 0x497a85-0x497a9d
+if arm > 0: arm -= 20  else: Visible := true; Collisioned := true
+
+// (D) fuel: 0x497aa1-0x497b13
+if fuel > 0: fuel -= 20
+else: if Grid(owner)[tile] == self: Grid(owner)[tile] := nil;  Dead
+
+// (E) animation: TImageSprite.DoMove 0x469468 (AnimPos += 0.3, wrapped mod 8)
 ```
-Growth beyond 12 tiles happens only via **fuel diffusion**: a fire with `strength ≥ 1`, owner-field ≥ 0, and **fuel ≥ 7000 ticks (5.25 s of burn)** pulses every `600−100·strength` ticks, transferring `(myFuel−neighborFuel)/4` to each of the 4 orthogonal neighbors (spawning a 0-fuel fire there if empty). Spread is blocked by brick/steel (wall-layer 24..27, ≥40) and by overlay-layer tiles 4..7. **Maximum size is emergent, not capped** — each pulse gives fuel away, so spreading self-quenches when fuel drops below 7000. Repeated volleys are the only way to reach the threshold.
+
+**Timings in frames.** The fire's first DoMove is the frame after its creation.
+
+| Thing | Rule | Frames | Time |
+|---|---|---|---|
+| Arm 100 | visible and burning from its **6th** DoMove | 6 | 90 ms |
+| Arm 50 | from its **4th** DoMove | 4 | 60 ms |
+| Alive | ceil(fuel/20) + 1 frames | | |
+| Stamp, L0 | | 89-114 | 1.33-1.71 s |
+| Stamp, L1 | | 164-189 | 2.46-2.84 s |
+| Stamp, L2 | | 239-264 | 3.59-3.96 s |
+| Stamp, L3 | | 314-339 | 4.71-5.09 s |
+| Grass child | | 189-214 | 2.84-3.21 s |
+| Terrain step | ceil(T/20), T = 500..999 | 25-50 | 0.375-0.75 s |
+| First spread pulse | counted only while the spread gate holds | 13-38 | |
+| Spread period, s = 1/2/3 | | 25/20/15 | 375/300/225 ms |
+
+There is no other way out: no random snuff and no timer. A fire dies only when its fuel runs out. [CONFIRMED]
+
+**Drawing: SetOwner** (0x497b34). [CONFIRMED, with enemies now row 1]
+
+| Owner | Who | Row (AnimStart) | Z | Colour |
+|---|---|---|---|---|
+| < 0 | grass chain | 0 | **9**, above tanks (Z 1/2) and shells (Z 7) | red |
+| = 0 | **enemies** | 1 (= 8) | -1, below tanks | orange |
+| > 0 | players | 2 (= 16) | -2, below tanks | yellow |
+
+- Draw index = AnimStart + Trunc(AnimPos) (0x469530).
+- Phases:
+  - stamp: (dx+dy+2) mod 8
+  - spread child: (x + y + Trunc(parent AnimPos)) mod 8 (64-bit mod, 0x406561)
+  - grass child: (x+y) mod 8
 
 ---
 
-## 3. Ground fire lifecycle (TFireSprite)
+### 4. Spreading by fuel (the pulse, 0x49775e-0x49791f)
 
-| Phase | Original | Converted (s) |
+**Gate**, checked every frame: owner >= 0 **and** strength >= 1 **and** fuel >= 7000 (0x49771e-0x497742).
+
+- The timer runs only while the gate holds.
+- A fresh fire never passes: at most 6749 fuel at L3.
+- It takes a restack. Roughly: L3 needs 2 hits on a tile, L2 2 quick hits, L1 about 3; L0 never spreads. [CONFIRMED; enemy fire now included: CORRECTED]
+
+```
+F0 := fuel                                     // 0x49775e: fixed for the whole pulse
+spreadTimer += 600 - 100*strength
+for (dx,dy) in (0,-1), (1,0), (0,1), (-1,0):   // table 0x4d2970: up, right, down, left
+    n := own tile + (dx,dy)
+    if Wall[n] not in [-1..23, 28..39]: continue           // 0x4977ba: hard brick+, brick, item bricks block
+    if IceWater[n] in [4..7]: continue                      // 0x4977dd: water blocks
+    f := Grid(owner)[n]                                     // same-side registered fire only
+    if f == nil:                                            // 0x497819
+        f := new TFireSprite; f.strength := strength; SetOwner(f, owner); f.fuel := 0
+        f.AnimPos := (n.x + n.y + Trunc(AnimPos)) mod 8; f.X,Y := n*16    // NOT registered
+    d := F0 - f.fuel                                        // 0x4978c8
+    if d > 0:
+        f.strength := strength; SetOwner(f, owner)          // overwrite (same side)
+        f.fuel += d div 4;  fuel -= d div 4
+```
+
+- **Spread gate vs stamp gate.** [NEW]
+  - The spread allows quarter bricks (36-39); the stamp doesn't.
+  - Neither looks at grass.
+  - There is no bounds check: the border (64) stops it.
+- **Transfer.** [CORRECTED]
+  - Every neighbour gets (F0 - its fuel) div 4, from the **same F0**.
+  - Total fuel is conserved.
+  - A fire with k empty open neighbours loses at least k*F0/4: with 4 it drops to F0 mod 4 and dies next frame.
+- **Children.** [NEW detail]
+  - A new child gets exactly F0 div 4, at least 1750. It is not registered.
+  - So when the parent pulses again (if still >= 7000), that tile still looks empty and gets **another** child.
+  - A child spreads further only if it was given >= 7000, i.e. its parent had F0 >= 28000.
+- **Registered neighbours** take the difference and can be pushed over 7000. They then pulse in turn.
+  - So a stack levels out inside the patch and pushes a one-tile ring of children outward.
+  - It stops once every giver is under 7000.
+  - Size has no cap; fuel is the only limit. [CONFIRMED]
+- **Fires of the other side** are invisible to the pulse: their tile counts as empty. [NEW]
+
+---
+
+### 5. Terrain step: grass chain and ice melt (0x497925-0x497a80)
+
+It runs **once**, on the frame the terrain timer reaches <= 0: 25-50 frames, 0.375-0.75 s after creation. Every fire kind runs it: stamped, restacked (but only its first timer), spread child, grass child. [CONFIRMED]
+
+1. **Grass.** For the 4 orthogonal neighbours only (table 0x4d2970), never its own tile: if the wall id is 8-11:
+   - Wall := id + 4, burned grass, for good (0x4979a1-0x4979bd).
+   - Then, if the **neutral** grid has no fire there (always true, since it is never written; 0x4979c2-0x4979d7), make a grass child:
+     - owner -1, strength 0
+     - Visible at once
+     - AnimPos (x+y) mod 8
+     - fuel Rnd(500)+3750
+     - arm 100: harmless for 6 frames
+   - Each grass tile can make only one child (it stops being grass).
+   - Children run the step themselves, so the fire walks along the grass about one tile every 0.375-0.75 s. [CONFIRMED / CORRECTED arming]
+   - **Weapon fire on grass.** The stamp can put weapon fire **on** grass. That grass is burned (and a neutral child added on top) by a neighbouring fire's step, not its own.
+   - So a stamp in a grass field ends up with neutral fire under and around the whole patch. That fire burns **both sides**, the shooter's team included. [NEW]
+2. **Ice.** If **owner >= 0** (0x497a4e-0x497a57) and the ice/water id at the fire's **own** tile is 0-3, set it to -1 (0x497a59-0x497a80). [CORRECTED: enemies melt too]
+   - The tile becomes bare ground: no more slide.
+   - Water (4-7) is untouched.
+   - Grass children (-1) never melt.
+   - Spread children of player or enemy fire do.
+
+---
+
+### 6. Damage to tanks (TTankSprite.DoCollision 0x491aac, fire branch 0x491cf0-0x491d4e)
+
+**When the check runs.** Each frame in TTankSprite.DoMove (0x492244), the tank runs Collision (0x492272) unless it is:
+
+- **dying** (+0xbc, 0x49224f), or
+- **materializing** (+0xd8 > 0, 0x49225c).
+
+The enemy override (0x494ba8) calls this first. A tank thrown by a mine has Moved/Collisioned/Visible cleared by TFlyingTank (0x49a6da-0x49a6e2) until it lands (0x49a77b). So it is neither tested nor hit. [NEW]
+
+**Overlap.**
+
+- Tank box: (X+3, Y+3, 26, 26). Remake: 52x52 inset 6.
+- Tank box while invulnerable (+0xbd): (X-6, Y-6, 44, 44) (0x49305c).
+- Fire box: its 16x16 cell (0x469e74 -> 0x468f78).
+- Overlap is strict.
+- The fire must be armed: Collisioned (0x468dbc), and arm <= 0 at 0x491d0d.
+
+**The branch** (every overlapping sprite gets it in turn). [CONFIRMED]
+
+```
+if tank.fireTimer(+0xc4) > 0: return           // 0x491d04
+if fire.arm(+0xc4) > 0: return                 // 0x491d0d
+if SameSide(tank, fire): return                // 0x491d1b
+tank.Damage(1, fire.owner)                     // vmt+0x2c = 0x492640
+tank.fireTimer := (fire.owner < 0) ? 1500 : 750 // 0x491d34-0x491d48, set even if Damage did nothing
+```
+
+- **SameSide** (0x4690d0) = (a > 0 and b > 0) or (a == 0 and b == 0). A negative side is never the same side as anything. [CONFIRMED]
+- **Timer.** tank.+0xc4 counts down by 20 a frame in TLifeSprite.DoMove (0x49514b). That runs at the **end** of the same DoMove. [NEW frame counts]
+  - **750 -> next burn after 38 frames (0.57 s).**
+  - **1500 -> 75 frames (1.125 s).**
+- **One timer per tank, shared by all fires.** Several fires never stack damage. In a mixed blaze, the first hostile armed fire in sprite-list order picks the window. [CONFIRMED]
+
+| Fire owner | Burns | Window | Rate |
+|---|---|---|---|
+| player 1 / 2 | enemies (side 0) | 750 | 1 HP / 38 frames (0.57 s) |
+| enemy (0) | players (1/2). **Not enemies** | 750. Players also get 750 ticks of invulnerability per hit, ending the same frame | 1 HP / 38 frames (0.57 s) |
+| grass chain (-1) | **everyone** | 1500 | 1 HP / 75 frames (1.125 s) |
+
+**Damage path** (TTankSprite.Damage 0x492640). Fire damage is ordinary damage; nothing is special to fire. [NEW]
+
+- **No effect** if HP <= 0 or the tank is invulnerable (+0xbd): spawn shield 5000 ticks for players (0x4948e3), 750 for enemies (0x494b6a), helmet, or post-hit. The window timer above is still reset.
+- **Hit chain.** Recorded via 0x498b4c, skipped only for attacker < 0.
+- **Survivor.**
+  - Hit flash +0xd0 = 250.
+  - **HitTank sound (wave 10)** (0x4926bf-0x4926d0).
+  - Players: drop the body item as a cookie or lose a speed/gun level, then 750 ticks of invulnerability (0x49273c).
+  - Enemies: the drop/downgrade rules (enemy_pickups_original_spec.md).
+  - No "turn toward the shooter": that is only in the shell's DoCollision.
+- **Kill.** Score, combo and kill text only if attacker > 0 (0x492801). So kills by enemy fire (0) or grass fire (-1) credit nobody.
+
+---
+
+### 7. Other interactions (all CONFIRMED unless marked)
+
+**What fire never touches.**
+
+- Bricks, hard brick, iron: section 2 gates. A fire on a tile that later becomes a wall burns on: fires never re-check walls.
+- Water: blocks the spread only.
+- **The eagle/flag** (TFlagSprite, side -1). [now PROVEN, was inferred]
+  - Its DoCollision is TSprite's empty one (VMT slot 0xc = 0x468ebc), and it never starts Collision.
+  - The TFireSprite class ref [0x490310] is used only by the tank fire branch (0x491cf2), the 3 constructors, and the network sprite sender, which skips fires (0x4ccff9).
+  - So ground fire cannot hurt it.
+  - The fire **shell** hits the flag like any shell (side -1 is never same side), and then drops fire around it.
+- **Mines, cookies, explosions** (TMineSprite, TCookieSprite, TExploseSprite): no fire code reads them, and theirs never reads fire. A mine's own Collision (0x49a41b) ignores what it finds.
+- **Shells** fly through fire (section 1). **Tanks** drive through it: fire never blocks (0x4919c8 blocks only tanks and the flag).
+
+**Fire and Hold Enemy.**
+
+- The Hold timer [0x4d74d8] is used only by the enemy think (0x494c38), the pickup that sets it (0x49593c) and the game setup (0x498018). So fires and shells keep running.
+- A held enemy's DoMove still runs Collision, so **held enemies still burn**. [NEW]
+
+**Enemy AI.** The AI never looks at fire (no grid or class reference in the think), so enemies don't steer round it. [NEW]
+
+**Sounds.**
+
+| Event | Wave |
+|---|---|
+| Fire shot | S_Fire (2) |
+| Burn the tank survives | HitTank (10) |
+| Shell clash the other shell survives | HitWall (12) |
+| Armor-shield absorb (tanks in armor mode) | HitTank2 (11) |
+
+There is no burning loop.
+
+**Persistence.**
+
+- Fires outlive their shooter.
+- Heat is refunded by the shell's tank UID (0x493a2d).
+- Stage reset kills every sprite and zeroes the grids (0x499e34, 0x499ee6).
+
+**Network.**
+
+- Clients learn about fire only from per-tile side bits (0x490870). The sprite sender skips TFireSprite (0x4ccff9).
+- Unregistered spread/grass children are invisible online.
+
+---
+
+### 8. Consequences of enemies being side 0 (old spec assumed -1)
+
+| Topic | With side 0 (the truth) | What the -1 assumption predicted |
 |---|---|---|
-| Arm delay (invisible + harmless) | 100 ticks ring / 50 center 2×2 | 0.075 / 0.0375 s |
-| Burn time (per tile, placement) | `Rnd(500)+1750+1500·L` ticks | L0: 1.31–1.69 s · L1: 2.44–2.81 s · L2: 3.56–3.94 s · **L3: 4.69–5.06 s** |
-| Burn time (wildfire children / ctor default) | `Rnd(500)+3750` | 2.81–3.19 s |
-| Terrain-ignite one-shot delay | `Rnd(500)+500` | 0.375–0.75 s after spawn |
-| Spread pulse period (strength 1/2/3) | 500/400/300 ticks | 0.375 / 0.30 / 0.225 s |
-| Extinguish | fuel −= 20/frame; at ≤0 → unregister + die | pure fuel exhaustion |
+| SameSide vs enemy fire | enemy-tank vs enemy-fire = same side, so **enemies never burn in enemy fire** | enemies burnt by their own fire |
+| SameSide vs grass fire | -1 matches nothing, so grass fire burns enemies, **even grass fire their own shots lit** | same |
+| Window vs enemy fire | players: **750 ticks, 0.57 s** | 1500 ticks, 1.125 s |
+| Drawing | enemy fire **row 1 (orange), Z -1, below tanks** | row 0 (red), Z 9, above tanks |
+| Spreading | enemy fire **can** spread (owner >= 0), at enemy gun level >= 1 (0x499fbd) | never |
+| Ice | enemy fire **melts ice** under itself, and so do its spread children | never |
+| Fire grid | enemy fire has its own grid 0x4d8a04. It restacks only with enemy fire and shares tiles with player fire | would have shared the neutral grid |
+| Network | enemy fire shows as tile bit 1 | bit 2 |
+| Kill credit | attacker 0: no score, combo or kill text (0x492801) | same (attacker <= 0) |
+| Hit chain (side note) | attacker 0 passes 0x498b6f (only < 0 is skipped). It feeds record 0 of the player-record array: the enemy side's slot, which the fold at 0x498dc4 also walks. That slot has no corner text [UNCONFIRMED whether anything shows] | skipped |
+| Enemy shells | pass through enemy tanks and don't clash with enemy shells. A fire shell from an enemy never drops on another enemy | would hit each other |
+| The flag | side -1: hit by both sides' shells | same |
 
-- **Decay/shrink:** none. There is **no random-extinguish roll and no fixed 5 s timer**; the ±500-tick (0.375 s) random term in each tile's initial fuel means tiles of one patch wink out **in random order over a ~0.4 s window** at the end — which *looks like* random tile-by-tile disappearance.
-- **Animation:** `_B_Fire` sheet is 128×48 = 24 frames (16×16), i.e. **3 rows × 8 frames**. `AnimCount` is forced to 8 — a fire loops **one row forever** at AnimSpeed 0.015 fr/tick = **8-frame loop per 400 ms (50 ms/frame)**. The row is selected by the fire's owner field, **not by age**: owner<0 → row 0, Z=9 (drawn **above** tanks); owner=0 → row 1, Z=−1 (below tanks); owner>0 → row 2, Z=−2. *(One trace reported AnimSpeed 0.06 — the raw constant 0x3F8EB851EB851EB8 decodes to 0.015; 0.015 is correct.)*
-- **Damage:** fire has no collision handler of its own; **tanks initiate** (TTankSprite.DoCollision @0x491cf0, shared by players and enemies). On overlap with an **armed** fire, if the tank's fire-immunity timer ≤ 0 and the sides differ: `tank.TakeDamage(1)`, then tank immunity := **1500 ticks (1.125 s)** if fire owner<0, **750 ticks (0.5625 s)** if owner≥0. So: 1 HP per immunity window while standing in fire (~0.9 HP/s vs owner<0 fire). Tank HP: default 2, max 8 — fire is lethal to loiterers.
-- **Friend/foe:** `SameSide` (@0x4690d0) = true iff both owner fields >0, or both ==0. Player tanks are +0x74 = 1 (P1; presumably 2 = P2), so **player-owned fire never hurts players**. Enemy tanks: ctor default −1, one trace claims init to 0 — **UNCERTAIN** (see §5/§7). If enemies are 0: enemy fire never hurts enemies, hurts players (0.5625 s window). If enemies stay −1: enemy fire hurts *everyone including enemies* and draws above tanks. Kill credit: the fire's owner id is passed as damage source.
-- **Wildfire chain (terrain ignition):** once, 0.375–0.75 s after spawn, each fire scorches adjacent grass tiles (wall-layer ids 8..11 → +4, permanent scorched 12..15) **and spawns a child fire** on each (immediately visible, strength 0, owner default −1, fuel 2.8–3.2 s, never diffusion-spreads, damages tanks, and repeats the char step itself) → a **slow grass-fire wave, one tile-generation per ~0.5 s**. Owner≥0 fires (the players', owner 1/2) additionally **melt the ice under themselves**: in the same one-shot step they read the ice/water layer `[0x4d74c8]` at their own tile and, if the id is below 4 (ice, ids 0..3), write −1 (bare ground) (@0x497a4e–0x497a80). *(Corrected 2026-09-24; this was first misread as "erase overlay ids 4..7".)* *(Known original quirk: diffusion-spawned and wildfire-child fires are never registered in the fire grid — duplicates can stack on one tile and they are invisible to the network sync. Replicate or fix consciously.)*
-
----
-
-## 4. Interactions
-
-- **Bricks/steel:** fire is never *placed* on them and never spreads through them; the *bullet* half-breaks brick / degrades steel one stage on impact (§1). Shovel-fortification walls (ids 40..64) are fully fireproof.
-- **Water:** blocks fire **spread**: the spread step reads the ice/water layer `[0x4d74c8]` and stops on ids 4..7 (@0x4977e1–0x4977f2). Initial placement does not check that layer, so fire can land on water (and on ice).
-- **Ice:** fire lands and spreads on ice freely, and a **player's fire melts the ice tile under it** once, 0.375–0.75 s after landing (the terrain step above); the tile becomes bare ground, so tanks stop sliding there. Enemy fire and grass-chain fire (owner −1) never melt ice. The ids are certain: the tank's own on-ice check (@0x4923dc–0x49244a) counts ids 0..3 of the same layer `[0x4d74c8]` as ice, and the remake's Stage.dat import agrees (ice codes 0x01–0x04 = file bytes 0..3, water 0x05–0x08 = 4..7).
-- **Trees/grass:** grass (8..11) → scorched (+4) permanently + chain fire (§3). Remake equivalents: GRASS 0x09–0x0C → BURNED_GRASS 0x0D–0x10 (same +4 relationship already in `LevelData`, level_data.gd:160-163).
-- **Powerups/cookies:** **no interaction** — cookies only react to tank contact; neither fire bullets nor ground fire touch them.
-- **Eagle/base:** **no evidence of any fire→eagle damage path** (fire damage lives only in the tank collision handler; TFlagSprite has no fire branch). Treat the eagle as fire-immune. Its shovel wall ring is fireproof by the ≥36 gate.
-- **Bullets over fire:** ground fire is non-solid; bullets and tanks pass through freely (tanks just burn).
-- **Sounds:** `S_Fire` (wave 2) on firing only. No burning loop. Standard clink (12) when the surviving bullet of a clash is bigger; HitTank2 (11) on shield absorb.
-- **Scoring:** normal kill credit via the damage-source id (fire passes its owner); no special fire scoring found.
+The same -1 error was in `docs/ice_original_spec.md` ("A player's fire melts it") and in `docs/damage_text_original_spec.md` sections 1 and 4 (an enemy weapon's attacker is 0, not -1); both fixed 2026-10-08. The remake melted ice only under the players' fire until its fire was ported (Part B).
 
 ---
 
-## 5. Discrepancies vs the user's draft rules
+### 9. Sean's early draft rules (corrected)
 
-1. **Rule 1 (4×4 minus corners = 12 tiles): ✅ EXACT MATCH.** Loops dx,dy∈[−1..2] with the two diagonal cuts (@0x493b9b/0x493ba8).
-2. **Rule 2 (burns 5 s; 6th second random tile-by-tile disappearance): ❌ PARTLY WRONG.** Burn time is **level-dependent**: 1.3–1.7 s at gun level 0 up to **4.7–5.1 s at level 3** (`Rnd(500)+1750+1500·L` ticks × 0.75 ms). There is no separate random-extinguish phase; the per-tile ±0.375 s fuel randomness makes tiles die in random order over a ~0.4 s window. The "5 s + ragged end" description matches **only a level-3 fire**.
-3. **Rule 3 (ring growth 5×5−4 → 8×8−4, shrink by 1 on expiry): ❌ DOES NOT MATCH.** Restacking re-stamps the **same 12 tiles** and adds fuel (`fresh·(s+3)/9`, or resets to fresh). Growth beyond 12 tiles is **fuel diffusion** to 4-neighbors, gated on fuel ≥ 7000 ticks (only reachable by stacking), pulsing every 0.225–0.375 s, transferring ¼ of the fuel difference. No ring shapes, no max cap, no shrink step — extinguish is per-tile fuel exhaustion. (The user's rule is a reasonable *approximation* of how stacked fires visually creep outward ~1 tile per pulse.)
-4. **Rule 4 (max range 15 tiles, drops & ignites): ✅ MATCH.** 244 px ≈ 15.25 original tiles, implemented as a 1200-tick lifetime on a decelerating bullet; ignition on expiry confirmed.
-5. **Rule 5 (hit enemy tank → drop & ignite at tank): ✅ MATCH,** with one addition: the clash itself also deals **1 HP direct bullet damage** to the tank (min-HP mutual exchange @0x4951f0) before the patch spawns centered on the impact point.
-6. **Rule 6 (crossing enemy bullet → drop, ignite, reduce enemy bullet damage by fire's damage): ✅ MATCH in effect, mechanism differs.** The original rule is **mutual damage = min(HP_a, HP_b)** — since the fire bullet has HP 1, the enemy bullet loses exactly 1 (kills any 1-HP bullet outright, only dents AP at HP 8–14), and the fire bullet dies and ignites the crossing point. Implement it as min-HP exchange, not "subtract attacker damage", so AP behaves correctly later.
-
----
-
-## 6. Proposed rule 7+ (original behaviors not in the draft)
-
-7. **Ammo & throughput economy:** 30 ammo per pickup, cap 150; re-picking the Fire cookie only refills ammo (power comes from separate level-up cookies); at most **3+gunLevel fire bullets in flight**; cooldown 0.27→0.135 s by speed level.
-8. **Arming grace:** each fire tile is invisible and harmless for 75 ms (center 2×2: 37.5 ms) — prevents point-blank self-immolation and gives the patch a staggered pop-in.
-9. **Damage cadence, not contact damage:** 1 HP per tank per **1.125 s** (enemy-owned fire) / **0.5625 s** (player-owned) while overlapping; per-tank immunity timer, applies equally to players and enemies; **owner's own side is immune** to its fire (with the enemy-side UNCERTAIN noted in §3).
-10. **Wildfire terrain propagation:** one-shot, ~0.5 s after each tile ignites: adjacent grass is permanently scorched (tile+4) and sprouts a chain fire → a creeping grass-fire wave (~1 tile per 0.5 s, each child burning ~3 s). This is the fire gun's signature map-altering effect and the draft misses it entirely.
-11. **Layered rendering:** ground fire renders **below tanks for player/neutral owners** (rows 1–2 of the 24-frame sheet) and the sheet's 3 rows encode owner, not age; phase-staggered 8-frame loop at 20 fps.
-12. **Fuel-stacking spread** (the faithful version of draft rule 3): threshold 5.25 s of fuel, pulse 0.375/0.30/0.225 s at strength 1/2/3, ¼-difference transfer, blocked by walls and water.
-13. **Bullet utility vs terrain:** the fire bullet itself half-breaks bricks and degrades steel one stage on impact (then ignites around the impact) — it's a weak wall-breaker, not terrain-inert.
-14. **Fire persists after the shooter dies**; heat (in-flight slot) is refunded to the owner when the bullet drops, tracked by tank UID.
+1. **4x4 minus corners = 12 tiles: MATCH.**
+   - Anchor = the shell's top-left cell (Trunc).
+   - The inner 2x2 arms first (50 ticks).
+2. **5 s burn, then a random 6th second: PARTLY.**
+   - Burn time depends on level: 1.33-1.71 s at L0, up to 4.71-5.09 s at L3.
+   - The ragged end is the per-tile ±0.375 s fuel spread.
+3. **Ring growth, shrink by one ring: NO.**
+   - Restacking adds fuel to the same 12 tiles.
+   - Growth is fuel spreading (section 4). It needs stacked fuel >= 7000 and moves about one tile per pulse, mostly a single ring unless the stack is huge.
+4. **Range 15 tiles, then drop and ignite: MATCH.** 248 px = 15.5 cells, by lifetime.
+5. **Hit a tank -> drop and ignite: MATCH.**
+   - The clash also does 1 HP.
+   - The patch is centred on the shell at the tank's near edge.
+6. **Crossing enemy shell -> drop, ignite, weaken the shell: MATCH in effect.**
+   - The rule is min-HP exchange.
+   - An enemy fire shell and a player fire shell that meet both drop: two patches in two grids.
 
 ---
 
-## 7. Godot implementation blueprint
+## Part B — The remake
 
-### Constants (remake units: 32 px tiles, seconds, per fire-strength L = weapon_level 0–3)
+**Ported (2026-10-08), rule for rule:**
+- **A burning tile** (`GroundFire`) is the original's TFireSprite: its side (1 a player's, 0 the enemies', −1 burning grass, nobody's), strength (the shell's gun level), fuel in the original's ticks, and its own clock in the original's order each frame: spread, its terrain step (once), arming, burning its fuel.
+- **The patch** (`LevelManager.ignite_fire_patch`, `fire_anchor`): 12 tiles round the cell under the shell's top-left corner, the middle 2x2 armed after 0.06 s, the rest 0.09 s, on open ground, grass, burned grass, water, ice and half bricks (`fire_can_lie`); fuel 1750–2249 ticks, 1500 more a level.
+- **The two grids**, players' and enemies' (`_fire_grid`): a shell on its own side's fire feeds it (`GroundFire.restack`), the other side's burns beside it.
+- **Spreading** (`spread_fire`): a side's fire of strength 1 or more with 7000 ticks of fuel or more gives each side of it a quarter of what it had above the fire there, a new unregistered fire if there's none, every 600 − 100·strength ticks; not onto walls (half and quarter bricks aside) or water.
+- **The terrain step** (`fire_terrain_step`), 500–999 ticks after a fire starts: the grass beside it burns grey with nobody's fire on it, which does the same in turn; a side's fire melts the ice under itself.
+- **Burning tanks** (`_burn_tanks`), every frame: a tank's box is its picture less 6 px a side (while it blinks, its picture and 12 px more a side), and the first armed fire it strictly overlaps that isn't its side's burns it, one point, as any hit (`BaseTank.burn`); then none for 0.5625 s, 1.125 s after burning grass, even if it blinked. Not a tank appearing, dying or thrown by a mine. A player's fire burns enemies, the enemies' fire players, burning grass everyone.
+- **The shell:** damage 1 at every level; 622 px/s, slowing by 178 px/s a second, dropping its patch 496 px out (`Bullet._change_speed`, and `Bullet.flight` for a joining player's screen); its gun level is the fire's strength (`Bullet.fire_level`).
+- **Drawing:** burning grass red, over the tanks; the enemies' orange and the players' yellow, under them (the sheet's files r1, r2, r3: the original's rows 0, 1, 2).
 
-| Constant | Value | Source |
-|---|---|---|
-| `FIRE_BULLET_DAMAGE` | 1 | §1 |
-| `FIRE_BULLET_SPEED` | 622 px/s start, decel 178 px/s² (or simplified: constant ~500 px/s) | §1 |
-| `FIRE_BULLET_RANGE` | 480 px (15 tiles; original 488/15.25) | §1 |
-| `FIRE_COOLDOWN` | 0.27 s (scale to 0.135 s at max speed level) | §1 |
-| `FIRE_MAX_IN_FLIGHT` | 3 + weapon_level | §1 |
-| ammo reload/cap | 30 / 150 — **already present** (cookie_data.gd:124) | §1 |
-| `FIRE_PATCH_OFFSETS` | 12 tiles: dx,dy∈[−1..2] minus (−1,−1),(2,−1),(−1,2),(2,2) | §2 |
-| `BURN_TIME` | `1.3125 + 1.125·L + randf()·0.375` s | §3 |
-| `RESTACK_BOOST` | `fresh·(L+3)/9.0`; `fuel = fresh if boost ≥ fuel else fuel + boost` | §2 |
-| `SPREAD_THRESHOLD` / `SPREAD_PULSE` / transfer | 5.25 s fuel / `0.45 − 0.075·L` s (L≥1) / ¼ of fuel difference | §2 |
-| `CHAR_DELAY` (one-shot grass ignite) | `0.375 + randf()·0.375` s; child fire burn `2.8125 + randf()·0.375` s | §3 |
-| `ARM_DELAY` | 0.075 s (0.0375 s center 2×2) | §3 |
-| `REBURN_INTERVAL` | 1.125 s vs enemy fire / 0.5625 s vs player fire (or a single 1.0 s if simplifying) | §3 |
-| Ground-fire anim | 8 frames @ 0.05 s (assets `ground_fire_r{1..3}_f{1..8}.png` already exist) | §3 |
-| Fire-bullet anim | 2 frames; original 0.025 s/frame — add per-style `FRAME_DURATIONS` (current flat 0.5 s is far too slow for fire) | §1 |
+**What it replaced:** a field of 12 tiles that grew a ring with each shell up to 8x8, burning 5 s a ring and then shrinking a ring at a time; one point a second from any fire; fire shells of 2 at gun levels 3 and 4; only the players' fire melting ice; burning grass started from the field's edge, burning 3 s and spreading every 0.5 s.
 
-### Files to create
-- **`scripts/effects/ground_fire.gd` + `scenes/effects/ground_fire.tscn`** — Area2D, 28×28 RectangleShape2D, no collision layer, **mask bits 3 (player_tanks) + 4 (enemy_tanks)** (project.godot:120-129). Fields: `strength`, `fuel: float`, `hurts_players: bool`, `armed: bool`, `char_done: bool`. `_process`: arm-delay countdown → visible+active; char one-shot (ask LevelManager to scorch/chain neighbors); fuel countdown → `queue_free()` + grid unregister; 8-frame loop. Damage via periodic `get_overlapping_bodies()` (0.1 s poll) — **not** `body_entered` only (stationary-tank miss; precedent powerup.gd:100-102) — with a **per-tank reburn timestamp dict** implementing the immunity window; call `EnemyTank.take_damage(Vector2.ZERO)` (zero avoids retaliation-turn, enemy_tank.gd:591-595) and `PlayerTank.take_damage()` guarded by `is_invincible`. **Parent into `Playfield/TerrainLayer`** so it draws under tanks but over terrain (z rationale in codebase map; effects_container would draw over tanks).
-- **`assets/sprites/bullets/fire/fire_1.png`, `fire_2.png`** — do not exist yet; 6–8×16 RGB, magenta (248,0,248) key, per bullet convention (bullet.gd:255-276).
+**Kept the remake's:**
+- **The fire rate:** the remake's cooldowns by gun level (0.27–0.135 s). The original's go by the speed level, 0.54 / 0.45 / 0.36 / 0.27 s, as its plain gun's.
+- **What a joining player sees:** every burning tile is sent to it. The original sent only the grids' tiles, so its spread and burning grass didn't show online.
+- **A safety cap** of 2000 burning tiles; the original had none, fuel being what stops a fire.
 
-### Files to modify
-- **`scripts/tanks/bullet.gd`** — add `"fire"` to `BULLET_TEXTURE_PATHS` (:25-34); replace `FRAME_DURATION` (:23) with per-style `FRAME_DURATIONS`; add `max_range: float = -1.0` + `_traveled` accumulated in `_physics_process` (:98-116), destroy at 480 px; add `ignites_ground: bool` and `fire_strength: int`; in `_destroy()` (:206-229) — the single choke-point covering range-end, wall (:153-170), tank (:172-195), bullet-vs-bullet (:197-204) and boundary deaths, exactly mirroring the original's `Die` — call `_level_manager.ignite_fire_patch(_level_manager.world_to_tile(global_position), fire_strength, is_player_bullet)` (`_level_manager` resolved at :67-69). Keep 1:1 bullet annihilation for now (correct for HP-1 fire; revisit min-HP exchange when AP lands — bullets currently have **no HP/damage field**, see codebase-map gap 1). Optional deceleration for fidelity.
-- **`scripts/tanks/base_tank.gd`** — extend `_spawn_bullet` (:89-128) / `_spawn_single_row_bullet` (:138-151) with optional fire params (or a `_spawn_fire_bullet` helper). Decide `can_destroy_steel` interplay (:106-107): original fire bullets *degrade* steel one stage regardless of level — flag as a deliberate remake choice.
-- **`scripts/level/level_manager.gd`** — the fire grid lives here (it owns tiles, transforms, and the fortify-timer precedent :57-61): `var _fire_tiles: Dictionary # Vector2i -> GroundFire`; `func ignite_fire_patch(center: Vector2i, strength: int, from_player: bool)` stamping the 12 offsets, skipping out-of-bounds, WATER (BG 0x05-0x08), and solid FG (SOFT/HARD_BRICK, IRON, SUPER via `LevelData.get_tile_category`/`is_solid_tile` level_data.gd:60-102); `func ignite_tile(...)` handling dedup/restack-boost, GRASS→BURNED_GRASS (`code += 4`, retexture per `_update_hard_brick_visual` pattern :437-448); clear `_fire_tiles` in `load_stage` (:96-99). Spread/char callbacks land here too. Optionally route through a new `Events.ignite_tiles` signal (events.gd:19-21 pattern).
-- **`scripts/autoload/cookie_data.gd`** — add `FIRE_FIRE_CONFIG` (mirror `RAPID_FIRE_CONFIG` :130-145; keys: cooldown, ammo_per_count, speed, range_px, plus burn constants) + `"fire"` branch in `get_weapon_fire_config` (:185-189); add tank-type rows **9–12** to `TYPE_WEAPON_LEVELS` (:105-110).
-- **`scripts/tanks/player_tank.gd`** — `_shoot_secondary_fire()` mirroring `_shoot_secondary_rapid()` (:384-403); branch in `shoot_secondary()` (:374-382). Pickup/HUD/persistence already work for `"fire"` end-to-end (powerup.gd:186-187, game_manager.gd:181-196, game_hud.gd:96-99).
-- **`scripts/tanks/enemy_tank.gd`** — clone the rapid trio: `_has_fire_special()` (:506-507 pattern), `_shoot_special_fire()` (:509-525), branch in `_fire_weapon()` (:492-504). Enemy ground fire: `hurts_players = true`, and per the original's friendly-fire rule enemies should be immune to enemy fire (subject to the UNCERTAIN below).
+**Tests:** scenes/test/fire_test.tscn (the patch and its arming, where fire lies, fuel by level, feeding, the other side's fire beside, spreading, its amounts and how often, burning tanks and the box, a blinking tank's, grass, ice, the shell, meeting shells); scenes/test/grass_fire_test.tscn (rows by side, burning grass walking along a strip, burning out, burning both sides).
 
-### UNCERTAIN items (do not silently guess)
-1. **Enemy tank owner id — RESOLVED 2026-09-24: −1.** The tank constructor writes −1 (@0x4917a4) and nothing on the enemy spawn path overwrites it; the only other owner writes (@0x499316, @0x4993a0) give the players 1 and 2 by their slot number. determines whether enemy-lit fire hurts other enemies, its reburn interval (1.125 vs 0.5625 s), and whether it draws above tanks. Recommended remake stance: enemies immune to enemy fire, players immune to player fire, 1.125 s reburn vs hostile fire.
-2. **Ice/water-layer ids — RESOLVED 2026-09-24:** ids 0..3 are ice (melted under a player's fire), ids 4..7 are water (block spread). Remake: fire burns on water and ice; a player's fire melts the ice.
-3. **Round vs Trunc** for the patch center tile (half-tile bias only).
-4. **Water under initial placement** — original stamp didn't check the water layer; recommend blocking it anyway.
-5. **Eagle fire-immunity** — inferred from absence of a damage path, not from positive proof.
-6. **Original quirk**: diffusion/wildfire child fires were never grid-registered (duplicate sprites per tile possible). The remake's `_fire_tiles` dict should register everything — a deliberate bug-fix.
-7. Ground-fire PNGs have **no `.import` files yet** — load via `Image.load(ProjectSettings.globalize_path(...))` per project convention (MEMORY.md) or open the editor once before relying on `load()`.
+## Still unconfirmed
+
+1. Wall ids 0-7 and 16-23 have no known meaning. Both gates treat them as open ground.
+2. Item bricks 160/170/171 (remake A1/AB/AC): both gates exclude them, and TileHit lets the shell pass over them. Not checked whether these raw ids survive into the live wall layer or are converted at load.
+3. Tie-breaks inside one frame: which of several overlapping fires sets a tank's window; whether a fire armed this frame hurts a tank moved earlier in the list. These follow sprite-list (creation) order, not checked case by case.
+4. Hit-chain record 0 for enemy attackers (section 8): whether anything visible or scored comes of it.

@@ -103,10 +103,11 @@ func _process(delta: float) -> void:
 		_fortify_timer -= delta
 		if _fortify_timer <= 0:
 			_revert_fortification()
-	_tick_fire(delta)
-	_tick_grass_fire(delta)
-	_tick_ice_melt(delta)
 	_tick_tile_anim(delta)
+
+func _physics_process(_delta: float) -> void:
+	if not net_mirror:
+		_burn_tanks()
 
 func _on_theme_changed(_theme_name: String) -> void:
 	_tile_textures = ThemeManager.get_all_tile_textures()
@@ -861,33 +862,35 @@ func clear_spawn_area(global_center: Vector2) -> void:
 				_hard_brick_hp.erase(tile_pos)
 
 # =====================================================================
-# Ground Fire (fire weapon) — growing/shrinking fire fields
+# Ground Fire (fire weapon): Tank.exe's, rule for rule
+# (docs/fire_weapon_original_spec.md; the tiles are GroundFire)
 # =====================================================================
 
-const FIRE_FIELD_CAP: int = 40  # safety: max simultaneous fire fields
+## Safety: the most burning tiles at once (the original had no limit; fuel is
+## what stops a fire).
+const FIRE_CAP: int = 2000
+## A tank burned is burned again no sooner than this, s: 750 ticks after a
+## side's fire (a player's or the enemies'), 1500 after burning grass, which is
+## nobody's (the original's tank collision, 0x00491d34).
+const FIRE_WINDOW := 0.5625
+const GRASS_FIRE_WINDOW := 1.125
+## How far round a tank's centre fire burns it, px: its picture less 6 px a
+## side; while it blinks, its picture and 12 px more a side (the original's
+## collision boxes, 0x00492272 and 0x0049305c).
+const FIRE_REACH := 26.0
+const BLINKING_FIRE_REACH := 44.0
+## Up, right, down, left (the original's table 0x004d2970).
+const FIRE_DIRS: Array[Vector2i] = [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
 
-var _fire_fields: Array = []          # Array[FireField]
-## Enemy-lit fires paused by the debug freeze (see DebugFreeze). Fires lit while
-## frozen are not in here: only a player can have lit them.
-var _frozen_fire_fields: Array = []   # Array[FireField]
-var _frozen_grass_tiles: Dictionary = {}  # Vector2i -> true
-var _fire_index: Dictionary = {}      # world tile (Vector2i) -> FireField burning it
-
-# Grass fire: a neutral wildfire that burns green grass to grey and creeps to
-# adjacent green grass one generation at a time. Hurts both sides (row 1).
-const GRASS_BURN_TIME: float = 3.0    # how long a burning grass tile stays lit
-const GRASS_SPREAD_DELAY: float = 0.5 # gap between spreading to the next ring of grass
-const GRASS_FIRE_CAP: int = 150       # safety cap on simultaneous grass fires
-
-var _grass_fires: Array = []          # Array of {tile, node, from_player, burn, spread, spread_done}
-var _grass_index: Dictionary = {}     # tile (Vector2i) -> GroundFire node
-
-# Fire melts ice (Tank.exe's fire terrain step, 0x497a4e: a fire whose owner is
-# a player erases ice, ids 0..3 of the ice/water layer, from under itself, once,
-# Rnd(500)+500 ticks after it lands; enemy and grass fires, owner -1, never do).
-const ICE_MELT_DELAY_MIN: float = 0.375
-const ICE_MELT_DELAY_MAX: float = 0.75
-var _ice_melts: Dictionary = {}       # ice tile (Vector2i) -> seconds until it melts
+## Each side's fires, as the original kept them (its grids, 0x00490a3c):
+## [the enemies', the players'], tile -> the fire there. Only a shell's patch
+## goes in: a shell landing on its own side's fire feeds it; the other side's
+## burns beside it.
+var _fire_grid: Array[Dictionary] = [{}, {}]
+## Every fire on a tile, in the order they were lit: tile -> [GroundFire].
+var _fires_at: Dictionary = {}
+var _fire_count := 0
+var _fire_serial := 0
 
 
 # =====================================================================
@@ -1184,77 +1187,205 @@ func _clear_mines() -> void:
 	_mine_tiles.clear()
 
 
-func _tick_fire(delta: float) -> void:
-	if _fire_fields.is_empty():
+## The tanks on burning ground (the original's tank collision with a fire,
+## 0x00491cf0), each off its fire window and not materializing, dying or
+## thrown: burned by the first armed fire under it that isn't its side's (a
+## player's fire burns enemies, the enemies' fire players, burning grass
+## everyone).
+func _burn_tanks() -> void:
+	if _fires_at.is_empty():
 		return
-	for field in _fire_fields:
-		if field not in _frozen_fire_fields:
-			field.update(delta)
-	var alive: Array = []
-	for field in _fire_fields:
-		if not field.is_dead():
-			alive.append(field)
-	_fire_fields = alive
+	for node in get_tree().get_nodes_in_group("players") + get_tree().get_nodes_in_group("enemies"):
+		var tank := node as BaseTank
+		if tank == null or not is_instance_valid(tank) or tank.is_queued_for_deletion() or tank.health <= 0:
+			continue
+		if tank.is_materializing or tank.is_flying or tank.fire_immunity_timer > 0.0:
+			continue
+		var fire := _fire_under(tank)
+		if fire:
+			tank.burn(fire.is_grass_fire, fire.owner_id)
 
 
-## Debug freeze: pause the fires the enemy side has already lit, or resume them.
-func freeze_enemy_fire(frozen: bool) -> void:
-	_frozen_fire_fields.clear()
-	_frozen_grass_tiles.clear()
-	if not frozen:
-		return
-	for field in _fire_fields:
-		if not field.from_player:
-			_frozen_fire_fields.append(field)
-	for rec in _grass_fires:
-		if not rec["from_player"]:
-			_frozen_grass_tiles[rec["tile"]] = true
+## The first armed fire under [param tank] (strictly overlapping its box) that
+## burns its side, or null.
+func _fire_under(tank: BaseTank) -> GroundFire:
+	var reach := BLINKING_FIRE_REACH if tank.is_invulnerable() else FIRE_REACH
+	var at := tank.global_position - global_position
+	var tank_side := 1 if tank.is_in_group("players") else 0
+	var first: GroundFire = null
+	for tx in range(floori((at.x - reach) / TILE_SIZE), floori((at.x + reach) / TILE_SIZE) + 1):
+		if tx * TILE_SIZE >= at.x + reach or (tx + 1) * TILE_SIZE <= at.x - reach:
+			continue
+		for ty in range(floori((at.y - reach) / TILE_SIZE), floori((at.y + reach) / TILE_SIZE) + 1):
+			if ty * TILE_SIZE >= at.y + reach or (ty + 1) * TILE_SIZE <= at.y - reach:
+				continue
+			for f in _fires_at.get(Vector2i(tx, ty), []):
+				var fire := f as GroundFire
+				if fire == null or not fire.is_armed() or same_side(tank_side, fire.side):
+					continue
+				if first == null or fire.serial < first.serial:
+					first = fire
+	return first
 
 
-## Ignite the ground where a fire bullet died. If the impact tile is already
-## burning, grow that field by one ring (rule 3); otherwise start a new size-4
-## field (rules 1/4/5/6). [param from_player] decides which side it can burn;
-## [param owner_id] is the player whose shell it was (-1: an enemy's).
-func ignite_fire_patch(center: Vector2i, from_player: bool, owner_id: int = -1) -> void:
-	if _fire_index.has(center):
-		var field = _fire_index[center]
-		if field != null and not field.is_dead():
-			field.feed(from_player, owner_id)
-			return
-	if _fire_fields.size() >= FIRE_FIELD_CAP:
-		return
-	var new_field := FireField.new(center, from_player, self, owner_id)
-	_fire_fields.append(new_field)
+## The original's SameSide (0x004690d0): both players', or both the enemies'.
+## Burning grass is nobody's side.
+static func same_side(a: int, b: int) -> bool:
+	return (a > 0 and b > 0) or (a == 0 and b == 0)
 
 
-## Spawn one GroundFire tile node at [param world] (deferred; ignition often
-## fires from inside a physics callback). Returns null if the tile can't burn.
-## A player's fire landing on ice starts melting it.
-func _spawn_fire_tile(world: Vector2i, from_player: bool, arm_delay: float, owner_id: int = -1) -> GroundFire:
-	if not _fire_tile_ignitable(world):
+## Fresh fuel for a fire of [param strength], ticks: 1750-2249, 1500 more a
+## level (the original's 0x00493c48).
+static func fresh_fire_fuel(strength: int) -> int:
+	return randi_range(0, 499) + 1750 + 1500 * strength
+
+
+## The cell a fire shell's patch is laid round, dropping at [param at] (world
+## px): the one under its top-left corner, as the original truncated it
+## (0x00493b5a), so the patch's middle is the tile corner nearest the shell.
+func fire_anchor(at: Vector2) -> Vector2i:
+	return world_to_tile(at - Vector2(16, 16))
+
+
+## A fire shell of [param strength] (its gun level) drops: the original's
+## patch (0x00493b44), 12 tiles round [param anchor] (a 4x4 less its corners,
+## from one up-left of it), a fire of the shell's side on each that fire can
+## lie on; the inner 2x2 arms first. Where its side burns already, the shell
+## feeds that fire instead (GroundFire.restack).
+func ignite_fire_patch(anchor: Vector2i, from_player: bool, owner_id: int = -1, strength: int = 0) -> void:
+	var side := 1 if from_player else 0
+	for dy in range(-1, 3):
+		for dx in range(-1, 3):
+			if dx + dy < -1 or dx + dy > 3 or dy - dx < -2 or dy - dx > 2:
+				continue  # the 4 corners
+			var cell := anchor + Vector2i(dx, dy)
+			if not fire_can_lie(cell):
+				continue
+			var there := _registered_fire(side, cell)
+			if there:
+				there.restack(strength, owner_id)
+				continue
+			var inner := dx >= 0 and dx <= 1 and dy >= 0 and dy <= 1
+			var fire := _new_fire(cell, side, owner_id, strength, float(fresh_fire_fuel(strength)),
+					GroundFire.ARM_INNER if inner else GroundFire.ARM, dx + dy + 2)
+			if fire:
+				fire.registered = true
+				_fire_grid[side][cell] = fire
+
+
+## Ground a fire shell's patch can lie on (0x00493bb8): open ground, grass,
+## burned grass, water and ice, and half a brick; not a whole brick, a quarter
+## of one, a hard brick, iron or super steel.
+func fire_can_lie(cell: Vector2i) -> bool:
+	var wall := _fire_wall(cell)
+	return _is_in_bounds(cell) and (wall == 0 or wall == 2)
+
+
+## Where a big fire can spread to (0x004977ba): as fire_can_lie, a quarter
+## brick too, but not water.
+func _fire_can_spread_to(cell: Vector2i) -> bool:
+	return _is_in_bounds(cell) and _fire_wall(cell) < 4 and not _is_water_tile(cell)
+
+
+## The wall on [param cell] as fire sees it: 0 none (open ground, grass), else
+## a brick's quarters standing, 4 for a whole one and anything harder.
+func _fire_wall(cell: Vector2i) -> int:
+	if not _fg_tile_data.has(cell):
+		return 0
+	var code: int = _fg_tile_data[cell].get("code", 0)
+	match LevelData.get_tile_category(code):
+		LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+			if code == 0xA1 or code == 0xAB or code == 0xAC:
+				return 4  # a brick hiding an item
+			var mask := int(_brick_damage.get(cell, 0b1111))
+			var quarters := (mask & 1) + (mask >> 1 & 1) + (mask >> 2 & 1) + (mask >> 3 & 1)
+			return 4 if quarters >= 3 else quarters
+		LevelData.TileCategory.HARD_BRICK, LevelData.TileCategory.IRON_BLOCK, LevelData.TileCategory.SUPER_BLOCK:
+			return 4
+	return 0
+
+
+## [param side]'s fire registered on [param cell], or null.
+func _registered_fire(side: int, cell: Vector2i) -> GroundFire:
+	var fire = _fire_grid[side].get(cell)
+	if fire == null or not is_instance_valid(fire) or fire.is_queued_for_deletion():
 		return null
-	var fire: GroundFire = _ground_fire_scene.new()
-	fire.setup(world, from_player, arm_delay)
-	fire.owner_id = owner_id
-	fire.position = Vector2(world.x * TILE_SIZE + TILE_SIZE / 2, world.y * TILE_SIZE + TILE_SIZE / 2)
-	_add_deferred(terrain_node, fire)
-	if from_player and _is_ice(world) and not _ice_melts.has(world):
-		_ice_melts[world] = randf_range(ICE_MELT_DELAY_MIN, ICE_MELT_DELAY_MAX)
 	return fire
 
 
-func _fire_tile_ignitable(tile: Vector2i) -> bool:
-	if not _is_in_bounds(tile):
-		return false
-	# No fire on solid walls (brick/steel/super). Burned grass DOES burn — it's
-	# scorched ground now, no different from regular open dirt. Water and ice
-	# burn like ground too (as in the original, whose placement never looks at
-	# that layer); a player's fire then melts the ice under it.
-	if _fg_tile_data.has(tile):
-		var cat := LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))
-		if LevelData.is_solid_tile(cat):
-			return false
-	return true
+## A new fire on [param cell] (deferred: shells drop inside the physics'
+## callbacks); null past FIRE_CAP.
+func _new_fire(cell: Vector2i, side: int, owner_id: int, strength: int, fuel: float, arm: float, frame: int,
+		shown: bool = false) -> GroundFire:
+	if _fire_count >= FIRE_CAP:
+		return null
+	var fire: GroundFire = _ground_fire_scene.new()
+	fire.setup(self, cell, side, owner_id, strength, fuel, arm, frame, shown)
+	_fire_serial += 1
+	fire.serial = _fire_serial
+	fire.position = Vector2(cell.x * TILE_SIZE + TILE_SIZE / 2, cell.y * TILE_SIZE + TILE_SIZE / 2)
+	_add_deferred(terrain_node, fire)
+	if not _fires_at.has(cell):
+		_fires_at[cell] = []
+	_fires_at[cell].append(fire)
+	_fire_count += 1
+	return fire
+
+
+## A big fire spreads (0x0049775e): to each side of it fire can spread to, it
+## gives a quarter of what it had above the fire of its side there, a new one
+## if none is registered there (which never is, so it may be given another).
+## So a stack levels out over its patch and pushes a ring of fire out of it.
+func spread_fire(fire: GroundFire) -> void:
+	var had := fire.fuel
+	for d in FIRE_DIRS:
+		var cell := fire.tile_pos + d
+		if not _fire_can_spread_to(cell):
+			continue
+		var there := _registered_fire(fire.side, cell)
+		if there == null:
+			there = _new_fire(cell, fire.side, fire.owner_id, fire.strength, 0.0, GroundFire.ARM,
+					cell.x + cell.y + fire.anim_frame())
+			if there == null:
+				continue
+		var more := had - there.fuel
+		if more > 0.0:
+			there.strength = fire.strength
+			there.owner_id = fire.owner_id
+			var give := floorf(more / 4.0)
+			there.fuel += give
+			fire.fuel -= give
+
+
+## A fire's terrain step, once (0x00497925): green grass beside it (not under
+## it) burns to grey, with a fire of nobody's on it, which burns everyone and
+## goes on along the grass the same way; and a side's fire melts the ice under
+## itself to bare ground.
+func fire_terrain_step(fire: GroundFire) -> void:
+	for d in FIRE_DIRS:
+		var cell := fire.tile_pos + d
+		if _is_green_grass(cell):
+			_convert_grass_to_burned(cell)
+			_new_fire(cell, -1, -1, 0, float(randi_range(0, 499) + 3750), GroundFire.ARM, cell.x + cell.y, true)
+	if fire.side >= 0 and _is_ice(fire.tile_pos):
+		_remove_bg_tile(fire.tile_pos)
+
+
+## A fire has burned out: off its tile, and off its side's grid while it's the
+## one there.
+func fire_out(fire: GroundFire) -> void:
+	if fire.registered and _fire_grid[fire.side].get(fire.tile_pos) == fire:
+		_fire_grid[fire.side].erase(fire.tile_pos)
+	var list: Array = _fires_at.get(fire.tile_pos, [])
+	list.erase(fire)
+	if list.is_empty():
+		_fires_at.erase(fire.tile_pos)
+	_fire_count -= 1
+
+
+## The fires on [param cell], in the order they were lit.
+func fires_at(cell: Vector2i) -> Array:
+	return _fires_at.get(cell, [])
 
 
 func _is_ice(tile: Vector2i) -> bool:
@@ -1262,83 +1393,19 @@ func _is_ice(tile: Vector2i) -> bool:
 			_bg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.ICE
 
 
-## Melts the ice tiles whose fire has burned long enough: bare ground is left,
-## and tanks no longer slide there.
-func _tick_ice_melt(delta: float) -> void:
-	if _ice_melts.is_empty():
-		return
-	for tile: Vector2i in _ice_melts.keys():
-		_ice_melts[tile] -= delta
-		if _ice_melts[tile] <= 0.0:
-			_ice_melts.erase(tile)
-			if _is_ice(tile):
-				_remove_bg_tile(tile)
-
-
 func _is_in_bounds(tile: Vector2i) -> bool:
 	return tile.x >= 0 and tile.x < GRID_WIDTH and tile.y >= 0 and tile.y < GRID_HEIGHT
 
 
 func _clear_fire() -> void:
-	for field in _fire_fields:
-		field.force_clear()
-	_fire_fields.clear()
-	_fire_index.clear()
-	for rec in _grass_fires:
-		if is_instance_valid(rec["node"]):
-			rec["node"].queue_free()
-	_grass_fires.clear()
-	_grass_index.clear()
-	_ice_melts.clear()
-
-
-## Set a green grass tile alight: scorch it to grey immediately, spawn a neutral
-## grass fire that hurts both sides, and schedule it to creep to its neighbours.
-## Called by a fire field when it reaches grass, and by the spread step.
-func ignite_grass(tile: Vector2i, from_player: bool) -> void:
-	if not _is_green_grass(tile):
-		return
-	if _grass_index.has(tile):
-		return
-	if _grass_fires.size() >= GRASS_FIRE_CAP:
-		return
-	_convert_grass_to_burned(tile)  # green -> grey (permanent)
-	var fire: GroundFire = _ground_fire_scene.new()
-	fire.is_grass_fire = true
-	fire.setup(tile, from_player, GroundFire.ARM_DELAY)
-	fire.position = Vector2(tile.x * TILE_SIZE + TILE_SIZE / 2, tile.y * TILE_SIZE + TILE_SIZE / 2)
-	_add_deferred(terrain_node, fire)
-	_grass_index[tile] = fire
-	_grass_fires.append({
-		"tile": tile, "node": fire, "from_player": from_player,
-		"burn": GRASS_BURN_TIME, "spread": GRASS_SPREAD_DELAY, "spread_done": false,
-	})
-
-
-func _tick_grass_fire(delta: float) -> void:
-	if _grass_fires.is_empty():
-		return
-	# Tick a snapshot so fires spawned by this frame's spread wait until next frame.
-	for rec in _grass_fires.duplicate():
-		if _frozen_grass_tiles.has(rec["tile"]):
-			continue
-		rec["burn"] -= delta
-		if not rec["spread_done"]:
-			rec["spread"] -= delta
-			if rec["spread"] <= 0.0:
-				rec["spread_done"] = true
-				var t: Vector2i = rec["tile"]
-				for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-					ignite_grass(t + d, rec["from_player"])
-	var alive: Array = []
-	for rec in _grass_fires:
-		if rec["burn"] > 0.0:
-			alive.append(rec)
-		else:
-			_grass_index.erase(rec["tile"])
-			if is_instance_valid(rec["node"]):
-				rec["node"].start_decay(randf() * 0.5)
-	_grass_fires = alive
+	for list in _fires_at.values():
+		for f in list:
+			if is_instance_valid(f):
+				f.queue_free()
+	_fires_at.clear()
+	for grid in _fire_grid:
+		grid.clear()
+	_fire_count = 0
 
 
 func _is_green_grass(tile: Vector2i) -> bool:

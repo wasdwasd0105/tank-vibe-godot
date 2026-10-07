@@ -31,6 +31,8 @@ var damage: int = 1
 
 # Fire weapon: this bullet leaves a burning patch wherever it dies.
 var ignites_ground: bool = false
+## Its gun level: the strength of the fire it drops.
+var fire_level: int = 0
 var max_range: float = -1.0   # px; <= 0 means unlimited
 var _traveled: float = 0.0
 
@@ -220,12 +222,9 @@ func _physics_process(delta: float) -> void:
 	if blast_immunity > 0.0:
 		blast_immunity -= delta
 
-	# AP shells launch slow and accelerate to a high top speed.
-	if accel > 0.0 and max_speed > 0.0:
-		speed = minf(speed + accel * delta, max_speed)
-
 	var movement: Vector2 = direction * speed * delta
 	position += movement
+	_change_speed(delta)
 	_net_steps += 1
 	if not is_player_bullet:
 		_note_near_screens()
@@ -253,10 +252,9 @@ func _physics_process(delta: float) -> void:
 func _fly_ghost(delta: float) -> void:
 	if not visible:
 		return
-	if accel > 0.0 and max_speed > 0.0:
-		speed = minf(speed + accel * delta, max_speed)
 	var movement: Vector2 = direction * speed * delta
 	position += movement
+	_change_speed(delta)
 	_traveled += movement.length()
 	# An AP shell drills on through walls, shells and tanks while its pool
 	# lasts, as the host's does; any other stops at the first, in the host's
@@ -305,14 +303,26 @@ func _fly_ghost(delta: float) -> void:
 				world.predict_wall(self, walls, global_position)  # the wall it broke too
 			world.predict_hit(self, global_position)  # its end, shown at once
 
+## Its speed after a step of [param delta] (taken at the speed it had): an AP
+## or explosion shell speeds up to its top speed, a fire shell slows down.
+func _change_speed(delta: float) -> void:
+	if accel > 0.0 and max_speed > 0.0:
+		speed = minf(speed + accel * delta, max_speed)
+	elif accel < 0.0:
+		speed = maxf(speed + accel * delta, 0.0)
+
 ## How far this shell flies in [param seconds] from its speed now: an AP shell
-## speeds up to its top speed as it goes.
+## speeds up to its top speed as it goes, a fire shell slows.
 func distance_in(seconds: float) -> float:
 	return flight(speed, accel, max_speed, seconds)
 
 ## How far a shell leaving at [param from_speed] flies in [param seconds],
-## speeding up by [param accel] to [param top] (if it does).
+## speeding up by [param accel] to [param top] (if it does), or slowing down
+## (accel below 0) till it stands.
 static func flight(from_speed: float, accel: float, top: float, seconds: float) -> float:
+	if accel < 0.0:
+		var t := minf(seconds, -from_speed / accel)
+		return from_speed * t + 0.5 * accel * t * t
 	if accel <= 0.0 or top <= from_speed:
 		return from_speed * seconds
 	var to_top := (top - from_speed) / accel
@@ -708,11 +718,11 @@ func _destroy() -> void:
 	_parked_end = Callable()
 	_release_owner()
 
-	# Fire bullets ignite the ground wherever they die — range end, wall/tank/bullet
-	# hit, or map border. If they land on already-burning ground the field grows.
+	# Fire bullets drop their patch wherever they die — range end, wall/tank/bullet
+	# hit, or map border. Where their side's fire burns already, they feed it.
 	if ignites_ground and _level_manager:
-		_level_manager.ignite_fire_patch(
-			_level_manager.world_to_tile(global_position), is_player_bullet, owner_player)
+		_level_manager.ignite_fire_patch(_level_manager.fire_anchor(global_position), is_player_bullet,
+				owner_player, fire_level)
 
 	# Explosion bullets go off wherever they die, their blast hurting a tank they
 	# hit too.

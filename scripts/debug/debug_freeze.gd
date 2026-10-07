@@ -60,8 +60,6 @@ func set_frozen(value: bool) -> void:
 			if is_instance_valid(node):
 				_thaw(node, _saved[node])
 		_saved.clear()
-	if _level_manager:
-		_level_manager.freeze_enemy_fire(frozen)
 	_banner.visible = frozen
 
 
@@ -84,7 +82,9 @@ func _should_freeze(node: Node) -> bool:
 		return true
 	if node is Bullet:
 		return not node.is_player_bullet
-	if node is Mine or node is GroundFire or node is ExplosionBlast:
+	if node is GroundFire:
+		return node.side == 0  # the enemies' fire; burning grass is nobody's
+	if node is Mine or node is ExplosionBlast:
 		return not node.from_player
 	var script: Script = node.get_script()
 	return script != null and script.resource_path in EFFECT_SCRIPTS

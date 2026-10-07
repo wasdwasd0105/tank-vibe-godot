@@ -6,7 +6,7 @@ The words Tank.exe v1.22 shows when a player hits and kills tanks: a hit counter
 
 ## 1. Damage(tank, amount, attacker) — 0x492640
 
-`attacker` is the player number (1 or 2), or −1 for an enemy's weapon.
+`attacker` is the player number (1 or 2), 0 for an enemy's weapon (enemies are side 0, TEnemyTank.Create 0x494b78), or −1 for burning grass, nobody's.
 
 1. Nothing happens if the tank has no HP left, `amount` ≤ 0, or it is invulnerable (+0xbd).
 2. HP −= amount (SetHP, vmt+0x24).
@@ -47,7 +47,7 @@ The words Tank.exe v1.22 shows when a player hits and kills tanks: a hit counter
 - **The bomb item**, taken by a player (case 7 of the pickup dispatch, 0x495bc5):
   - every enemy that isn't materializing gets its HP set to 0 through SetHP;
   - Damage never runs, so there's no chain, no combo, no score and no kill text.
-- **An enemy's weapon** (attacker −1): the chain call skips it, and the kill branch needs attacker > 0.
+- **An enemy's weapon** (attacker 0): the chain call takes it (only below 0 is skipped) into record 0, the enemies' slot, where nothing is known to show; the kill branch needs attacker > 0. (Corrected 2026-10-08: first written as −1.)
 
 ## 5. Other corner text, for reference
 

@@ -68,6 +68,6 @@ Ported as above: `ExplosionBlast` (the grid, its frames, picture, walls, damage,
 
 ## Part C — Found on the way (not changed)
 
-- **Enemy tanks' side is 0, not -1** (`TEnemyTank.Create` 0x00494b78): so enemy fire has owner 0 and melts ice too (the fire spec and the remake say enemy fire doesn't).
+- **Enemy tanks' side is 0, not -1** (`TEnemyTank.Create` 0x00494b78): so enemy fire has owner 0 and melts ice too (since fixed: the fire spec was rechecked and the remake's fire ported, 2026-10-08).
 - **AP and iron:** the original breaks iron only for a shell with 6 or more heat, at a cost of 8; the remake's AP pays 4 with no such limit.
 - **Mines come 15 a pack** (75 at most) in the original; the remake gives 25.

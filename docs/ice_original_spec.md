@@ -27,7 +27,7 @@ So on ice, a player's tank at its slowest (top speed 650, 173 px/s in the remake
 **Other uses of ice:**
 - The add-on is drawn 1 px further in while the tank is on ice or standing (0x00493720).
 - The enemies' way to the base costs 12 more a cell of ice (8 on a line of fire), but not for anti-ice tanks (enemy_ai_original_spec.md).
-- A player's fire melts it (fire_weapon_original_spec.md).
+- A side's fire, the players' or the enemies', melts the ice under itself 500-999 ticks after it starts; burning grass, nobody's, doesn't (fire_weapon_original_spec.md).
 
 Nothing else reads it: not shells, mines (anti-ice skates over mines below level 3 because of its add-on, not the ice), blasts or damage.
 

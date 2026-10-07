@@ -260,7 +260,7 @@ Changed:
   - the client's ONLINE BATTLE screen: CREATE with a wrong password, turned away, EDIT to put it right, a click to join the running stage;
   - the client taking tank 2 with its own P1 fire, mid-stage; newcomers turned away while the host's game is locked, then full;
   - the game, the client driving tank 2, rumble reaching the client's pad, sounds and effects playing there;
-- **the world:** a busy field (enemies, shells, an item, mines, a fire field, a blast) frozen and compared on the client, entity for entity, state for state, cell for cell, and the HUD's numbers;
+- **the world:** a busy field (enemies, shells, an item, mines, a fire shell's patch, a blast) frozen and compared on the client, entity for entity, state for state, cell for cell, and the HUD's numbers;
 - **then:**
   - the next stage, through the host's mission, results and intro screens;
   - a tank taken away and given back;

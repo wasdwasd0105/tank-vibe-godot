@@ -337,18 +337,13 @@ func _tick_state_overlay(delta: float) -> void:
 	var f := int(_state_fx_time / STATE_FX_FRAME_DUR) % _state_fx_frames.size()
 	_state_fx_sprite.texture = _state_fx_frames[f]
 
-## Called by GroundFire when this tank overlaps a burning tile.
-## The tank's own side is immune to its own fire; damage is throttled by
-## [member fire_immunity_timer].
-func on_fire_contact(from_player_fire: bool, reburn: float, hurts_both: bool = false, owner_id: int = -1) -> void:
-	if fire_immunity_timer > 0.0:
-		return
-	# Grass fire is neutral and burns everyone; weapon fire never burns its own side.
-	if not hurts_both:
-		var is_player := is_in_group("players")
-		if from_player_fire == is_player:
-			return  # player fire never burns players; enemy fire never burns enemies
-	fire_immunity_timer = reburn
+## Fire burns it (LevelManager._burn_tanks): one point, as any hit (a
+## player's hit grace, an enemy's downgrade), from [param owner_id]'s fire
+## (-1: the enemies', or burning grass, nobody's). Then no fire burns it for
+## 0.5625 s, or 1.125 s after burning grass ([param neutral]), even if it
+## blinked and took nothing (the original's 0x00491d34).
+func burn(neutral: bool, owner_id: int) -> void:
+	fire_immunity_timer = LevelManager.GRASS_FIRE_WINDOW if neutral else LevelManager.FIRE_WINDOW
 	hit_by = owner_id
 	take_damage()
 
@@ -493,7 +488,8 @@ func _spawn_bullet(
 	explosion_level: int = 0,
 	pierces: bool = false,
 	accel: float = 0.0,
-	max_speed: float = 0.0
+	max_speed: float = 0.0,
+	fire_level: int = 0
 ) -> void:
 	var bullet_scene := preload("res://scenes/tanks/bullet.tscn")
 	var bullet: Bullet = bullet_scene.instantiate()
@@ -518,6 +514,7 @@ func _spawn_bullet(
 	bullet.pierces = pierces
 	bullet.accel = accel
 	bullet.max_speed = max_speed
+	bullet.fire_level = fire_level
 	bullet.net_shot = _shot_number()
 	bullet.net_view = _shot_view()
 	bullet.global_position = spawn_position
@@ -588,11 +585,17 @@ func _spawn_fire_bullet(config: Dictionary) -> void:
 		spawn_position,
 		[0.0],
 		DEFAULT_BULLET_LANE_OFFSETS,
-		config.get("speed", 500.0),
+		config.get("speed", 622.2),
 		"fire",
 		true,
 		int(config.get("damage", 1)),
-		float(config.get("range_px", 480.0))
+		float(config.get("range_px", 496.0)),
+		false,
+		0,
+		false,
+		float(config.get("accel", 0.0)),
+		0.0,
+		int(config.get("level", 0))
 	)
 
 ## Fire a single centred explosion bullet. [param config] comes from

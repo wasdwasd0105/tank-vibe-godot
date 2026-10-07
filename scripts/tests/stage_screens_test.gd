@@ -174,14 +174,15 @@ func _run() -> void:
 	var e4 := _enemy(17, Vector2i(24, 8))
 	await _frames(1)
 	e4.health = 1
-	lm.ignite_fire_patch(lm.world_to_tile(e4.global_position), true, 0)
-	var field = lm._fire_fields[-1]
-	check(field.owner_id == 0, "a fire field knows whose shell lit it")
-	await tree.create_timer(0.4).timeout
+	var patch_at := lm.fire_anchor(e4.global_position)
+	lm.ignite_fire_patch(patch_at, true, 0)
 	var tile_owners: Array = []
-	for t in field._tiles.values():
-		tile_owners.append(t.owner_id)
-	check(not tile_owners.is_empty() and tile_owners.count(0) == tile_owners.size(), "and so do its tiles")
+	for dy in range(-1, 3):
+		for dx in range(-1, 3):
+			for f in lm.fires_at(patch_at + Vector2i(dx, dy)):
+				tile_owners.append(f.owner_id)
+	check(not tile_owners.is_empty() and tile_owners.count(0) == tile_owners.size(), "a fire patch knows whose shell lit it, tile by tile")
+	await tree.create_timer(0.4).timeout
 	check(GameManager.player_kills[0].get(17, 0) == 1, "P1's fire: P1's kill (%s)" % str(GameManager.player_kills[0]))
 	lm._clear_fire()
 	# P2's bomb.
@@ -195,7 +196,7 @@ func _run() -> void:
 	var e7 := _enemy(2, Vector2i(6, 12))
 	await _frames(1)
 	var scores: Array = GameManager.player_scores.duplicate()
-	e7.on_fire_contact(false, 1.0, true)
+	e7.burn(true, -1)
 	check(e7.killed_by == -1 and GameManager.player_scores == scores
 		and not GameManager.player_kills[0].has(2) and not GameManager.player_kills[1].has(2),
 		"a grass fire's kill is nobody's: no points, no tally")
