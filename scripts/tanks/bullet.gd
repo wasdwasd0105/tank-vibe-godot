@@ -11,6 +11,7 @@ var owner_player: int = -1
 ## original only the AP shell gets through steel, and it does so on its own path
 ## (see pierces / LevelManager.ap_drill_tiles), spending a damage pool per tile.
 ## Kept as the hook for any future weapon that should breach steel outright.
+## (The players' explosion gun at its top level has its own rule: breaks_iron.)
 var can_destroy_steel: bool = false
 var visual_style: String = "regular"
 var visual_lane_offsets: Array[float] = [-16.0, 16.0]
@@ -33,10 +34,14 @@ var ignites_ground: bool = false
 var max_range: float = -1.0   # px; <= 0 means unlimited
 var _traveled: float = 0.0
 
-# Explosion weapon: this bullet detonates a shockwave wherever it dies.
+# Explosion weapon: this bullet detonates a blast (ExplosionBlast) wherever it
+# dies. Its damage is its heat (1, 1, 2, 2 by level): what it takes off a tank
+# it hits, a shell it meets or a wall, flying on while it has any left.
 var explodes: bool = false
 var explosion_level: int = 0
-var _direct_hit_tank: Node2D = null  # tank the explosion bullet struck (excluded from its own wave)
+## The players' explosion shell from this level (the gun's top, 4 in play)
+## breaks the iron it hits (breaks_iron).
+const IRON_LEVEL := 3
 
 # AP weapon: a slow-then-fast shell whose "damage" is a pool it spends piercing
 # through tanks and walls (it keeps flying until the pool is empty). accel/max_speed
@@ -58,6 +63,8 @@ var net_shot := -1
 ## worked out (NetClientWorld.ap_walk).
 var net_origin := Vector2.ZERO
 var net_walk: Dictionary = {}
+## A ghost's: the enemies an explosion shell of its finished and flew on through.
+var _passed: Dictionary = {}
 ## Host: a client's own shot (lag compensation, docs/network_design.md section
 ## 7): [the controller (PlayerInput) of the client that fired it, the run of
 ## its reports and the frame it fired it at]; [] for any other shell. It meets
@@ -85,6 +92,8 @@ var _released := false
 ## Host: a shell's end waits for a client's screen this long at most (msec), if
 ## that client goes quiet.
 const PARK_MAX_MS := 1000
+## Host: no blast hurts it while this is above 0, s (ExplosionBlast.BLAST_IMMUNITY).
+var blast_immunity := 0.0
 static var _bullet_texture_cache: Dictionary = {}
 
 const BULLET_LENGTH: float = 10.0
@@ -208,6 +217,8 @@ func _physics_process(delta: float) -> void:
 	if _parked_end.is_valid():
 		_end_when_seen()
 		return
+	if blast_immunity > 0.0:
+		blast_immunity -= delta
 
 	# AP shells launch slow and accelerate to a high top speed.
 	if accel > 0.0 and max_speed > 0.0:
@@ -259,15 +270,30 @@ func _fly_ghost(delta: float) -> void:
 	var walls: Array[Vector2i] = []
 	if not pierces and not out:
 		walls = _solid_tiles_touched()
+		if not walls.is_empty() and world and _level_manager:
+			var cost := wall_cost(_level_manager, walls, wall_heat())
+			if cost < wall_heat():
+				world.predict_wall(self, walls, global_position)  # it breaks what it can and flies on, as the host's
+				damage -= cost
+				walls = []
 	var ended := drilled_to >= 0.0 or out or not walls.is_empty()
 	if not ended and not pierces and world:
 		var theirs := world.shell_met(self, global_position)
 		if theirs:
-			world.clash(self, theirs, damage, global_position)  # (it ends: 1 damage, or a fire or explosion shell)
-			ended = true
+			world.clash(self, theirs, damage, global_position)
+			damage -= theirs.damage
+			ended = damage <= 0 or ignites_ground  # (an explosion shell with heat left flies on)
 	var met: BaseTank = null
 	if not ended and not pierces:
 		met = _enemy_met()
+		if met != null and explodes and damage > met.health and world \
+				and not met.is_invulnerable() and not met.is_bullet_blocked(direction):
+			# An explosion shell with heat to spare finishes it and flies on, as the host's.
+			world.note_own_hit(met)
+			world.guess_kill(met, met.health, self, global_position)
+			damage -= met.health
+			_passed[met.get_instance_id()] = true
+			met = null
 		ended = met != null
 	if ended:
 		visible = false
@@ -307,12 +333,13 @@ func tank_damage() -> int:
 	return 1
 
 ## The enemy tank this shell is on as shown here, the nearest if more (a
-## ghost's check, as the host judges it: touches_tank).
+## ghost's check, as the host judges it: touches_tank); not one it finished and
+## flew on through.
 func _enemy_met() -> BaseTank:
 	var met: BaseTank = null
 	for node in get_tree().get_nodes_in_group("enemies"):
 		var tank := node as BaseTank
-		if tank == null or not tank.is_solid():
+		if tank == null or not tank.is_solid() or _passed.has(tank.get_instance_id()):
 			continue
 		if touches_tank(global_position, direction, collision_lane_offsets, tank.global_position) \
 				and (met == null or (tank.global_position - met.global_position).dot(direction) < 0.0):
@@ -334,17 +361,26 @@ func _check_tile_collision() -> void:
 
 		var level_manager := _level_manager
 		var way := direction
-		var through_steel := can_destroy_steel
+		var through_steel := breaks_iron()
+		var heat := wall_heat()
+		var cost := wall_cost(level_manager, solid_tiles, heat)
+		if cost < heat:
+			# An explosion shell with heat to spare breaks what it can and flies on.
+			hit_tiles(level_manager, solid_tiles, way, through_steel, heat)
+			damage -= cost
+			return
 		_end_with(func() -> void:
-			hit_tiles(level_manager, solid_tiles, way, through_steel)
+			hit_tiles(level_manager, solid_tiles, way, through_steel, heat)
 			_destroy(), solid_tiles)
 
-## A shell going [param way] ends on [param tiles] of [param level_manager]'s:
-## a brick loses the side it hit, a hard brick a point, steel only to a shell
-## that [param through_steel] goes through it. (A client breaks them so for its
-## own shells at once: NetClientWorld.predict_wall.)
+## A shell going [param way] with [param heat] reaches [param tiles] of
+## [param level_manager]'s (the original's TileHit, 0x004940e4): a brick loses
+## the side it hit, or all of it to a shell of more than 1 heat while it's
+## whole; a hard brick a point for each point of heat; iron only to a shell
+## that breaks it ([param through_steel]: breaks_iron), super steel never. (A
+## client breaks them so for its own shells at once: NetClientWorld.predict_wall.)
 static func hit_tiles(level_manager: LevelManager, tiles: Array[Vector2i], way: Vector2,
-		through_steel: bool = false) -> void:
+		through_steel: bool = false, heat: int = 1) -> void:
 	for tile_pos in tiles:
 		if not level_manager._fg_tile_data.has(tile_pos):
 			continue
@@ -353,14 +389,50 @@ static func hit_tiles(level_manager: LevelManager, tiles: Array[Vector2i], way: 
 		var cat := LevelData.get_tile_category(code)
 		match cat:
 			LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
-				level_manager._damage_brick(tile_pos, way)
+				if heat > 1 and int(level_manager._brick_damage.get(tile_pos, 0)) == 0b1111:
+					level_manager._remove_fg_tile(tile_pos)
+					level_manager._brick_damage.erase(tile_pos)
+				else:
+					level_manager._damage_brick(tile_pos, way)
 			LevelData.TileCategory.HARD_BRICK:
-				level_manager._damage_hard_brick(tile_pos)
+				for i in heat:
+					if level_manager._fg_tile_data.has(tile_pos):
+						level_manager._damage_hard_brick(tile_pos)
 			LevelData.TileCategory.IRON_BLOCK:
 				if through_steel:
 					level_manager._remove_fg_tile(tile_pos)
 			LevelData.TileCategory.SUPER_BLOCK:
 				pass
+
+## The heat a shell with [param heat] loses on [param tiles] of
+## [param level_manager]'s, the most any of them costs it (the original's
+## TileHit): 2 for a whole brick it breaks whole, 1 for any other brick, a hard
+## brick's points up to its heat, and all of it on steel.
+static func wall_cost(level_manager: LevelManager, tiles: Array[Vector2i], heat: int) -> int:
+	var cost := 0
+	for tile_pos in tiles:
+		if not level_manager._fg_tile_data.has(tile_pos):
+			continue
+		match LevelData.get_tile_category(level_manager._fg_tile_data[tile_pos].get("code", 0)):
+			LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+				cost = maxi(cost, 2 if heat > 1 and int(level_manager._brick_damage.get(tile_pos, 0)) == 0b1111 else 1)
+			LevelData.TileCategory.HARD_BRICK:
+				cost = maxi(cost, mini(int(level_manager._hard_brick_hp.get(tile_pos, 1)), heat))
+			_:
+				cost = maxi(cost, heat)
+	return cost
+
+## The heat this shell takes to a wall: an explosion shell's (on a client,
+## one that looks it), else 1.
+func wall_heat() -> int:
+	return damage if explodes or visual_style == "explosion" else 1
+
+## True if it breaks the iron it hits, the tiles in its way (never super
+## steel): the players' explosion shell from IRON_LEVEL (Sean's rule,
+## 2026-10-08: its own hit only; its blast leaves iron be), or a shell given
+## can_destroy_steel.
+func breaks_iron() -> bool:
+	return can_destroy_steel or (explodes and is_player_bullet and explosion_level >= IRON_LEVEL)
 
 ## The solid tiles this shell's lanes are on, or about to be.
 func _solid_tiles_touched() -> Array[Vector2i]:
@@ -424,7 +496,8 @@ func _on_body_entered(body: Node2D) -> void:
 func _hit_player(tank: PlayerTank, blocked: bool) -> void:
 	if not blocked and not tank.is_invincible:
 		if explodes:
-			_explode_direct_hit(tank)
+			if _explode_direct_hit(tank):
+				return
 		else:
 			tank.take_damage()
 	_destroy()
@@ -435,7 +508,8 @@ func _hit_player(tank: PlayerTank, blocked: bool) -> void:
 func _hit_enemy(tank: EnemyTank, blocked: bool) -> void:
 	if tank != null and not blocked:
 		if explodes:
-			_explode_direct_hit(tank)
+			if _explode_direct_hit(tank):
+				return
 		else:
 			tank.hit_by = owner_player
 			tank.take_damage(direction)
@@ -448,14 +522,18 @@ func _hit_base() -> void:
 		Events.base_destroyed.emit()
 	_destroy()
 
-## An explosion bullet's DIRECT hit: deal its `damage` as HP (no retaliation),
-## then the caller detonates the wave.
-func _explode_direct_hit(tank: Node2D) -> void:
-	_direct_hit_tank = tank  # its own wave should not double-hit it
-	for i in range(damage):
-		if is_instance_valid(tank) and tank.health > 0:
-			tank.hit_by = owner_player
-			tank.take_damage()
+## An explosion shell hits [param tank] (the original's Clash, 0x004951f0):
+## the two lose the lesser of its heat and the tank's health, the tank in one
+## hit. Returns true if it flies on, through the tank it finished with heat left
+## (a level 2 or 3 shell's 2 through a tank of 1); else it ends there, its
+## blast hurting the tank too.
+func _explode_direct_hit(tank: BaseTank) -> bool:
+	var dealt := mini(damage, tank.health)
+	damage -= dealt
+	if dealt > 0:
+		tank.hit_by = owner_player
+		tank.take_hit(dealt)
+	return damage > 0
 
 ## AP shell hitting a body: spend the damage pool, pierce through dead tanks.
 func _ap_on_body(body: Node2D) -> void:
@@ -516,9 +594,10 @@ func _on_area_entered(area: Area2D) -> void:
 			return  # a client's own shot meets shells where its screen had them (_meet_as_seen)
 
 		# Each bullet subtracts the other's damage (rule 6). Normal bullets die
-		# only when reduced to <= 0, so two normal bullets annihilate 1-for-1.
-		# Special bullets (fire/explosion) always drop on contact and run their
-		# death effect (ignite / detonate), even if their damage survives.
+		# only when reduced to <= 0, so two normal bullets annihilate 1-for-1,
+		# and an explosion shell with heat left flies on (as the original's
+		# Clash). A fire bullet always drops on contact and ignites, even if its
+		# damage survives.
 		var my_dmg := damage
 		var their_dmg := other_bullet.damage
 		take_bullet_damage(their_dmg)
@@ -527,9 +606,9 @@ func _on_area_entered(area: Area2D) -> void:
 		# annihilation was silent.
 		if _destroyed != other_bullet._destroyed:
 			SoundManager.play(&"bullet_clink")
-		if (ignites_ground or explodes) and not _destroyed:
+		if ignites_ground and not _destroyed:
 			_destroy()
-		if (other_bullet.ignites_ground or other_bullet.explodes) and not other_bullet._destroyed:
+		if other_bullet.ignites_ground and not other_bullet._destroyed:
 			other_bullet._destroy()
 
 ## Host: a step of a client's own shot (net_view): the tanks and the enemies'
@@ -607,13 +686,13 @@ func _clash_as_seen(seen: Array, world: NetHostWorld, peer: int, time: float) ->
 			other._parked_end = Callable()  # its end elsewhere never came on that screen
 			other._end_shown = false
 		other.take_bullet_damage(my_dmg)
-		if (other.ignites_ground or other.explodes) and not other._destroyed:
+		if other.ignites_ground and not other._destroyed:
 			other._destroy()
 	if other_goes:
 		world.mark_gone(peer, int(seen[0]), time)
 	if _destroyed != other_goes:
 		SoundManager.play(&"bullet_clink")
-	if (ignites_ground or explodes) and not _destroyed:
+	if ignites_ground and not _destroyed:
 		_destroy()
 
 ## Reduce this bullet's damage by [param amount]; destroy it if it hits 0.
@@ -635,11 +714,10 @@ func _destroy() -> void:
 		_level_manager.ignite_fire_patch(
 			_level_manager.world_to_tile(global_position), is_player_bullet, owner_player)
 
-	# Explosion bullets detonate a shockwave wherever they die (a directly-hit
-	# tank already took the direct hit, so it's excluded from the wave).
+	# Explosion bullets go off wherever they die, their blast hurting a tank they
+	# hit too.
 	if explodes and _level_manager:
-		_level_manager.spawn_explosion_blast(
-			global_position, explosion_level, is_player_bullet, false, _direct_hit_tank, owner_player)
+		_level_manager.spawn_explosion_blast(global_position, explosion_level, is_player_bullet, false, owner_player)
 
 	if not _end_shown:
 		show_end(get_tree(), visual_style, global_position, direction, collision_lane_offsets)
@@ -766,21 +844,20 @@ static func hit_seen_tank(seen: Array, tank: PlayerTank, facing: Vector2, graced
 			return
 		if shell.pierces:
 			shell._ap_hit_tank(tank, blocked)
-			if waited:
-				shell._destroy()  # (gone from sight already, at its end further on)
-			elif not shell._destroyed:
-				shell.global_position = was  # through a tank it finished: on it drills from here
 		else:
 			shell._hit_player(tank, blocked)
+		if waited:
+			shell._destroy()  # (gone from sight already, at its end further on)
+		elif not shell._destroyed:
+			shell.global_position = was  # through a tank it finished: on it flies from here
 		return
 	show_end(tank.get_tree(), str(kept[7]), kept[1], kept[2], kept[3])
 	if graced or blocked or tank.is_invincible:
 		return
-	var hits := 1
-	if bool(kept[8]):
-		hits = mini(int(kept[5]), tank.health)  # an AP shell's pool
-	elif str(kept[7]) == "explosion":
-		hits = int(kept[5])  # its direct hit
+	if str(kept[7]) == "explosion":
+		tank.take_hit(mini(int(kept[5]), tank.health))  # its heat, in one hit
+		return
+	var hits := mini(int(kept[5]), tank.health) if bool(kept[8]) else 1  # an AP shell's pool
 	for i in hits:
 		if is_instance_valid(tank) and tank.health > 0 and not tank.is_queued_for_deletion():
 			tank.take_damage()

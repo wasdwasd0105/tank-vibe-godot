@@ -420,7 +420,9 @@ func _run() -> void:
 		"on landing: the moon shield goes (the boat stays), and 2 HP (hp %d)" % _player.health)
 	check([_player.speed_level, _player.weapon_level] == levels and not _player.is_invincible,
 		"no level lost and no hit grace for it")
+	_player.health = 4
 	await _settle()   # the landing blast
+	check(_player.health < 4, "its own landing blast hurts it too, as the original's (hp %d)" % _player.health)
 	_player.lose_addon("anti-water")
 	_player.health = 4
 	var bare := _lm._spawn_mine(Vector2i(20, 12), 2, false)
@@ -514,7 +516,8 @@ func _run() -> void:
 		for b in get_tree().get_nodes_in_group("effects_container")[0].get_children():
 			if b is ExplosionBlast and b.neutral:
 				landing = b
-		check(landing != null and landing.level == 1 and landing.global_position == fe.global_position,
+		check(landing != null and landing.level == 1
+			and landing.origin == ExplosionBlast.grid_origin(fe.global_position - _lm.global_position, ExplosionBlast.TANK_SIZE),
 			"L%d: neutral landing blast at the victim's gun level 1, where it came down" % lvl)
 		fe.queue_free()
 	await _reset()
@@ -672,7 +675,8 @@ func _run() -> void:
 		"and so is player 2, in reach and not invincible (HP %d of %d)" % [p2.health, p2_hp])
 	check(not is_instance_valid(bomb_victim), "and the enemies are gone, as the bomb does")
 	p2.queue_free()
-	check(not _lm._fg_tile_data.has(Vector2i(14, 9)), "the brick beside the enemy mine breaks, as in any mine blast")
+	check(not _lm._fg_tile_data.has(Vector2i(14, 9)) or int(_lm._brick_damage.get(Vector2i(14, 9), 0b1111)) != 0b1111,
+		"the brick beside the enemy mine breaks (a whole one keeps half), as in any mine blast")
 	# The control: the same mine going off as usual_mine hurts the player.
 	await _reset()
 	_clear_arena()

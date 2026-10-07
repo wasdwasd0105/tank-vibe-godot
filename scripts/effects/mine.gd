@@ -165,7 +165,8 @@ func set_off(spare_players: bool = false) -> void:
 	if level >= 2:
 		SoundManager.play(&"mine_explode")
 	if _level_manager:
-		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, null, owner_id, spare_players)
+		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, owner_id, spare_players,
+				ExplosionBlast.MINE_SIZE)
 		_level_manager.unregister_mine(self)
 	queue_free()
 

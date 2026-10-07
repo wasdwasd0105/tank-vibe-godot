@@ -172,16 +172,18 @@ const FIRE_FIRE_CONFIG: Dictionary = {
 	3: { "cooldown": 0.135, "speed": 520.0, "range_px": 480.0, "max_in_flight": 6, "damage": 2 },
 }
 
-## Explosion gun config by weapon level (0-3). The bullet flies straight and fast,
-## detonating a shockwave wherever it dies; "level" scales the blast (power/radius)
-## and "damage" is the direct-hit / bullet-vs-bullet value. See explosion_blast.gd.
-## "level" drives the wave (radius + spray damage, see ExplosionBlast); "damage"
-## is the DIRECT hit dealt to a tank the bullet strikes (3/4/5/6 by level).
+## Explosion gun config by weapon level (0-3), as Tank.exe's (weapon 4): the
+## shell leaves at 355.6 px/s and speeds up by 948 px/s a second to 711; it goes
+## off wherever it dies, its blast as big as its level (ExplosionBlast).
+## "damage" is the shell's heat (the original's HP, 1 rising to 2 from level 2,
+## SetLevel 0x00494088): what it takes off a tank it hits, a shell it meets or a
+## wall, flying on while it has any left. 2, 3, 4 and 4 in flight (the
+## original's heat 12 each, under 24 + 8 per level).
 const EXPLOSION_FIRE_CONFIG: Dictionary = {
-	0: { "cooldown": 0.45,  "speed": 650.0, "max_in_flight": 2, "level": 0, "damage": 3 },
-	1: { "cooldown": 0.375, "speed": 650.0, "max_in_flight": 2, "level": 1, "damage": 4 },
-	2: { "cooldown": 0.30,  "speed": 650.0, "max_in_flight": 3, "level": 2, "damage": 5 },
-	3: { "cooldown": 0.225, "speed": 650.0, "max_in_flight": 4, "level": 3, "damage": 6 },
+	0: { "cooldown": 0.45,  "speed": 355.6, "accel": 948.0, "max_speed": 711.0, "max_in_flight": 2, "level": 0, "damage": 1 },
+	1: { "cooldown": 0.375, "speed": 355.6, "accel": 948.0, "max_speed": 711.0, "max_in_flight": 3, "level": 1, "damage": 1 },
+	2: { "cooldown": 0.30,  "speed": 355.6, "accel": 948.0, "max_speed": 711.0, "max_in_flight": 4, "level": 2, "damage": 2 },
+	3: { "cooldown": 0.225, "speed": 355.6, "accel": 948.0, "max_speed": 711.0, "max_in_flight": 4, "level": 3, "damage": 2 },
 }
 
 ## Mine config by weapon level (0-3). The mine's own level is the weapon level:

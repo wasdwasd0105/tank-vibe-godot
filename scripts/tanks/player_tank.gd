@@ -1352,13 +1352,17 @@ static func rumble_player(pid: int, pattern: Array[float]) -> void:
 	Net.rumble_tank(pid, pattern[0], pattern[1], pattern[2])
 
 func take_damage() -> void:
+	take_hit(1)
+
+## One hit of [param points]: one level lost for it, one rumble, and the grace.
+func take_hit(points: int) -> void:
 	if is_invincible and _hit_grace_frame != Engine.get_process_frames():
 		return
 	# An airborne tank (a mine throw) loses no level for the hit, as in the original.
 	if not has_memory_save and not is_flying:
 		_apply_hit_punishment()
 	_rumble(HIT_RUMBLE)  # a fatal hit's destroy() takes over with the big one
-	super.take_damage()  # reduces health + triggers the shared damage flash
+	super.take_hit(points)  # reduces health + triggers the shared damage flash
 	if health > 0 and not is_flying:
 		var longer := is_invincible and invincible_timer > HIT_GRACE  # (a helmet's, say, runs on)
 		_hit_grace_frame = Engine.get_process_frames()

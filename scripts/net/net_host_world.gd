@@ -29,8 +29,8 @@ const SEEN_KEEP_MS := 1500.0
 ## What's kept of each (seen_at): a tank's [SEEN_TANK, where, facing, solid (it
 ## can be hit), its moon shield on, health, an enemy's, blinking (an item's
 ## invulnerability)], a shell's [SEEN_SHELL, where, way, collision lanes, a
-## player's, damage, fire or explosion (it goes on meeting anything), its look
-## (visual style), drills (AP)].
+## player's, damage, fire (it goes on meeting anything), its look (visual style),
+## drills (AP)].
 const SEEN_TANK := 0
 const SEEN_SHELL := 1
 
@@ -206,7 +206,7 @@ func _keep_seen(now: int) -> void:
 			var shell := node as Bullet
 			kept[shell.get_instance_id()] = [SEEN_SHELL, shell.global_position, shell.direction,
 					shell.collision_lane_offsets, shell.is_player_bullet, shell.damage,
-					shell.ignites_ground or shell.explodes, shell.visual_style, shell.pierces]
+					shell.ignites_ground, shell.visual_style, shell.pierces]
 	_seen.append([float(now), kept])
 	while _seen.size() > 2 and now - float(_seen[1][0]) > SEEN_KEEP_MS:
 		_seen.pop_front()

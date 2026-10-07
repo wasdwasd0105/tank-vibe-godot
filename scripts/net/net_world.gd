@@ -62,7 +62,7 @@ const EV_STOP_MUSIC := 3    # []
 const EV_HIT := 4           # [frames key, x, y]: HitEffect ("tank" or a shot style)
 const EV_SPAWN_BURST := 5   # [x, y]
 const EV_EXPLOSION := 6     # [x, y, scale]: the built-in burst (explosion.tscn)
-const EV_BLAST := 7         # [x, y, level]: ExplosionBlast's picture
+const EV_BLAST := 7         # [tile x, tile y, level]: ExplosionBlast's picture, its 8x8 from that tile
 const EV_KILL_TEXT := 8     # [points, combo, x, y]
 const EV_PICKUP_TEXT := 9   # [cookie type, x, y]
 

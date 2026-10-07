@@ -75,9 +75,8 @@ func _run() -> void:
 	print("\n[B] A blast's several points land together as one hit")
 	await _wait_vulnerable()
 	_player.health = 6
-	_lm.spawn_explosion_blast(_player.global_position, 2, false)   # an enemy blast: 3 points
-	await tree.process_frame
-	await tree.process_frame
+	_lm.spawn_explosion_blast(_player.global_position, 2, false)   # an enemy blast: 3 points at its centre
+	await tree.create_timer(0.3).timeout   # (it hurts as its wave passes)
 	check(_player.health == 3 and _player.is_invincible, "all 3 points landed, then the grace (hp %d)" % _player.health)
 
 	print("\n[C] Bots get no grace")
@@ -111,8 +110,7 @@ func _run() -> void:
 	check(_player.health == 5, "the level-2 mine's hit lands with it: 1 HP (hp %d)" % _player.health)
 	check(_player.speed_level == 2 and _player.weapon_level == 2, "landing hit: no speed or gun level lost")
 	check(not _player.is_invincible, "landing hit: no grace")
-	await tree.process_frame
-	await tree.process_frame
+	await tree.create_timer(0.3).timeout   # (the landing blast hurts as its wave passes)
 	check(_player.health < 5 and _player.is_invincible, "the landing blast hits on the ground, and that starts the grace")
 
 	await tree.create_timer(2.0).timeout  # let the mine's 1.6 s blast sound finish before quitting

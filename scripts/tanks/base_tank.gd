@@ -57,6 +57,8 @@ var hit_by: int = -1
 # the fireball fades.
 const DAMAGE_FLASH_DURATION: float = 0.35
 var _damage_flash_timer: float = 0.0
+## No blast hurts it while this is above 0, s (ExplosionBlast.BLAST_IMMUNITY).
+var blast_immunity: float = 0.0
 
 # Mine weapon effects on this tank.
 var is_mine_slowed: bool = false        # quarter speed until an add-on or MAX pickup, or death
@@ -115,6 +117,8 @@ func _process(delta: float) -> void:
 	_animate_addons(delta)
 	_layout_addons()
 	_tick_damage_flash(delta)
+	if blast_immunity > 0.0:
+		blast_immunity -= delta
 	_tick_state_overlay(delta)
 	_tick_materialize(delta)
 
@@ -560,13 +564,16 @@ func _spawn_explosion_bullet(config: Dictionary) -> void:
 		spawn_position,
 		[0.0],
 		DEFAULT_BULLET_LANE_OFFSETS,
-		config.get("speed", 650.0),
+		config.get("speed", 355.6),
 		"explosion",
 		false,
 		int(config.get("damage", 1)),
 		-1.0,
 		true,
-		int(config.get("level", 0))
+		int(config.get("level", 0)),
+		false,
+		float(config.get("accel", 0.0)),
+		float(config.get("max_speed", 0.0))
 	)
 
 ## Fire a single AP shell. [param config] comes from
@@ -709,7 +716,8 @@ func _land_from_flight() -> void:
 	# tanks. Its strength is the victim's own gun level, not the mine's.
 	var lm := _get_level_manager()
 	if lm:
-		lm.spawn_explosion_blast(global_position, get_gun_level(), is_in_group("players"), true)
+		lm.spawn_explosion_blast(global_position, get_gun_level(), is_in_group("players"), true, -1, false,
+				ExplosionBlast.TANK_SIZE)
 
 ## The throwing mine's hit, on landing (Sean's rule, 2026-09-24; the original hit
 ## the tank as it was thrown). Unless the tank is invincible by now, it loses its
@@ -749,9 +757,14 @@ func on_ap_bullet_destroyed() -> void:
 	active_ap_bullets = maxi(active_ap_bullets - 1, 0)
 
 func take_damage() -> void:
+	take_hit(1)
+
+## One hit of [param points] (the original's Damage, 0x00492640): the health
+## goes by that much at once, with one flash and one sound, or the tank's end.
+func take_hit(points: int) -> void:
 	hit_by = -1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
-	health -= 1
+	health -= points
 	if health <= 0:
 		destroy()
 	else:

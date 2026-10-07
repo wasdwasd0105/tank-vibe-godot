@@ -1356,72 +1356,63 @@ func _convert_grass_to_burned(tile: Vector2i) -> void:
 # Explosion Weapon — shockwave blast
 # =====================================================================
 
-## Detonate a shockwave at [param world_pos]. Called from an explosion bullet's
-## death (and, later, mines). Deferred add_child because detonation usually fires
-## from inside a physics callback (a bullet's collision).
-func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, exclude: Node = null, owner_id: int = -1, spare_players: bool = false) -> void:
+## A blast goes off for something of [param size] (the original's px:
+## ExplosionBlast.SHELL_SIZE, MINE_SIZE, TANK_SIZE) centred at
+## [param world_pos], of level [param level], a player's or the enemies'
+## ([param from_player]), or neither ([param neutral]: a landing), player
+## [param owner_id]'s; [param spare_players] for a mine a player's bomb set
+## off. Its clients draw it from where its 8x8 goes (NetWorld.EV_BLAST).
+## Deferred add_child: shells go off inside the physics' callbacks.
+func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, owner_id: int = -1,
+		spare_players: bool = false, size: float = ExplosionBlast.SHELL_SIZE) -> void:
 	var blast := ExplosionBlast.new()
-	blast.setup(level, from_player, self, neutral, exclude, owner_id, spare_players)
-	blast.global_position = world_pos
-	NetHostWorld.record(NetWorld.EV_BLAST, [world_pos.x, world_pos.y, level])
+	blast.setup(level, from_player, self, neutral, owner_id, spare_players)
+	blast.origin = ExplosionBlast.grid_origin(world_pos - global_position, size)
+	NetHostWorld.record(NetWorld.EV_BLAST, [blast.origin.x, blast.origin.y, blast.level])
 	var container: Node = get_tree().get_first_node_in_group("effects_container")
 	if container == null:
 		container = terrain_node
 	_add_deferred(container, blast)
 
 
-## Break destructible terrain within [param radius_half_tiles] of the blast center,
-## skipping wall-shadowed tiles. Soft bricks are destroyed; hard bricks step down
-## one HP; steel (iron/super), water and the base are left untouched.
-func explosion_destroy_terrain(center: Vector2i, radius_half_tiles: float) -> void:
-	var reach := int(ceil(radius_half_tiles / 2.0))
-	for dy in range(-reach, reach + 1):
-		for dx in range(-reach, reach + 1):
-			var tile := Vector2i(center.x + dx, center.y + dy)
-			if not _is_in_bounds(tile) or not _fg_tile_data.has(tile):
-				continue
-			var dist_half_tiles := sqrt(float(dx * dx + dy * dy)) * 2.0
-			if dist_half_tiles > radius_half_tiles:
-				continue
-			if not _tile_line_of_sight(center, tile):
-				continue
-			var cat := LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0))
-			match cat:
-				LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
-					_remove_fg_tile(tile)
-					_brick_damage.erase(tile)
-				LevelData.TileCategory.HARD_BRICK:
-					_damage_hard_brick(tile)
-				_:
-					pass  # iron/super/other: fireproof to the blast
+## The quarters of [param cell] that stop a blast (ExplosionBlast): a brick's
+## standing ones, all of a hard brick's or of iron or super steel; none of
+## grass or anything else. As the original's mask (0x00496859), a brick's left
+## and right halves count the wrong way round: a left half stops the right
+## quarters, and the other way. Quarters as a brick's: TL 8, TR 4, BL 2, BR 1.
+func blast_shadow_quarters(cell: Vector2i) -> int:
+	if not _fg_tile_data.has(cell):
+		return 0
+	match LevelData.get_tile_category(_fg_tile_data[cell].get("code", 0)):
+		LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+			var standing := int(_brick_damage.get(cell, 0b1111))
+			if standing == 0b1010:
+				return 0b0101
+			if standing == 0b0101:
+				return 0b1010
+			return standing
+		LevelData.TileCategory.HARD_BRICK, LevelData.TileCategory.IRON_BLOCK, LevelData.TileCategory.SUPER_BLOCK:
+			return 0b1111
+	return 0
 
 
-## True if no solid foreground tile sits strictly between the two world points
-## (a straight-line grid raycast). Used for blast falloff shadowing.
-func has_line_of_sight(from_world: Vector2, to_world: Vector2) -> bool:
-	return _tile_line_of_sight(world_to_tile(from_world), world_to_tile(to_world))
-
-
-func _tile_line_of_sight(from_tile: Vector2i, to_tile: Vector2i) -> bool:
-	var x0: int = from_tile.x
-	var y0: int = from_tile.y
-	var dx: int = absi(to_tile.x - x0)
-	var dy: int = -absi(to_tile.y - y0)
-	var sx: int = 1 if x0 < to_tile.x else -1
-	var sy: int = 1 if y0 < to_tile.y else -1
-	var err: int = dx + dy
-	while true:
-		if Vector2i(x0, y0) == to_tile:
-			return true
-		if Vector2i(x0, y0) != from_tile and _fg_tile_data.has(Vector2i(x0, y0)):
-			var cat := LevelData.get_tile_category(_fg_tile_data[Vector2i(x0, y0)].get("code", 0))
-			if LevelData.is_solid_tile(cat):
-				return false
-		var e2: int = 2 * err
-		if e2 >= dy:
-			err += dy
-			x0 += sx
-		if e2 <= dx:
-			err += dx
-			y0 += sy
-	return true
+## A blast reaches [param cell] hot enough to change its wall (the original's
+## terrain pass, 0x00497000): burned grass goes; a whole brick keeps the half
+## [param half] (TL 8, TR 4, BL 2, BR 1); what's left of a brick goes; a hard
+## brick loses a point; nothing else changes, iron included (only an explosion
+## shell's own hit breaks it: Bullet.breaks_iron).
+func blast_wall(cell: Vector2i, half: int) -> void:
+	if not _fg_tile_data.has(cell):
+		return
+	match LevelData.get_tile_category(_fg_tile_data[cell].get("code", 0)):
+		LevelData.TileCategory.BURNED_GRASS:
+			_remove_fg_tile(cell)
+		LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+			if int(_brick_damage.get(cell, 0b1111)) == 0b1111:
+				_brick_damage[cell] = half
+				_update_brick_visual(cell, half)
+			else:
+				_remove_fg_tile(cell)
+				_brick_damage.erase(cell)
+		LevelData.TileCategory.HARD_BRICK:
+			_damage_hard_brick(cell)

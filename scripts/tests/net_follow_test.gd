@@ -1917,6 +1917,33 @@ func _run() -> void:
 	await tree.process_frame  # (a mine goes in deferred)
 	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 3 and _lm.get_mines().size() == mines,
 		"mines are left to the host: none laid here")
+	# An explosion shell of the gun's top level breaks the iron it hits here at
+	# once, as the host's will (Sean's rule): the two tiles in its way.
+	var level_was: int = GameManager.player_weapon_levels[0]
+	GameManager.player_secondary_weapon_types[0] = "explosion"
+	GameManager.player_weapon_levels[0] = 3
+	var iron_cells: Array[Vector2i] = []
+	for x in [-16, 16]:
+		var cell := _lm.world_to_tile(_at(home + Vector2(x, -160)))
+		_lm._place_fg_tile(cell, 0x39)
+		iron_cells.append(cell)
+	for i in 2:
+		await tree.physics_frame  # (a press between two physics frames counts in the next one)
+	_player.active_explosion_bullets = 0
+	var iron_shot := _fly_shot(world, "p1_shoot2")
+	check(iron_shot != null and iron_shot.explodes and not iron_shot.visible and world._guessed_walls.size() == 1
+		and iron_cells.all(func(cell: Vector2i) -> bool: return not _lm._fg_tile_data.has(cell)),
+		"a top-level explosion shell at iron: the two tiles in its way broken here at once, as on the host")
+	for cell: Vector2i in iron_cells:
+		_lm._remove_fg_tile(cell)
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._guessed_walls.clear()
+	world._predicted_hits.clear()
+	_player.active_explosion_bullets = 0
+	GameManager.player_weapon_levels[0] = level_was
+	_player._take_host_weapons()
 	GameManager.player_secondary_weapon_types[0] = kind
 	GameManager.player_secondary_weapon_counts[0] = count
 	SoundManager._predicted.clear()

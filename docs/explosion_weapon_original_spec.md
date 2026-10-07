@@ -1,77 +1,73 @@
-# Explosion Weapon — Rules & Notes (for review before coding)
+# Explosion Weapon — the original's rules, and the remake's
 
-This is reverse-engineered from the old Delphi Battle City clone. Numbers are given in **remake units** (32px tiles, seconds) with the original values kept in Part B. The explosion is weapon type 4, the 5th secondary weapon.
+Read from `Tank V1.22/Tank.exe` (Delphi, DelphiX): weapon 4, its shell (`TArmsSprite`) and its blast (`TExploseSprite`, VMT 0x004902dc). The earlier version of this file was written from guesses in places, and the remake followed it: a circular ring of whole fireballs, a flat spray of damage, full bricks removed, a strong direct hit. Sean saw that the blast's wave and effect were "pretty different from the original game" (2026-10-07), so it was researched again from the code and ported rule for rule (2026-10-08).
 
----
-
-## Part A — Explosion weapon rules (please confirm)
-
-1. **The explosion bullet flies straight and fast.** It launches at ~356 px/s and accelerates (~940 px/s²) up to a cap of ~705 px/s. It has no spread, so it goes dead straight. Its lifetime is ~2.06 s, but at that speed it crosses the whole map long before then — so in practice its **range is "until it hits something."**
-
-2. **The bullet explodes on impact with anything: a wall/brick/steel tile, an enemy tank, an enemy bullet, or when its 2.06 s lifetime runs out.** Every one of those causes it to die and spawn one big **shockwave** at the impact point.
-
-3. **On a direct tank hit the bullet also does a small direct hit** (1 HP at gun level 0, scaling to 1 / 1 / 2 / 9 HP at gun levels 0/1/2/3) and leaves a little 32x32 impact flash — separately from the shockwave.
-
-4. **The shockwave is an 8x8 tile box (256x256 px) centered on the impact.** It is strongest at the center and fades with distance (linear falloff), and **walls block it by line-of-sight** — tiles/tanks hidden behind a solid wall are shadowed and take nothing (it is NOT a plain square).
-
-5. **The shockwave lasts ~0.225 s.** It animates outward from the center over 8 frames (center lights up first, wave expands as it fades out).
-
-6. **The shockwave destroys terrain** — but only **once**, during the **second half of its life (last ~0.11 s)**. Inside the destroy radius, full bricks are broken and already-damaged bricks step to their next damage state; steel/water/base tiles are left alone. Destroy radius grows with level: **~1.9 tiles at L0 up to ~3.3 tiles at L3**.
-
-7. **The shockwave damages tanks by area.** Every enemy tank overlapping a "hot" cell takes damage ≈ `round((power − distance·falloff)/100 + 0.25)` → about **3 HP at the center (4 at L3), tapering to 0 near the edge** (~2 tiles out at L0, ~3.6 tiles at L3). **No friendly fire** (same-side tanks are skipped), **any number of tanks** can be hit at once, and each hit tank gets ~0.19 s immunity so one blast hits it only once.
-
-8. **Damage level = gun upgrade level 0-3** (same upgrade/star mechanic as the fire gun). Higher level makes everything bigger: power 250→325, gentler falloff 60→45, destroy radius ~1.9→3.3 tiles, direct bullet damage 1/1/2/9, and more bullets in flight at once (2/2/3/4). Fire cooldown is driven by the separate **speed** upgrade (~0.45 s down to ~0.225 s), and ammo comes in packs of 20 (cap 100).
-
-9. **Interactions & chaining:** vs another bullet → both take `min(HP)` damage and the loser detonates at the crossing point; a strong-enough explosion can **set off a nearby mine (chain reaction)**, and a mine's own detonation spawns the exact same shockwave. **Two overlapping explosions do NOT merge** — each is independent.
-
-10. **Sounds:** plays the explosion-weapon firing sound on the shot; the blast most likely uses an `S_Explose` / `ExploseShort` sound (mines use `ExploseMine1/2`) — exact sound wiring was not confirmed.
-
-11. **todo:** decide (a) whether a normal explosion shot carries the **tank's gun level** so upgrades actually grow the blast, or always fires at level 0 (power 250, ~1.9-tile destroy radius) — the original didn't clearly show where the bullet's level field gets written; and (b) whether an **armored tank face** should reduce blast damage from that side (the original had a facing-based reduction we only partly decoded).
+Units: one original 16 px cell is one remake 32 px tile, so an original pixel is two remake pixels, and an original half cell (8 px) is a remake quarter tile (16 px). At the default game speed a tick is 0.75 ms and a logic frame is 20 ticks, 15 ms.
 
 ---
 
-## Part B — Notes for the reader
+## Part A — The rules (remake numbers, original addresses)
 
-### Recovered constants (original vs remake)
+### The shell
 
-| Constant | Original | Remake | Notes |
-|---|---|---|---|
-| Tile size | 16 px | 32 px | double all spatial values |
-| Bullet muzzle speed | 177.8 px/s | ~355.6 px/s | accelerates from launch |
-| Bullet acceleration | 470 px/s² | ~940 px/s² | reaches cap ~0.37 s after launch |
-| Bullet speed cap | 352.7 px/s | ~705.4 px/s | |
-| Bullet lifetime | 2750 ticks | ~2.06 s | range-end detonation if it never hits |
-| Bullet direct damage | 1 / 1 / 2 / 9 HP | same | by gun level 0/1/2/3 |
-| Ammo per pickup / cap | 20 / 100 | same | |
-| Cooldown (by speed lvl) | ~0.45 / 0.375 / 0.30 / 0.225 s | same | |
-| Max bullets in flight | 2 / 2 / 3 / 4 | same | by gun level 0/1/2/3 |
-| Shockwave box | 8x8 tiles = 128x128 px | 8x8 tiles = 256x256 px | centered on impact |
-| Shockwave lifetime | 300 ticks | ~0.225 s | |
-| Terrain-destroy window | last 150 ticks | last ~0.11 s | one-shot, second half of life |
-| Tank hit-immunity | 250 ticks | ~0.19 s | so a blast hits each tank once |
-| Power (by level) | 250 / 275 / 300 / 325 | same | unitless intensity |
-| Falloff (by level) | 60 / 55 / 50 / 45 | same | intensity lost per half-tile of distance |
-| Full blast radius | 2.08 / 2.50 / 3.00 / 3.61 tiles | 67 / 80 / 96 / 116 px | intensity > 0 |
-| Terrain-destroy radius | 1.88 / 2.27 / 2.75 / 3.33 tiles | 60 / 73 / 88 / 107 px | intensity ≥ 25 |
-| Center area damage | 3 HP (4 at L3) | same | `round((power − dist·falloff)/100 + 0.25)` |
-| Intensity formula | `power − dist·falloff` | same | dist in half-tiles from center |
-| Terrain-destroy threshold | intensity ≥ 25 | same | |
-| Impact flash sprite | `_B_32B`, 32x32 | 64x64 | small hit flash, separate from shockwave |
-| Shockwave sprite sheet | `_B_Explose`, 48x384 | scale up | 8 anim frames × 9 sub-tiles (marching-squares tiles) |
+1. **It leaves at 355.6 px/s and speeds up by 948 px/s a second to 711**, which it reaches after 0.375 s (tables 0x004d2c48, 0x004d2c60, 0x004d2c78). No spread.
+2. **Its heat is its HP: 1 at gun levels 0 and 1, 2 at levels 2 and 3** (created with 1, `SetLevel` 0x00494088 raises it). A shot carries its tank's gun level (`Fire` 0x004931e0 calls `SetLevel(shell, tank level)`), and its blast is that level. The same goes for the enemies' explosion shells.
+3. **It takes and gives heat as the original's Clash (0x004951f0):** against a tank, a shell or the base, both lose the lesser of the two. So a level 2 or 3 shell (2) finishes a tank of 1 and flies on with 1, and wins against a 1-heat shell and flies on. A moon shield's front stops it.
+4. **Walls (`TileHit`, 0x004940e4):** it loses the most any wall under its front costs it: a whole brick broken whole by a 2-heat shell costs 2 (a 1-heat shell breaks the near half, for 1); any other brick costs 1; a hard brick its points up to the shell's heat; iron and super steel all of it. So a level 2 or 3 shell goes through half bricks and on to the next wall.
+5. **It goes off wherever it dies** (`Die` 0x004939f4 → 0x00493aec): a wall, a tank, a shell, the field's edge. (Its 2.06 s life never runs out first.) Its small impact flash (`_B_32B`) plays as before.
+6. **2, 3, 4 and 4 shells in flight** at levels 0-3: each costs 12 heat of the tank's gun, which fires under 24 + 8 per level (`CanFire` 0x00491946). Ammo 20 a pack, 100 at most. The launch plays `S_Explose`.
 
-Timing note: the original runs at 0.75 ms/tick, 20 ticks per logic frame (~66.7 Hz). All the tick counts above are exact; the seconds assume 20 ticks/frame. If the remake's frame step differs, keep the **tick-count ratios** (e.g. terrain destroys in the second half of the shockwave's life) rather than the literal ms.
+### The blast
 
-### UNCERTAIN — please double-check these
+7. **Where:** a square 8 tiles a side, on the tile grid, centred on the tile corner nearest what went off (an exact half goes right, or down). The original puts its left edge at `Trunc(sprite_left / 16 - 3) * 16` (0x00493aef; mines 0x0049a390; a mine-thrown tank's landing 0x0049a797), so near the field's top and left edges, where that's negative, it sits a tile further in. (`ExplosionBlast.grid_origin`.)
+8. **Heat:** power 250 + 25 per level, falloff 60 - 5 per level. Each quarter tile's heat is `round(power - distance * falloff)`, the distance from the centre in quarter tiles (banker's rounding, as Delphi's `Round`); 0 if that's not above 0, or if a wall stands in the way (0x0049696e).
+9. **Walls in the way** (0x004969d7): a wall's quarters stop it (a brick's standing ones; all of a hard brick, iron or super steel; never grass, water, ice, tanks or the base). A quarter is lit only if two straight marches out from the centre to it, column by column and row by row, meet no wall quarter; its own quarter never counts, so the first wall in line is reached and everything behind it is in its shadow. The walls are read once, as it starts.
+10. **Per tile:** its heat in per mille of the power (its hottest quarter), and which of the fireball's 3x3 pieces it shows, by which quarters are lit (table 0x004d2e48). On open ground the tiles' heat, top half (mirrored below):
 
-- **Bullet's gun-level source (biggest one).** Where the bullet's level field gets written was never traced. A standard shot is *likely* level 0 (power 250, ~1.9-tile destroy radius, 3 HP center), but it's plausible the intent was for it to inherit the tank's gun level. This decides whether upgrading the gun actually grows the blast. → tied to rule 11.
-- **Armored-face damage reduction.** The blast's tank-damage code builds a per-face table from the target's facing so an armored side *can* block/reduce damage, but the exact face→direction mapping and the reduction amount were not fully enumerated. Structurally real, numerically unconfirmed.
-- **`Add_ExploseData` queue is NOT a gameplay feature — it's multiplayer netcode.** One analysis first guessed it was a "secondary/queued blast" system; a deeper pass proved it is a **network delta-replication queue** (it broadcasts local explosions to peers and re-spawns remote ones, which run in a "don't touch terrain" mode so map edits aren't applied twice). **For a single-player remake, ignore it entirely** — every explosion is a local, terrain-destroying blast.
-- **Does the shockwave damage tanks?** Confirmed **yes** (the blast's own collision handler applies `TakeDamage` to overlapping enemy tanks). One of the three analyses initially marked this "uncertain" only because it looked at the wrong method — the other two decoded the damage path clearly. Treat area tank damage as real.
-- **Sounds.** The firing sound (weapon slot 4) is confirmed; the blast's own `S_Explose` / `ExploseShort` and mine `ExploseMine1/2` wiring was not traced. Pick reasonable SFX.
-- **Exact damaged-brick tile codes.** Only the *transformation bands* were recovered (which tile-code ranges clear vs. step to the next damage state); the concrete brick/steel/water tile-ID taxonomy lives in the remake's own `LevelData`/`LevelManager`, so map the bands onto our existing tile codes rather than copying raw numbers.
+    ```
+    L0 rows 2-3:  .  .  152 388 388 152  .   .     L1 rows 1-3:  .  .   .   94  94   .   .  .
+                  .  .  388 832 832 388  .   .                   .  .  294 490 490 294  .  .
+                                                                 . 94  490 858 858 490 94  .
+    L2 rows 1-3:  .  .  143 246 246 143  .   .     L3 rows 0-3:  .   .  36  98  98  36   .   .
+                  . 143 410 576 576 410 143  .                   .  120 286 372 372 286 120  .
+                  . 246 576 883 883 576 246  .                  36 286 510 646 646 510 286 36
+                                                                98 372 646 901 901 646 372 98
+    ```
 
-### Suggested design choices where the original is ambiguous
+    So 16, 24, 32 and 52 tiles show at levels 0-3.
+11. **Its frames:** 15 of 15 ms (it lives 300 ticks, 20 a frame). Each tile shows fireball frame `trunc(heat / 250 + frame - 7.5)` while that's 0 to 7 (0x00497258), so the hotter tiles start sooner (the centre on frame 4 at level 0, frame 3 at levels 2 and 3), and frame 0 shows for two frames. It draws each tile's own 16 px slice of that frame (32 here) from `_B_Explose` (the remake's `explosion_wave_1..8.png`), so the tiles make one body of fire: puffs, then a sheet of fire, then embers.
+12. **Walls change once, on frame 8** (120 ms in, 0x00497022), on every tile whose heat times the power reaches 25000 (the tiles that would hurt a tank):
+    - burned grass goes;
+    - a whole brick keeps half: the top half on the tiles above the grid's diagonal, the left half on and below it. (The code compares against `15 - y`, so its other two branches, the right and bottom halves, never run: it meant to keep the half facing away from the blast.);
+    - what's left of a brick goes;
+    - a hard brick loses a point (its last one, and it goes);
+    - iron, super steel, grass, water, ice and the base don't change.
+13. **Tanks:** while a tile burns (its own frames 1 to 6), an opposing tank on it is hurt by the hottest such tile, `round(heat * power / 100000 + 0.25)`: 2 at the centre at level 0, 3 at levels 1-3, 1 out towards the edge (0x00497415). It's one hit, however many points (`Damage`, 0x00492640: one downgrade, one sound, a player's 0.5625 s of grace), and then no blast hurts that tank for 0.1875 s (250 ticks, its +0xc0). A tank's reach is its picture less 6 px a side, 12 px more a side while it blinks; a blinking tank takes no damage but still gets the 0.1875 s. Not a materializing or airborne tank.
+14. **Its tank too:** a tank the shell hit is in its blast as well. An enemy hit directly loses 3, 4, 5, 5 in all at levels 0-3; a player hit directly by an enemy's shell 1 or 2, the grace after the shell's hit taking the blast.
+15. **Moon shield** (0x004974a6): a tile up-left of the centre is covered by a shield facing right or down, up-right by one facing down or left, down-left up or right, down-right up or left. A shield never breaks. Saved from all of it, the tank sounds the shield (HitTank2).
+16. **Shells** on its burning tiles lose that much heat (a 1-heat shell goes; an explosion shell going off in turn), then 0.1875 s of immunity.
+17. **Mines:** an opposing armed mine of no higher a level that it reaches goes off if the blast's level plus its heat there, less 2 (less 3 above level 0), comes to the mine's level (0x0049753f).
+18. **Sides:** a player's blast never hurts a player, an enemy's never an enemy. A mine-thrown tank's landing blast belongs to neither side and hurts everyone. The blast never touches the base.
+19. **Sound:** the blast itself is silent; the launch plays `S_Explose`, a tank it hurts or finishes its hit or explosion sound.
 
-1. **Drop the netcode entirely and make every explosion a local terrain-destroying blast** (the `flag = 0` path). This removes the `Add_ExploseData` queue, the double-buffer offset mismatch, and the client/host authority questions in one stroke — none of it matters single-player.
-2. **Have a normal explosion shot carry the tank's current gun level** (like the fire gun's strength), so the star/upgrade meaningfully grows the blast (power 250→325, destroy radius ~1.9→3.3 tiles). It's the more fun and consistent reading; confirm in rule 11.
-3. **Skip the armored-face damage reduction for v1** unless our tanks already model directional armor — just apply the falloff damage to every overlapping enemy tank. It's a small, unverified refinement that can be added later without changing the core feel.
+### Steel
+
+20. **No level of the original's explosion gun breaks iron.** Its blast leaves every wall from iron up alone (0x004970ca), and its shell (1 or 2 heat) dies on iron: only a shell with 6 or more heat breaks iron (0x00494269), which in practice is an AP shell. Iron has no damaged states (its 4 ids are picture variants); the wall with stages is the hard brick.
+
+---
+
+## Part B — The remake
+
+Ported as above: `ExplosionBlast` (the grid, its frames, picture, walls, damage, shells, mines), `Bullet` (heat, Clash, walls by heat: `hit_tiles`, `wall_cost`, `_explode_direct_hit`), `CookieData.EXPLOSION_FIRE_CONFIG` (speeds, heat, in flight), `BaseTank.take_hit` / `EnemyTank.take_hit` / `PlayerTank.take_hit` (one hit of several points), `LevelManager.spawn_explosion_blast`, `blast_shadow_quarters`, `blast_wall`. Online, the host sends where its 8x8 goes (`NetWorld.EV_BLAST`: its top-left tile and level), and a client works out the same grid from its own copy of the map, for the picture only.
+
+**Sean's rule (2026-10-08): the players' explosion gun at its top level (4 in play, level 3 in the code) breaks one layer of iron, by its shell's own hit only.** The shell breaks the iron in its way, the tiles under its front (`Bullet.breaks_iron`, `Bullet.hit_tiles`), and goes off there as on any other wall, so a shot at an iron wall makes a hole a tank wide and one tile deep. Its blast changes no iron (rule 12 as the original), so the layer behind the hole and the iron beside it stay. A client breaks the iron its own shell hits at once, as it does other walls (`NetClientWorld.predict_wall`). Not the enemies' explosion shells, nor mines. (The rule's first build, the same day, had the blast break the iron it reached; Sean asked for the direct hit only.)
+
+**The original's quirks, kept as it played:** a half brick's left and right halves shadow the wrong side (its wall mask, 0x00496859, swaps ids 30/31 and 34/35), the shadow's march towards the left and top tests its line mirrored, and a whole brick keeps only its top or left half (rule 12).
+
+**Not changed:** the cooldown still goes by the gun level (the original's by the speed level, 0.45 s to 0.225 s, shared with the plain gun; the remake has its own cooldowns for every special weapon); the plain gun's and the explosion gun's shells don't share one heat budget; the enemies' explosion tanks keep level 0 (the original gave them `TYPE_GUN` 0-3 plus the difficulty's bonus: a decision Sean hasn't made).
+
+## Part C — Found on the way (not changed)
+
+- **Enemy tanks' side is 0, not -1** (`TEnemyTank.Create` 0x00494b78): so enemy fire has owner 0 and melts ice too (the fire spec and the remake say enemy fire doesn't).
+- **AP and iron:** the original breaks iron only for a shell with 6 or more heat, at a cost of 8; the remake's AP pays 4 with no such limit.
+- **Mines come 15 a pack** (75 at most) in the original; the remake gives 25.

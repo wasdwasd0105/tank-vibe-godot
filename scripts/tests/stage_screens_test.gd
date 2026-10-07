@@ -166,8 +166,8 @@ func _run() -> void:
 	var e3 := _enemy(21, Vector2i(18, 6))
 	await _frames(1)
 	e3.health = 1
-	lm.spawn_explosion_blast(e3.global_position, 0, true, false, null, 1)
-	await _frames(2)
+	lm.spawn_explosion_blast(e3.global_position, 0, true, false, 1)
+	await get_tree().create_timer(0.3).timeout   # (it hurts as its wave passes)
 	check(not is_instance_valid(e3) or e3.killed_by == 1, "P2's blast: P2's kill")
 	check(GameManager.player_kills[1].get(21, 0) == 1, "counted for P2 (%s)" % str(GameManager.player_kills[1]))
 	# P1's fire.

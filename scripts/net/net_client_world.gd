@@ -734,10 +734,10 @@ func shell_met(shell: Bullet, at: Vector2) -> Bullet:
 ## (an AP shell with more), meeting the enemies' shell [param theirs] here as
 ## the host will have them meet: it judges this machine's shots by what this
 ## machine shows. Theirs goes too, unless it had more damage than that (Bullet's
-## rule 6; a fire or explosion shell always goes): hidden at once, its end shown
-## where it is, till the host's word settles it (_settle_guesses).
+## rule 6; a fire shell always goes): hidden at once, its end shown where it is,
+## till the host's word settles it (_settle_guesses).
 func clash(shell: Bullet, theirs: Bullet, damage: int, end: Vector2) -> void:
-	if theirs.damage > damage and theirs.visual_style not in ["fire", "explosion"]:
+	if theirs.damage > damage and theirs.visual_style != "fire":
 		return
 	theirs.visible = false
 	predict_hit(theirs, theirs.global_position)
@@ -855,7 +855,7 @@ func predict_wall(shell: Bullet, tiles: Array[Vector2i], end: Vector2) -> void:
 	if level_manager == null or tiles.is_empty():
 		return
 	var before := tiles.map(func(cell: Vector2i) -> Array: return [cell, level_manager.net_cell(cell)])
-	Bullet.hit_tiles(level_manager, tiles, shell.direction, shell.can_destroy_steel)
+	Bullet.hit_tiles(level_manager, tiles, shell.direction, shell.breaks_iron(), shell.wall_heat())
 	_note_wall(shell, before, end)
 
 
@@ -1414,7 +1414,7 @@ func _play(event: Array) -> void:
 			if effects:
 				var blast := ExplosionBlast.new()
 				blast.setup(int(args[2]), true, level_manager)
-				blast.global_position = Vector2(args[0], args[1])
+				blast.origin = Vector2i(int(args[0]), int(args[1]))
 				effects.add_child(blast)
 		NetWorld.EV_KILL_TEXT:
 			if effects:

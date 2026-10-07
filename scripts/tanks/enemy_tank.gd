@@ -872,13 +872,23 @@ func _apply_type_look() -> void:
 	sprite.scale = Vector2(TANK_SIZE / tex_size.x, TANK_SIZE / tex_size.y)
 
 func take_damage(bullet_direction: Vector2 = Vector2.ZERO) -> void:
+	_take_points(1, bullet_direction)
+
+## One hit of [param points] (a blast's, or an explosion shell's): one
+## downgrade for it, one flash, one sound.
+func take_hit(points: int) -> void:
+	_take_points(points, Vector2.ZERO)
+
+## [param points] off its health in one hit, from a shell going
+## [param bullet_direction] (ZERO: no shooter to turn on).
+func _take_points(points: int, bullet_direction: Vector2) -> void:
 	var attacker := hit_by
 	hit_by = -1
 	if health <= 0:
 		return  # already destroyed this frame: nothing more to take
 	if is_invulnerable():
 		return  # the original's Damage ignored an invulnerable tank
-	health -= 1
+	health -= points
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
 	# Turn to face the attacker and retaliate (skip if frozen, including the debug

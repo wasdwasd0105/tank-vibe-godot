@@ -267,9 +267,9 @@ default, and the settings can turn enemy mines off (see section 6).
     but no player tank takes its spray (`ExplosionBlast.spare_players`).
   - No tank touches a mine this way, so nobody is slowed or thrown either.
   - The original's bomb only destroyed the enemy tanks.
-- **Chains** are judged once, when the blast appears. Each chained mine then
-  goes off as the wave ring reaches it, 50 ms a tile. The original re-tests
-  every frame while the wave passes, which gives the same result.
+- **Chains** are tested as the original's: every frame, on the blast's burning
+  tiles (`ExplosionBlast._set_off_mines`, since the blast was ported rule for
+  rule on 2026-10-08), so a chained mine goes off as the fire reaches it.
 - **The crowd check** uses bullets' centres. The original used their corner +
   16 px.
 - **Not modelled:** off-field spots (skipped), enemy pickups, and the
