@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cicetest0001"]
+
+[ext_resource type="Script" path="res://scripts/tests/ice_test.gd" id="1_icetest"]
+
+[node name="IceTest" type="Node"]
+script = ExtResource("1_icetest")

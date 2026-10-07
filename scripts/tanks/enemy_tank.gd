@@ -267,10 +267,19 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_think(delta)
-	if has_anti_ice:
-		is_on_ice = false
-	if _command != STOP:
-		_face(FACINGS[_command])
+	# Told a way (or to stop): at once, but on ice (BaseTank._ice_steer).
+	is_on_ice = not has_anti_ice and _on_ice_terrain()
+	var top := move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0)
+	var wanted: Vector2 = FACINGS[_command] if _command != STOP else Vector2.ZERO
+	if is_on_ice:
+		velocity = _ice_steer(wanted, top, move_speed, delta)
+		if velocity != Vector2.ZERO:
+			_face(current_direction)  # on its grid line as it slides
+	else:
+		if wanted != Vector2.ZERO:
+			_face(wanted)
+		velocity = wanted * top
+		ice_speed = velocity.length()
 
 	# A player in the way: it stops (it never shoves one) and fires at them.
 	var player_blocking := _is_player_ahead()
@@ -279,13 +288,17 @@ func _physics_process(delta: float) -> void:
 			_fire_weapon(0.3, 0.6)
 		else:
 			_fire_at_will()
-	var go := _command != STOP and not player_blocking
-	var speed_factor := MINE_SLOW_FACTOR if is_mine_slowed else 1.0
-	velocity = current_direction * move_speed * speed_factor if go else Vector2.ZERO
+	if player_blocking:
+		velocity = Vector2.ZERO
+		ice_speed = 0.0
 	var from := global_position
+	var meant := velocity.length() * delta  # (move_and_slide takes what a wall stops off velocity)
 	move_and_slide()
 	clamp_to_playfield()
-	_moving = global_position.distance_squared_to(from) > 0.0001
+	var moved := global_position.distance_to(from)
+	_moving = moved > 0.01
+	if is_on_ice and moved < meant * 0.5:
+		ice_speed = 0.0  # stopped dead, as the original's
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
@@ -414,6 +427,10 @@ func _face(dir: Vector2) -> void:
 	else:
 		field.x = EnemyRoutes.round_even(field.x / TILE_SIZE) * TILE_SIZE
 	global_position = lm.global_position + field
+
+## Turns on ice once slow enough (BaseTank._ice_steer): on its grid line.
+func _turn_to(new_direction: Vector2) -> void:
+	_face(new_direction)
 
 func _level() -> LevelManager:
 	if _lm == null or not is_instance_valid(_lm):

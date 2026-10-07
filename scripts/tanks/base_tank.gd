@@ -210,10 +210,46 @@ func _layout_addons() -> void:
 		spr.position = current_direction * push
 
 ## Two or more of the four tiles under the tank iced over, as the original
-## judged it for the add-on push.
+## judged it (TTankSprite's DoMove, 0x004923cd): for its controls on ice and
+## the add-on push.
 func _on_ice_terrain() -> bool:
 	var lm := _get_level_manager()
 	return lm != null and lm.ice_tiles_under(global_position) >= 2
+
+# --- On ice a tank answers its controls 8 times slower, as the original's
+# (TTankSprite's DoCommand, 0x0049180c; docs/ice_original_spec.md). Told its
+# own way, it speeds up by an eighth of its usual step; told to stop, it brakes
+# by an eighth of its usual two; told another way, it brakes so, sliding on as
+# it was, till it's down to the original's speed 200, then turns with what's
+# left below that. Its usual step is 60/650 of its top speed every 0.03 s.
+# Off ice the remake's tanks answer at once. ---
+
+## The original's speed 200 (0.4 of its px a 15 ms frame), px/s: on ice a tank
+## turns only once it's down to this.
+const ICE_TURN_SPEED := 200.0 / 500.0 * 2.0 / 0.015
+## An eighth of its usual step (60/650 of its top speed every 0.03 s), as a
+## share of its top speed a second.
+const ICE_STEP := 60.0 / 650.0 / 8.0 / 0.03
+## Its speed along its facing, px/s: kept as it drives, so it slides on onto
+## ice at the speed it had.
+var ice_speed := 0.0
+
+## On ice: its velocity, told [param wanted] (a facing, or ZERO to stop) for
+## [param delta], up to [param top] px/s (slowed by a mine, say); its step goes
+## by [param full], its top speed unslowed. It turns (_turn_to) only once slow
+## enough.
+func _ice_steer(wanted: Vector2, top: float, full: float, delta: float) -> Vector2:
+	var step := full * ICE_STEP * delta
+	if wanted == Vector2.ZERO:
+		ice_speed = maxf(ice_speed - 2.0 * step, 0.0)
+	elif wanted != current_direction:
+		ice_speed -= 2.0 * step
+		if ice_speed <= ICE_TURN_SPEED:
+			_turn_to(wanted)
+			ice_speed = ICE_TURN_SPEED - ice_speed
+	else:
+		ice_speed = minf(ice_speed + step, top)
+	return current_direction * ice_speed
 
 func _animate_addons(delta: float) -> void:
 	if _animated_addons.is_empty():
@@ -318,19 +354,24 @@ func on_fire_contact(from_player_fire: bool, reburn: float, hurts_both: bool = f
 
 func try_move(new_direction: Vector2) -> void:
 	if new_direction != current_direction:
-		current_direction = new_direction
-		# Snap perpendicular axis to grid
-		if new_direction.x != 0:
-			position.y = round(position.y / HALF_TILE) * HALF_TILE
-		else:
-			position.x = round(position.x / HALF_TILE) * HALF_TILE
-		_update_sprite_direction()
+		_turn_to(new_direction)
 	velocity = current_direction * move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0)
 	is_moving = true
+
+## Faces [param new_direction], snapped to the grid across it.
+func _turn_to(new_direction: Vector2) -> void:
+	current_direction = new_direction
+	# Snap perpendicular axis to grid
+	if new_direction.x != 0:
+		position.y = round(position.y / HALF_TILE) * HALF_TILE
+	else:
+		position.x = round(position.x / HALF_TILE) * HALF_TILE
+	_update_sprite_direction()
 
 func stop_moving() -> void:
 	velocity = Vector2.ZERO
 	is_moving = false
+	ice_speed = 0.0
 
 ## One step of a tank held by "Hold Enemy". The hold stops a tank's commands,
 ## never its motion: one that was moving glides on at the speed it had, straight
@@ -701,6 +742,7 @@ func _land_from_flight() -> void:
 	# starts no hit grace.
 	_take_mine_landing_hit()
 	is_flying = false
+	ice_speed = 0.0
 	if sprite:
 		sprite.position = Vector2.ZERO
 		sprite.scale = _fly_base_sprite_scale

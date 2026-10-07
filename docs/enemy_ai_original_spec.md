@@ -818,7 +818,7 @@ Worked out from the map and the rules above, and in a model of one tank driving 
 
 **Dropped from the remake's old AI:** the pull toward the eagle (75 % of its turns, 95 % near it, and 1-2 % of frames), the first 2 s heading down, turning aside on a collision, going round water for 4 s, the 3 s "wall attack" mode and turning to face the eagle when lined up near it. A tank near a base it can't reach no longer sits facing it.
 
-**Not ported:** an enemy touching the base while Flag On Guard protects it dies (0x494ba8); the original's braking before a turn and speed-up from standing (the remake's tanks move at their speed or stand).
+**Not ported:** an enemy touching the base while Flag On Guard protects it dies (0x494ba8); the original's braking before a turn and speed-up from standing off ice (the remake's tanks move at their speed or stand there; on ice they follow the original's rule, ice_original_spec.md).
 
 **Checked:** the remake's map equals the original's builder value for value on all 64 shipped stages, its three maps each, and with tanks in the way (a step-by-step model of 0x490eec on the same ids), and the remake reads every shipped stage's tiles as the original's ids. Test: scenes/test/enemy_ai_test.tscn (the maps, the costs, the hunter's and the wanderer's choices, the decision points, the grid, the hit hold, the clock, and Sean's case played out: hunters through their nearer gaps, wanderers through the end gaps with the base sealed). Sean's saves, watched for 2 minutes of play: on stage 81, 14 enemies got below the wall, where 1 did before; on stage 55, 20 did, where about half stayed on top before.
 

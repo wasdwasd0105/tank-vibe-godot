@@ -299,18 +299,26 @@ func _physics_process(delta: float) -> void:
 ## in the way, the walls. The host's own players drive this way, and so does
 ## a client's own tank on the client (_predict).
 func _drive(input_dir: Vector2) -> void:
-	_check_ice()
-	if has_anti_ice:
-		is_on_ice = false
-	if input_dir != Vector2.ZERO:
+	var delta := get_physics_process_delta_time()
+	is_on_ice = not has_anti_ice and _on_ice_terrain()
+	if is_on_ice:
+		velocity = _ice_steer(input_dir, move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0), move_speed, delta)
+		is_moving = velocity != Vector2.ZERO
+	elif input_dir != Vector2.ZERO:
 		try_move(input_dir)
-	elif not is_on_ice:
+		ice_speed = velocity.length()
+	else:
 		stop_moving()
 	# Stop movement when an enemy is immediately ahead, but don't let physics contact push the player.
 	if velocity != Vector2.ZERO and _is_enemy_ahead():
 		velocity = Vector2.ZERO
+		ice_speed = 0.0
+	var from := global_position
+	var meant := velocity.length() * delta  # (move_and_slide takes what a wall stops off velocity)
 	move_and_slide()
 	clamp_to_playfield()
+	if is_on_ice and global_position.distance_to(from) < meant * 0.5:
+		ice_speed = 0.0  # stopped dead against a wall, as the original's
 
 ## Host: this tank's driver is on a client, which drives its own copy at once
 ## and reports where it is (lag compensation). This copy goes after it, at up
@@ -1093,22 +1101,6 @@ func _shoot_secondary_explosion() -> void:
 
 	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
-
-func _check_ice() -> void:
-	var game = get_tree().get_first_node_in_group("game")
-	if not game or not game.has_method("get_level_manager"):
-		is_on_ice = false
-		return
-	var level_manager = game.get_level_manager()
-	if not level_manager:
-		is_on_ice = false
-		return
-	var tile_pos: Vector2i = level_manager.world_to_tile(global_position)
-	if level_manager._bg_tile_data.has(tile_pos):
-		var data: Dictionary = level_manager._bg_tile_data[tile_pos]
-		is_on_ice = LevelData.get_tile_category(data.get("code", 0)) == LevelData.TileCategory.ICE
-	else:
-		is_on_ice = false
 
 ## If this tank is sitting on water without a boat, it sinks. Called when the
 ## anti-water addon is lost (e.g. shot off) while afloat.
