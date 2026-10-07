@@ -110,6 +110,14 @@ var _own_hits: Dictionary = {}
 var _guessed_kills: Dictionary = {}
 var _guessed_clashes: Dictionary = {}
 var guesses_undone := 0
+## Walls this machine's own shells broke here at once (predict_wall), till the
+## host's word of those cells: a key, counting up -> the guess as above with
+## "cells", [[cell, [bg, fg, standing quarters] as it was]...] for "nid".
+var _guessed_walls: Dictionary = {}
+var _walls_guessed := 0
+## Items this machine's own tanks took here at once (predict_pickups), till the
+## host's word: cookie instance id -> {"nid", "type", "at" where, "msec"}.
+var _guessed_pickups: Dictionary = {}
 
 
 func _init() -> void:
@@ -197,6 +205,7 @@ func _on_packet(body: PackedByteArray) -> void:
 	}
 	if _started and not full:
 		_show_own_kills(decoded)
+		_show_own_pickups(decoded)
 		_settle_guesses(decoded)
 	_buffer.append(decoded)
 	# The host's clock is at least this far ahead of ours: the fastest packet
@@ -368,6 +377,8 @@ func _clear() -> void:
 	_own_hits.clear()
 	_guessed_kills.clear()
 	_guessed_clashes.clear()
+	_guessed_walls.clear()
+	_guessed_pickups.clear()
 	_game.clear()
 
 
@@ -604,6 +615,7 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 		var across := Vector2.RIGHT if direction.x == 0.0 else Vector2.DOWN
 		var lanes: Array[float] = shell.collision_lane_offsets
 		var tile_lanes: Array[float] = shell.tile_lane_offsets if not shell.tile_lane_offsets.is_empty() else lanes
+		var before_walls := stop
 		if level_manager and not info["pierces"]:
 			var done := 0.0
 			while done < minf(length, stop):
@@ -648,6 +660,14 @@ func _shell_stop(shell: Bullet, from: Vector2, to: Vector2, info: Dictionary) ->
 			else:
 				note_own_hit(met)  # it stops on that one before anything else
 				guess_kill(met as BaseTank, shell.tank_damage(), shell, end)
+		elif stop < before_walls:
+			# A wall: broken here at once, as the host's shell will break it, and
+			# the shell stays ended there (the wall it stopped on may be gone now).
+			info["sticky"] = true
+			if not info.get("walled", false):
+				info["walled"] = true
+				var end := from + direction * stop
+				predict_wall(shell, Bullet.solid_tiles_at(level_manager, end, direction, tile_lanes), end)
 	return stop if stop < INF else -1.0
 
 
@@ -763,8 +783,9 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 				keys.reverse()
 			for key: int in keys:
 				strips[key] = true
-				var cost := level_manager.ap_strip_cost(reached[key])
-				pool = 0 if cost < 0 else pool - cost
+				var strip: Array[Vector2i] = []
+				strip.assign(reached[key])
+				pool = _drill_here(shell, strip, pool, origin + direction * done)
 				if pool <= 0:
 					stop = done
 					break
@@ -807,6 +828,106 @@ func ap_walk(shell: Bullet, origin: Vector2, distance: float, walk: Dictionary) 
 	if stop >= 0.0:
 		walk["stop"] = stop
 	return stop
+
+
+## Own [param shell] ends on [param tiles] here at [param end] (a wall, as
+## Bullet._solid_tiles_touched has it): they break here at once as the host's
+## shell will break them (Bullet.hit_tiles; the host judges its walls as it has
+## them, which this machine shows), rather than a trip and the smoothing later.
+## The host's word of those cells settles it, or they're put back as they were
+## if its shell didn't get there (_settle_guesses).
+func predict_wall(shell: Bullet, tiles: Array[Vector2i], end: Vector2) -> void:
+	if level_manager == null or tiles.is_empty():
+		return
+	var before := tiles.map(func(cell: Vector2i) -> Array: return [cell, level_manager.net_cell(cell)])
+	Bullet.hit_tiles(level_manager, tiles, shell.direction, shell.can_destroy_steel)
+	_note_wall(shell, before, end)
+
+
+## Own AP [param shell] at [param end] spends [param pool] on [param strip], the
+## walls side by side across its way, breaking them here at once as the host's
+## will (LevelManager.ap_drill_tiles), and the guess is kept as predict_wall's.
+## Returns the pool left.
+func _drill_here(shell: Bullet, strip: Array[Vector2i], pool: int, end: Vector2) -> int:
+	var before := strip.map(func(cell: Vector2i) -> Array: return [cell, level_manager.net_cell(cell)])
+	var left := level_manager.ap_drill_tiles(strip, pool, shell.direction)
+	_note_wall(shell, before, end)
+	return left
+
+
+## Keeps the cells of [param before] ([cell, its state as it was]) that own
+## [param shell], ending at [param end], has just changed here, as a guess
+## (_guessed_walls).
+func _note_wall(shell: Bullet, before: Array, end: Vector2) -> void:
+	var changed := before.filter(func(entry: Array) -> bool: return level_manager.net_cell(entry[0]) != entry[1])
+	if changed.is_empty():
+		return
+	_walls_guessed += 1
+	_guessed_walls[_walls_guessed] = {"cells": changed, "owner": shell.owner_player, "shot": shell.net_shot,
+			"end": end, "way": shell.direction, "msec": Time.get_ticks_msec()}
+
+
+## This machine's own [param tank] drives onto items shown here: each is taken
+## here at once, as the host's copy of the tank will take it on its way after it
+## (PlayerTank._follow_client): gone, its name shown and its sound heard, rather
+## than a trip and the smoothing later. What it does (a level, a score) still
+## comes with the host's word, and one still flying out of a tank is left to
+## the host. The host's word settles it (_show_own_pickups), or it shows again.
+func predict_pickups(tank: PlayerTank) -> void:
+	var reach := Cookie.S * 0.5 + BaseTank.HITBOX_SIZE * 0.5
+	for nid: int in _nodes:
+		var node: Variant = _nodes[nid]
+		if not is_instance_valid(node) or not node is Cookie:
+			continue
+		var cookie := node as Cookie
+		if not cookie.visible or cookie.scale.x < 0.99 or _guessed_pickups.has(cookie.get_instance_id()):
+			continue
+		var off := cookie.global_position - tank.global_position
+		if absf(off.x) >= reach or absf(off.y) >= reach:
+			continue
+		cookie.visible = false
+		if effects:
+			PickupText.spawn(effects, cookie.cookie_type, cookie.global_position)
+		SoundManager.play_from_host(&"powerup_pickup")
+		_guessed_pickups[cookie.get_instance_id()] = {"nid": nid, "type": cookie.cookie_type,
+				"at": cookie.global_position, "msec": Time.get_ticks_msec()}
+
+
+## A snapshot just come says items have gone. One this machine's own tank took
+## here already (predict_pickups) goes for good now, and that snapshot's name
+## and sound for it, shown and heard already, are left out.
+func _show_own_pickups(snapshot: Dictionary) -> void:
+	if _guessed_pickups.is_empty():
+		return
+	var left := PackedInt32Array()
+	var events: Array = snapshot["events"]
+	for nid: int in snapshot["removed"]:
+		var node: Variant = _nodes.get(nid)
+		var cookie: Cookie = node as Cookie if is_instance_valid(node) else null
+		if cookie == null or not _guessed_pickups.has(cookie.get_instance_id()):
+			left.append(nid)
+			continue
+		var pickup: Dictionary = _guessed_pickups[cookie.get_instance_id()]
+		_guessed_pickups.erase(cookie.get_instance_id())
+		_despawn(nid)
+		var named := false
+		var heard := false
+		var rest: Array = []
+		for event: Array in events:
+			var its := false
+			match int(event[0]):
+				NetWorld.EV_PICKUP_TEXT:
+					its = not named and int(event[1]) == int(pickup["type"]) \
+							and Vector2(event[2], event[3]).distance_to(pickup["at"]) <= KILL_NEAR
+					named = named or its
+				NetWorld.EV_SOUND:
+					its = not heard and str(event[1]) == "powerup_pickup"
+					heard = heard or its
+			if not its:
+				rest.append(event)
+		events = rest
+	snapshot["removed"] = left
+	snapshot["events"] = events
 
 
 ## One of this machine's own shells reached enemy [param tank] here: if the
@@ -877,6 +998,29 @@ func _show_heard_kills() -> void:
 ## here (GUESS_PAST), or (never seen, gone at once) a later shot's has come;
 ## so does one with no word either way in GUESS_MAX_MS.
 func _settle_guesses(snapshot: Dictionary) -> void:
+	if not _guessed_walls.is_empty():
+		var heard := {}
+		var tiles: PackedInt32Array = snapshot["tiles"]
+		for i in range(0, tiles.size() - 4, 5):
+			heard[Vector2i(tiles[i], tiles[i + 1])] = true
+		for key: int in _guessed_walls.keys():
+			var guess: Dictionary = _guessed_walls[key]
+			if guess["cells"].any(func(entry: Array) -> bool: return heard.has(entry[0])):
+				_guessed_walls.erase(key)  # the host's word of those cells: as it says, once shown
+			elif _guess_wrong(guess, snapshot):
+				_guessed_walls.erase(key)
+				for entry: Array in guess["cells"]:
+					var was: Array = entry[1]
+					level_manager.net_set_cell(entry[0], was[0], was[1], was[2])
+				guesses_undone += 1
+	for id: int in _guessed_pickups.keys():
+		var cookie := instance_from_id(id) as Node2D
+		if cookie == null or not _nodes.has(int(_guessed_pickups[id]["nid"])):
+			_guessed_pickups.erase(id)
+		elif Time.get_ticks_msec() - int(_guessed_pickups[id]["msec"]) > GUESS_MAX_MS:
+			_guessed_pickups.erase(id)
+			cookie.visible = true
+			guesses_undone += 1
 	if _guessed_kills.is_empty() and _guessed_clashes.is_empty():
 		return
 	for guesses: Dictionary in [_guessed_kills, _guessed_clashes]:

@@ -545,6 +545,9 @@ func _predict() -> void:
 	_drive(Vector2.ZERO if blocked else PlayerInput.local_direction(net_slot))
 	Net.report_tank(net_slot, global_position, maxi(FACINGS.find(current_direction), 0),
 			velocity != Vector2.ZERO, _override_seen)
+	var world := NetClientWorld.of(get_tree())
+	if world:
+		world.predict_pickups(self)  # the items it drives onto, taken here at once
 	if not blocked:
 		_predict_fire()
 

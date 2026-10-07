@@ -933,21 +933,6 @@ func ap_drill_tiles(tiles: Array[Vector2i], pool: int, from_direction: Vector2) 
 	return maxi(pool, 0)
 
 
-## What an AP shell's pool must spend to break [param strip] (the tiles it
-## reaches side by side, as ap_drill_tiles groups them), breaking nothing: its
-## dearest tile's cost, or -1 for super-steel, which stops any shell. A client
-## draws its own AP shell ahead of the host's by it (NetClientWorld.ap_walk).
-func ap_strip_cost(strip: Array) -> int:
-	var most := 0
-	for tile: Vector2i in strip:
-		if not _fg_tile_data.has(tile):
-			continue
-		if LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)) == LevelData.TileCategory.SUPER_BLOCK:
-			return -1
-		most = maxi(most, _ap_tile_cost(tile))
-	return most
-
-
 func _ap_tile_cost(tile: Vector2i) -> int:
 	match LevelData.get_tile_category(_fg_tile_data[tile].get("code", 0)):
 		LevelData.TileCategory.SOFT_BRICK_FULL: return 2

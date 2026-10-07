@@ -214,7 +214,7 @@ func _physics_process(delta: float) -> void:
 ## touching nothing. Where that shell ends, the ghost ends: the host judges it
 ## by what this machine shows (Bullet._meet_as_seen), so a wall, a shell of the
 ## enemies' (both going, as on the host) or a tank shown here is where it ends
-## there too; the end, and a kill, are shown at once.
+## there too; the end, a kill and a wall broken are shown at once.
 func _fly_ghost(delta: float) -> void:
 	if not visible:
 		return
@@ -230,9 +230,12 @@ func _fly_ghost(delta: float) -> void:
 	var drilled_to := world.ap_walk(self, net_origin, _traveled, net_walk) if pierces and world else -1.0
 	if drilled_to >= 0.0:
 		global_position = net_origin + direction * drilled_to
-	var ended := drilled_to >= 0.0 or (max_range > 0.0 and _traveled >= max_range) \
-			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992 \
-			or (not pierces and not _solid_tiles_touched().is_empty())
+	var out := (max_range > 0.0 and _traveled >= max_range) \
+			or position.x < 144 or position.x > 1456 or position.y < 0 or position.y > 992
+	var walls: Array[Vector2i] = []
+	if not pierces and not out:
+		walls = _solid_tiles_touched()
+	var ended := drilled_to >= 0.0 or out or not walls.is_empty()
 	if not ended and not pierces and world:
 		var theirs := world.shell_met(self, global_position)
 		if theirs:
@@ -248,6 +251,8 @@ func _fly_ghost(delta: float) -> void:
 			if met:
 				world.note_own_hit(met)
 				world.guess_kill(met, tank_damage(), self, global_position)  # its kill too, if it is one
+			elif not walls.is_empty():
+				world.predict_wall(self, walls, global_position)  # the wall it broke too
 			world.predict_hit(self, global_position)  # its end, shown at once
 
 ## How far this shell flies in [param seconds] from its speed now: an AP shell
@@ -303,54 +308,54 @@ func _check_tile_collision() -> void:
 				_destroy()
 			return
 
-		for tile_pos in solid_tiles:
-			if not _level_manager._fg_tile_data.has(tile_pos):
-				continue
-			var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
-			var code: int = data.get("code", 0)
-			var cat := LevelData.get_tile_category(code)
-			match cat:
-				LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
-					_level_manager._damage_brick(tile_pos, direction)
-				LevelData.TileCategory.HARD_BRICK:
-					_level_manager._damage_hard_brick(tile_pos)
-				LevelData.TileCategory.IRON_BLOCK:
-					if can_destroy_steel:
-						_level_manager._remove_fg_tile(tile_pos)
-				LevelData.TileCategory.SUPER_BLOCK:
-					pass
+		hit_tiles(_level_manager, solid_tiles, direction, can_destroy_steel)
 		_destroy()
+
+## A shell going [param way] ends on [param tiles] of [param level_manager]'s:
+## a brick loses the side it hit, a hard brick a point, steel only to a shell
+## that [param through_steel] goes through it. (A client breaks them so for its
+## own shells at once: NetClientWorld.predict_wall.)
+static func hit_tiles(level_manager: LevelManager, tiles: Array[Vector2i], way: Vector2,
+		through_steel: bool = false) -> void:
+	for tile_pos in tiles:
+		if not level_manager._fg_tile_data.has(tile_pos):
+			continue
+		var data: Dictionary = level_manager._fg_tile_data[tile_pos]
+		var code: int = data.get("code", 0)
+		var cat := LevelData.get_tile_category(code)
+		match cat:
+			LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+				level_manager._damage_brick(tile_pos, way)
+			LevelData.TileCategory.HARD_BRICK:
+				level_manager._damage_hard_brick(tile_pos)
+			LevelData.TileCategory.IRON_BLOCK:
+				if through_steel:
+					level_manager._remove_fg_tile(tile_pos)
+			LevelData.TileCategory.SUPER_BLOCK:
+				pass
 
 ## The solid tiles this shell's lanes are on, or about to be.
 func _solid_tiles_touched() -> Array[Vector2i]:
-	var solid_tiles: Array[Vector2i] = []
 	if not _level_manager:
-		return solid_tiles
-
-	var perp: Vector2 = Vector2.ZERO
-	if direction == Vector2.UP or direction == Vector2.DOWN:
-		perp = Vector2.RIGHT
-	else:
-		perp = Vector2.DOWN
-
-	var base_positions: Array[Vector2] = [
-		global_position,
-		global_position + direction * 6.0,
-	]
-
+		return []
 	var lanes: Array[float] = tile_lane_offsets if not tile_lane_offsets.is_empty() else collision_lane_offsets
+	return solid_tiles_at(_level_manager, global_position, direction, lanes)
+
+## The solid tiles of [param level_manager]'s that a shell at [param at] going
+## [param way] has its tile [param lanes] on, or is about to.
+static func solid_tiles_at(level_manager: LevelManager, at: Vector2, way: Vector2, lanes: Array) -> Array[Vector2i]:
+	var solid_tiles: Array[Vector2i] = []
+	var perp: Vector2 = Vector2.RIGHT if way == Vector2.UP or way == Vector2.DOWN else Vector2.DOWN
 	var tiles_to_check: Array[Vector2i] = []
-	for base_pos in base_positions:
-		for lane_offset in lanes:
-			var lane_pos: Vector2 = base_pos + perp * lane_offset
-			var tile_pos: Vector2i = _level_manager.world_to_tile(lane_pos)
+	for base_pos: Vector2 in [at, at + way * 6.0]:
+		for lane_offset: float in lanes:
+			var tile_pos: Vector2i = level_manager.world_to_tile(base_pos + perp * lane_offset)
 			if tile_pos not in tiles_to_check:
 				tiles_to_check.append(tile_pos)
-
 	for tile_pos in tiles_to_check:
-		if not _level_manager._fg_tile_data.has(tile_pos):
+		if not level_manager._fg_tile_data.has(tile_pos):
 			continue
-		var data: Dictionary = _level_manager._fg_tile_data[tile_pos]
+		var data: Dictionary = level_manager._fg_tile_data[tile_pos]
 		var code: int = data.get("code", 0)
 		if LevelData.is_solid_tile(LevelData.get_tile_category(code)):
 			solid_tiles.append(tile_pos)

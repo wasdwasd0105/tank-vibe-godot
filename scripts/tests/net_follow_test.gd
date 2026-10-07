@@ -182,6 +182,48 @@ func _shown_enemy_shell(world: NetClientWorld, nid: int, local: Vector2, way: Ve
 	return theirs
 
 
+## An item shown here as the host's entity [param nid], at [param local].
+func _shown_item(world: NetClientWorld, nid: int, local: Vector2) -> Cookie:
+	var item: Cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
+	item.net_setup([CookieData.CookieType.SCORE_1000])
+	_game.get_node("Entities/PowerUps").add_child(item)
+	NetClientWorld._strip_physics(item)
+	item.set_process(false)
+	item.global_position = _at(local)
+	world._nodes[nid] = item
+	world._states[nid] = item.net_state()
+	world._types[nid] = NetWorld.T_COOKIE
+	return item
+
+
+## The host's snapshot comes to [param world] with map cells [param cells]
+## changed ([x, y, bg, fg, standing quarters] each), its time far off.
+func _host_says_tiles(world: NetClientWorld, cells: PackedInt32Array) -> void:
+	var packet := []
+	packet.resize(NetWorld.SNAP_SIZE)
+	packet[NetWorld.SNAP_SEQ] = 1
+	packet[NetWorld.SNAP_EPOCH] = 1
+	packet[NetWorld.SNAP_TIME] = Time.get_ticks_msec() + 100000
+	packet[NetWorld.SNAP_FLAGS] = 0
+	packet[NetWorld.SNAP_MAP] = []
+	packet[NetWorld.SNAP_SPAWNS] = []
+	packet[NetWorld.SNAP_UPDATES] = PackedByteArray()
+	packet[NetWorld.SNAP_REMOVED] = PackedInt32Array()
+	packet[NetWorld.SNAP_TILES] = cells
+	packet[NetWorld.SNAP_GAME] = {}
+	packet[NetWorld.SNAP_EVENTS] = []
+	var was := [world._started, world._epoch, world._clock_offset, world._have_clock, world._late.duplicate()]
+	world._started = true
+	world._epoch = 1
+	world._on_packet(var_to_bytes(packet))
+	world._buffer.clear()
+	world._started = was[0]
+	world._epoch = was[1]
+	world._clock_offset = was[2]
+	world._have_clock = was[3]
+	world._late = was[4]
+
+
 ## What [param seen] (NetHostWorld.seen_at) keeps of [param node], or [].
 func _seen_of(seen: Array, node: Object) -> Array:
 	for each: Array in seen:
@@ -194,7 +236,7 @@ func _seen_of(seen: Array, node: Object) -> Array:
 ## gone, with [param events], and entities [param moved] (nid -> [x, y]) are
 ## there; its time far off, so only what's shown at once shows. (The made-up
 ## time is no clock to go by: the world's is kept.)
-func _host_says(world: NetClientWorld, removed: Array, events: Array, moved: Dictionary = {}) -> void:
+func _host_says(world: NetClientWorld, removed: Array, events: Array, moved: Dictionary = {}) -> Dictionary:
 	var packet := []
 	packet.resize(NetWorld.SNAP_SIZE)
 	packet[NetWorld.SNAP_SEQ] = 1
@@ -216,12 +258,14 @@ func _host_says(world: NetClientWorld, removed: Array, events: Array, moved: Dic
 	world._started = true
 	world._epoch = 1
 	world._on_packet(var_to_bytes(packet))
+	var kept: Dictionary = world._buffer[-1] if not world._buffer.is_empty() else {}
 	world._buffer.clear()
 	world._started = was[0]
 	world._epoch = was[1]
 	world._clock_offset = was[2]
 	world._have_clock = was[3]
 	world._late = was[4]
+	return kept
 
 
 ## Fires as the client's own tank would on a client: its shot predicted here.
@@ -1032,14 +1076,22 @@ func _run() -> void:
 		_iron(shot_from + Vector2(64, y))
 	world._place(77, own, _at(shot_from))
 	check(not own.visible and own.global_position == _at(shot_from), "a wall before it gets there: hidden, its hit's on its way")
-	world._own_shells[77]["pierces"] = true
-	world._place(77, own, _at(shot_from))
-	check(own.visible, "an AP shell drills on through")
-	world._own_shells[77]["pierces"] = false
 	for y in [-16, 16]:
 		_lm._remove_fg_tile(_lm.world_to_tile(_at(shot_from + Vector2(64, y))))
 	world._place(77, own, _at(shot_from))
-	check(own.visible, "the wall gone: drawn again")
+	check(not own.visible, "it stays ended at that wall though it's gone here since (its own shot may have broken it)")
+	world._place(77, own, _at(shot_from + Vector2(80, 0)))
+	check(own.visible, "the host's shell seen on past it: on it flies")
+	for y in [-16, 16]:
+		_iron(shot_from + Vector2(64, y))
+	world._own_shells[79] = {"start": _at(shot_from), "host_time": Time.get_ticks_msec() - world.render_delay(),
+			"range": -1.0, "pierces": true}
+	world._place(79, own, _at(shot_from))
+	check(own.visible, "an AP shell drills on through")
+	world._own_shells.erase(79)
+	for y in [-16, 16]:
+		_lm._remove_fg_tile(_lm.world_to_tile(_at(shot_from + Vector2(64, y))))
+	world._guessed_walls.clear()
 	var ahead_bot := _spawn_enemy(shot_from + Vector2(70, 10))
 	await tree.process_frame
 	world._place(77, own, _at(shot_from))
@@ -1210,6 +1262,93 @@ func _run() -> void:
 	world._predicted_hits.clear()
 	for x in [-16, 16]:
 		_lm._remove_fg_tile(_lm.world_to_tile(_at(home + Vector2(x, -160))))
+
+	# A brick wall its own shell reaches: broken here at once, as the host's
+	# shell will break it; the host's word of those cells settles it.
+	var brick_cells: Array[Vector2i] = []
+	for x in [-16, 16]:
+		var cell := _lm.world_to_tile(_at(home + Vector2(x, -160)))
+		_lm._place_fg_tile(cell, 0x19)
+		brick_cells.append(cell)
+	var broke := _fly_shot(world)
+	var standing_now := brick_cells.map(func(cell: Vector2i) -> int: return int(_lm._brick_damage.get(cell, -1)))
+	check(broke != null and not broke.visible and standing_now == [0b1100, 0b1100] and world._guessed_walls.size() == 1,
+		"a brick wall its shot reaches: its near half broken here at once, as on the host: %s" % str(standing_now))
+	var said_cells := PackedInt32Array()
+	for cell: Vector2i in brick_cells:
+		said_cells.append_array([cell.x, cell.y, 0, 0x19, 0b1100])
+	_host_says_tiles(world, said_cells)
+	check(world._guessed_walls.is_empty() and brick_cells.all(func(cell: Vector2i) -> bool: return _lm._brick_damage.get(cell, -1) == 0b1100),
+		"the host's word of those cells: settled")
+	# The host's word that its shell went without them: put back as they were.
+	broke = _fly_shot(world)
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(120, NetWorld.T_BULLET, broke.net_spawn_args(), [muzzle.x, muzzle.y])
+	(world.node_for(120) as Bullet).set_physics_process(false)
+	var broken_here := brick_cells.all(func(cell: Vector2i) -> bool: return not _lm._fg_tile_data.has(cell))
+	var undone := world.guesses_undone
+	_host_says(world, [120], [])
+	check(broken_here and brick_cells.all(func(cell: Vector2i) -> bool: return _lm._brick_damage.get(cell, -1) == 0b1100)
+		and world._guessed_walls.is_empty() and world.guesses_undone == undone + 1,
+		"its shell gone on the host without them: the bricks it broke here put back as they were")
+	world._despawn(120)
+	# One drawn ahead (its ghost gone) reaching bricks: broken at once, and it
+	# stays ended there.
+	world._shown_time = Time.get_ticks_msec() - world.render_delay()
+	world._spawn(121, NetWorld.T_BULLET, [BaseTank.FACINGS.find(Vector2.UP), "regular", [0.0], 0, 384.0, -1.0, false, 0.0, 0.0, 996, 1, [-16.0, 16.0]],
+			[short_of.x, short_of.y])
+	var through_bricks := world.node_for(121) as Bullet
+	through_bricks.set_physics_process(false)
+	world._place(121, through_bricks, short_of)
+	world._place(121, through_bricks, short_of)
+	check(not through_bricks.visible and brick_cells.all(func(cell: Vector2i) -> bool: return not _lm._fg_tile_data.has(cell))
+		and world._guessed_walls.size() == 1,
+		"one drawn ahead reaching them: what was left of them broken here at once, it ended there")
+	world._despawn(121)
+	world._guessed_walls.clear()
+	world._predicted_hits.clear()
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	for cell: Vector2i in brick_cells:
+		_lm._remove_fg_tile(cell)
+		_lm._brick_damage.erase(cell)
+	# An item its own tank drives onto: taken here at once, its name shown and
+	# its sound heard; the host's word of it leaves those out.
+	var item := _shown_item(world, 122, _player.global_position - _lm.global_position + Vector2(40, 0))
+	var names_before := fx.get_child_count()
+	var pickup_heard := int(SoundManager._last_played.get(&"powerup_pickup", 0))
+	await tree.create_timer(0.1).timeout  # (past the sound's repeat guard)
+	world.predict_pickups(_player)
+	check(not item.visible and world._guessed_pickups.has(item.get_instance_id()) and fx.get_child_count() == names_before + 1
+		and int(SoundManager._last_played.get(&"powerup_pickup", 0)) > pickup_heard,
+		"an item its tank drives onto: taken here at once, its name shown and its sound heard")
+	var word := _host_says(world, [122], [[NetWorld.EV_SOUND, "powerup_pickup"],
+			[NetWorld.EV_PICKUP_TEXT, item.cookie_type, item.global_position.x, item.global_position.y]])
+	check(not world._nodes.has(122) and world._guessed_pickups.is_empty() and Array(word.get("removed", [0])).is_empty()
+		and word.get("events", [0]).is_empty(),
+		"the host's word of it: gone for good, its name and sound left out of that snapshot (shown and heard already)")
+	var far_item := _shown_item(world, 123, _player.global_position - _lm.global_position + Vector2(40, 0))
+	world.predict_pickups(_player)
+	world._guessed_pickups[far_item.get_instance_id()]["msec"] -= int(NetClientWorld.GUESS_MAX_MS) + 1
+	undone = world.guesses_undone
+	_host_says(world, [], [])
+	check(far_item.visible and world._guessed_pickups.is_empty() and world.guesses_undone == undone + 1,
+		"no word of it for %.1f s: it shows again" % (NetClientWorld.GUESS_MAX_MS / 1000.0))
+	world._despawn(123)
+	var flying_item := _shown_item(world, 124, _player.global_position - _lm.global_position + Vector2(40, 0))
+	flying_item.scale = Vector2.ONE * 0.5  # (still flying out of a tank)
+	world.predict_pickups(_player)
+	check(flying_item.visible and world._guessed_pickups.is_empty(), "one still flying out of a tank: left to the host")
+	world._despawn(124)
+	var under := _shown_item(world, 125, _player.global_position - _lm.global_position + Vector2(20, 0))
+	Net.role = Net.Role.CLIENT
+	_player._predict()
+	Net.role = Net.Role.OFFLINE
+	check(not under.visible and world._guessed_pickups.has(under.get_instance_id()),
+		"its own tank's step here takes them (PlayerTank._predict)")
+	world._guessed_pickups.clear()
+	world._despawn(125)
 
 	# A ghost the host never takes over: a shot the host didn't fire.
 	_player.can_shoot = true
@@ -1425,6 +1564,32 @@ func _run() -> void:
 		entry["node"].queue_free()
 	world._ghosts.clear()
 	world._predicted_hits.clear()
+	# The bricks it drills through break here at once too.
+	for i in 2:
+		await tree.physics_frame  # (the tanks gone)
+	var ap_bricks: Array[Vector2i] = []
+	for x in [-16, 16]:
+		var cell := _lm.world_to_tile(_at(home + Vector2(x, -128)))
+		_lm._place_fg_tile(cell, 0x19)
+		ap_bricks.append(cell)
+	_player.active_ap_bullets = 0
+	_player.can_shoot = true
+	Input.action_press("p1_shoot2")
+	_fire_here()
+	Input.action_release("p1_shoot2")
+	var through_wall: Bullet = world._ghosts[-1]["node"] if not world._ghosts.is_empty() else null
+	if through_wall:
+		through_wall.set_physics_process(false)
+		for i in 30:
+			through_wall._fly_ghost(1.0 / 60.0)
+	check(through_wall != null and through_wall.visible and not world._guessed_walls.is_empty()
+		and ap_bricks.all(func(cell: Vector2i) -> bool: return not _lm._fg_tile_data.has(cell)),
+		"an AP shell's drilling breaks the bricks here at once, and on it flies")
+	for entry: Dictionary in world._ghosts:
+		entry["node"].queue_free()
+	world._ghosts.clear()
+	world._guessed_walls.clear()
+	world._predicted_hits.clear()
 	SoundManager._predicted = heard_before
 	_player.active_ap_bullets = 0
 	Net.role = Net.Role.CLIENT
@@ -1500,7 +1665,7 @@ func _run() -> void:
 	world._shown_time = Time.get_ticks_msec() - world.render_delay()
 	world._spawn(112, NetWorld.T_BULLET, my_shot.net_spawn_args(), [muzzle.x, muzzle.y])
 	(world.node_for(112) as Bullet).set_physics_process(false)
-	var undone := world.guesses_undone
+	undone = world.guesses_undone
 	_host_says(world, [112], [])
 	check(stray.visible and world._guessed_clashes.is_empty() and world.guesses_undone == undone + 1,
 		"its shell gone on the host and theirs still there: theirs shows again")
