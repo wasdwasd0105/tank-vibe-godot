@@ -91,6 +91,20 @@ func _run() -> void:
 		var at := enemy.global_position
 		await tree.create_timer(1.0).timeout
 		check(is_instance_valid(enemy) and enemy.global_position.distance_to(at) < 0.5, "held: it hasn't moved in 1 s")
+	print("\n[D] The items' own times: a player's Hold Enemy 20 s, Who PA Who 25 s")
+	GameManager.enemies_frozen = false
+	var web: Cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
+	web.setup(CookieData.CookieType.TANK_WEB)
+	web._apply_effect(player)
+	check(GameManager.enemies_frozen and is_equal_approx(GameManager.freeze_timer, 20.0),
+		"Hold Enemy: the enemies held 20 s (%.2f)" % GameManager.freeze_timer)
+	var helmet: Cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
+	helmet.setup(CookieData.CookieType.INVINCIBLE_HELMET)
+	helmet._apply_effect(player)
+	check(player.is_invincible and is_equal_approx(player.invincible_timer, 25.0),
+		"Who PA Who: 25 s under the shield (%.2f)" % player.invincible_timer)
+	web.free()
+	helmet.free()
 	GameManager.reset()
 
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))

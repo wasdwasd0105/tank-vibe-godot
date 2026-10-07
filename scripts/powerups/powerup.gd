@@ -28,6 +28,12 @@ const ITEM_Z := 21
 
 ## "Hold Enemy" taken by an enemy holds the players for 10000 ticks.
 const ENEMY_HOLD_TIME: float = 7.5
+## A player's "Hold Enemy" holds the enemies this long, s, and "Who PA Who"
+## shields the player this long (Sean, 2026-10-08; they were 40 s and 60 s;
+## the original's were 15 s, 7.5 s more while over 7.5 s were left, and 18.75 s).
+## A hold left at a stage's end runs on into the next (GameManager.advance_stage).
+const FREEZE_TIME: float = 20.0
+const HELMET_TIME: float = 25.0
 
 func setup(type: int, delay: float = 0.0, origin: Vector2 = Vector2.ZERO) -> void:
 	cookie_type = type
@@ -293,11 +299,11 @@ func _apply_effect(player: PlayerTank) -> void:
 			GameManager.add_score_direct(player.player_id, 2000)
 		# utility_special
 		CookieData.CookieType.INVINCIBLE_HELMET:
-			player.activate_helmet(60.0)
+			player.activate_helmet(HELMET_TIME)
 		CookieData.CookieType.FLAG_PROTECTION:
 			Events.fortify_base.emit(60.0)
 		CookieData.CookieType.TANK_WEB:
-			Events.freeze_enemies.emit(40.0)
+			Events.freeze_enemies.emit(FREEZE_TIME)
 		CookieData.CookieType.TANK_BOMB:
 			Events.bomb_all_enemies.emit(player.player_id)
 			PlayerTank.rumble_player(player.player_id, PlayerTank.BOMB_RUMBLE)  # as hard as losing a tank
