@@ -42,7 +42,7 @@ Nothing else reads it: not shells, mines (anti-ice skates over mines below level
 **Now (2026-10-08): the original's rule on ice** (`BaseTank._ice_steer`). Players use it (`PlayerTank._drive`, so a joining player's own screen too, the host following its reports), and so do enemies (`EnemyTank._physics_process`).
 - **On ice:** 2 or more of the 4 tiles under it (`BaseTank._on_ice_terrain`, `LevelManager.ice_tiles_under`), never with anti-ice.
 - **Speed:** its speed along its facing (`ice_speed`) goes up by an eighth of the original's step and down by an eighth of two, with the step 60/650 of its top speed every 0.03 s.
-- **Turning:** told another way, it brakes so, sliding on, and turns once it's down to the original's 200 (53.3 px/s here), going on at 53.3 less what it had. A player's turn snaps to the half tile as ever, an enemy's to the tile.
+- **Turning:** told another way, it brakes so, sliding on, and turns once it's down to the original's 200 (53.3 px/s here), going on at 53.3 less what it had. Its turn snaps to the grid line, the tile, a player's as an enemy's (BaseTank._keep_to_grid).
 - **Blocked:** against a wall or a tank it stops dead.
 
 **With the remake's own top speeds** (players 96–192 px/s, enemies 64–192), a player at 128 px/s on ice:

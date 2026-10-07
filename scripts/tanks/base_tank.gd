@@ -20,6 +20,8 @@ const BODY_EDGE: float = 29.5
 const BODY_LANE_OFFSETS: Array[float] = [-BODY_EDGE, 0.0, BODY_EDGE]
 ## Side of every tank's square hitbox (the tank scenes' collision shapes).
 const HITBOX_SIZE: float = 60.0
+## Its game's LevelManager, once looked up (_level).
+var _lm: LevelManager = null
 
 # Playfield boundaries in global coordinates (Playfield at 160,16; grid 40x30 @ 32px)
 const PLAYFIELD_MIN_X: float = 192.0   # 160 + 32 (half tank inset)
@@ -353,15 +355,31 @@ func try_move(new_direction: Vector2) -> void:
 	velocity = current_direction * move_speed * (MINE_SLOW_FACTOR if is_mine_slowed else 1.0)
 	is_moving = true
 
-## Faces [param new_direction], snapped to the grid across it.
+## Faces [param new_direction], on the grid line across it (_keep_to_grid).
 func _turn_to(new_direction: Vector2) -> void:
 	current_direction = new_direction
-	# Snap perpendicular axis to grid
-	if new_direction.x != 0:
-		position.y = round(position.y / HALF_TILE) * HALF_TILE
-	else:
-		position.x = round(position.x / HALF_TILE) * HALF_TILE
+	_keep_to_grid()
 	_update_sprite_direction()
+
+## Keeps to the grid line across its way: the original snapped every moving
+## tank so, each frame (0x004923ab), to its 16 px cells, Round(X/16), here the
+## field's 32 px tiles, rounded as Delphi rounds. So a tank turning within half
+## a tile of a gap a tank wide lines up with it, and one driving on stays in line.
+func _keep_to_grid() -> void:
+	var lm := _level()
+	if lm == null:
+		return
+	var field := global_position - lm.global_position
+	if current_direction.x != 0.0:
+		field.y = EnemyRoutes.round_even(field.y / TILE_SIZE) * TILE_SIZE
+	elif current_direction.y != 0.0:
+		field.x = EnemyRoutes.round_even(field.x / TILE_SIZE) * TILE_SIZE
+	global_position = lm.global_position + field
+
+func _level() -> LevelManager:
+	if _lm == null or not is_instance_valid(_lm):
+		_lm = _get_level_manager()
+	return _lm
 
 func stop_moving() -> void:
 	velocity = Vector2.ZERO

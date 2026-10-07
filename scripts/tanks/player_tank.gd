@@ -309,6 +309,8 @@ func _drive(input_dir: Vector2) -> void:
 		ice_speed = velocity.length()
 	else:
 		stop_moving()
+	if velocity != Vector2.ZERO:
+		_keep_to_grid()  # every moving frame, as the original's (a landing, a revive)
 	# Stop movement when an enemy is immediately ahead, but don't let physics contact push the player.
 	if velocity != Vector2.ZERO and _is_enemy_ahead():
 		velocity = Vector2.ZERO

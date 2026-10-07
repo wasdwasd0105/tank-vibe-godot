@@ -53,7 +53,6 @@ var _moving := false
 var _ai_clock := 0.0
 ## After a hit it survives, it holds its course this long, deciding nothing.
 var _hit_hold := 0.0
-var _lm: LevelManager = null
 const SPECIAL_FIRE_CHANCE: float = 0.5
 const ENEMY_REGULAR_FIRE_COOLDOWN: float = 0.3
 # Fire is persistent area-denial, so enemies use it sparingly: a lower pick
@@ -418,24 +417,11 @@ func _face(dir: Vector2) -> void:
 	if dir != current_direction:
 		current_direction = dir
 		_update_sprite_direction()
-	var lm := _level()
-	if lm == null:
-		return
-	var field := global_position - lm.global_position
-	if dir.x != 0.0:
-		field.y = EnemyRoutes.round_even(field.y / TILE_SIZE) * TILE_SIZE
-	else:
-		field.x = EnemyRoutes.round_even(field.x / TILE_SIZE) * TILE_SIZE
-	global_position = lm.global_position + field
+	_keep_to_grid()
 
 ## Turns on ice once slow enough (BaseTank._ice_steer): on its grid line.
 func _turn_to(new_direction: Vector2) -> void:
 	_face(new_direction)
-
-func _level() -> LevelManager:
-	if _lm == null or not is_instance_valid(_lm):
-		_lm = _get_level_manager()
-	return _lm
 
 ## The remake's own firing (Sean kept it, 2026-09-25), along its facing: fast
 ## at the base when lined up facing it close by, fast at a brick in its way,
