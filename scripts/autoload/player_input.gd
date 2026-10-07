@@ -98,6 +98,11 @@ class RemotePad:
 	## clock then, ms]. Not played away like reports: its shells in flight go on
 	## needing them.
 	var views: Array = []
+	## Its latest frames not yet looked at for the enemies' shells its screen had
+	## on its tank (PlayerTank._judge_reported_hits), oldest first: [frame, where
+	## its tank was, its facing, the moment of the host's world its screen
+	## showed (the host's clock, ms)].
+	var judge: Array = []
 
 
 func _ready() -> void:
@@ -289,6 +294,7 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 		pad.report_frame = -1
 		pad.report_ahead.clear()
 		pad.report_late.clear()
+		pad.judge.clear()
 		return
 	frame &= 0xff
 	if pad.report_frame < 0:
@@ -323,6 +329,9 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 		pad.views.append([pad.report_run, frame, view])
 		if pad.views.size() > MAX_VIEWS:
 			pad.views.pop_front()
+		pad.judge.append([frame, position, clampi(facing, 0, 3), view])
+		if pad.judge.size() > MAX_VIEWS:
+			pad.judge.pop_front()
 
 
 ## Client [param peer]'s local player [param slot]'s tank has fired

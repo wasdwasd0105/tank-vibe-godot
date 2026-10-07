@@ -287,6 +287,40 @@ func _iron(local: Vector2) -> void:
 	_lm._place_fg_tile(cell, 0x39)
 
 
+## A shell of the enemies' here at [param local] going [param way], touching the
+## players' tanks, their shells and the walls; flying on by itself if
+## [param flies].
+func _enemy_shell(local: Vector2, way: Vector2, flies: bool = false) -> Bullet:
+	var shell: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+	shell.direction = way
+	shell.is_player_bullet = false
+	shell.owner_player = -1
+	shell.collision_lane_offsets = [0.0]
+	shell.visual_lane_offsets = [0.0]
+	shell.set_collision_layer_value(6, true)
+	for layer: int in [1, 3, 5, 8]:
+		shell.set_collision_mask_value(layer, true)
+	_game.get_node("Entities/Bullets").add_child(shell)
+	shell.set_physics_process(flies)
+	shell.global_position = _at(local)
+	return shell
+
+
+## The client's report of its next frame, its tank at [param local] facing
+## [param facing], its screen showing the moment [param view] of the host's
+## world; then the host looks at it for what hits its tank.
+func _judge_report(local: Vector2, facing: Vector2, view: float) -> void:
+	_client_view = view
+	_send_report(local, facing, false, _player.net_override)
+	_player._judge_reported_hits()
+
+
+## The host world [param world] keeps the shells and tanks as they are now, at
+## [param time] (its clock, ms), as it does with each snapshot it sends.
+func _keep_at(world: NetHostWorld, time: float) -> void:
+	world._keep_seen(int(time))
+
+
 func _spawn_enemy(local: Vector2) -> EnemyTank:
 	var e: EnemyTank = load("res://scenes/tanks/enemy_tank.tscn").instantiate()
 	e.tank_type_id = 1
@@ -901,6 +935,283 @@ func _run() -> void:
 	for old: Node in _client_shells():
 		old.queue_free()
 	host_world.queue_free()
+	await tree.physics_frame
+
+	print("\n[D3] What hits its tank: what its screen showed hitting it")
+	var judge_world := NetHostWorld.new()
+	judge_world.setup(_game, _lm, null)
+	_game.add_child(judge_world)
+	_feeding = false
+	_player.set_physics_process(false)  # (the copy stays put: the judging alone)
+	var hp_was := _player.health
+	var memory_was := _player.has_memory_save
+	_player.has_memory_save = true  # (a hit costs it no level: the tests after drive at its speed)
+	_place(home, Vector2.UP)
+	_judge_report(home, Vector2.UP, Time.get_ticks_msec() - 200.0)
+	check(_player.hits_judged_there(), "its screen's moment said with each of its frames: its screen says what hits its tank")
+	# One on its tank where its screen had it: a hit, wherever it is here; once.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	var t_a := Time.get_ticks_msec() - 150.0
+	var struck := _enemy_shell(home + Vector2(0, -30), Vector2.DOWN)
+	var struck_id := struck.get_instance_id()
+	_keep_at(judge_world, t_a)
+	struck.global_position = _at(home + Vector2(0, -24))
+	_keep_at(judge_world, t_a + 34.0)
+	struck.global_position = _at(home + Vector2(0, -330))  # gone on elsewhere here since
+	_place(home + Vector2(40, 0), Vector2.UP)  # the copy, behind its tank there
+	var struck_end := [Vector2.INF]
+	struck.tree_exiting.connect(func() -> void: struck_end[0] = struck.global_position)
+	_judge_report(home, Vector2.UP, t_a)
+	var grace_flag := int(_player.net_state()[3]) & PlayerTank.NET_HIT_GRACE != 0
+	_player.is_invincible = false  # (its grace aside: it's the shell that's judged)
+	_judge_report(home, Vector2.UP, t_a + 17.0)
+	await tree.process_frame
+	check(_player.health == 3,
+		"an enemies' shell on its tank where its screen had it: a hit, the copy here 40 px off, once (%d HP left)" % _player.health)
+	check(struck_end[0].distance_to(_at(home + Vector2(0, -30))) < 0.01,
+		"the shell ends where its screen had them meet (%s)" % str(struck_end[0] - _lm.global_position))
+	check(is_equal_approx(float(judge_world._gone_for.get(PEER, {}).get(struck_id, -1.0)), t_a),
+		"and it's gone for that client from that moment on")
+	check(grace_flag, "its state says it's invincible only for that hit's grace (its client counts that in its own frames)")
+	# One on the copy here, its tank clear of it there: no hit.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_place(home, Vector2.UP)
+	var dodged := _enemy_shell(home + Vector2(0, -20), Vector2.DOWN)
+	await _wait_frames(3)
+	check(is_instance_valid(dodged) and not dodged._destroyed and _player.health == 3,
+		"an enemies' shell on the copy here touches nothing: the copy is behind its tank")
+	judge_world._seen.clear()
+	var t_b := float(Time.get_ticks_msec())
+	_keep_at(judge_world, t_b)
+	_judge_report(home + Vector2(50, 0), Vector2.RIGHT, t_b)
+	check(is_instance_valid(dodged) and not dodged._destroyed and _player.health == 3,
+		"its tank had driven clear of it there: it misses")
+	dodged.queue_free()
+	# Its moon shield, by the way its screen had it facing.
+	_player.apply_addon("moon-shield")
+	var facing_tests := [[Vector2.LEFT, Vector2.UP, 3, "its moon shield's front to the shell as its screen had it facing (the copy here faces left): the shell ends, no damage"],
+		[Vector2.UP, Vector2.LEFT, 2, "its side to it there, though the copy here faces it: a hit"]]
+	for each: Array in facing_tests:
+		_player.is_invincible = false
+		_player._screen_grace_run = -1
+		judge_world._seen.clear()
+		var t_s := Time.get_ticks_msec() - 100.0
+		var at_shield := _enemy_shell(home + Vector2(0, -30), Vector2.DOWN)
+		_keep_at(judge_world, t_s)
+		at_shield.global_position = _at(home + Vector2(0, -330))
+		_keep_at(judge_world, t_s + 34.0)
+		_place(home, each[0])
+		_judge_report(home, each[1], t_s)
+		await tree.process_frame
+		check(_player.health == each[2] and not is_instance_valid(at_shield), each[3])
+	_player._remove_moon_shield()
+	# One gone here already (it ended elsewhere) still hits it, as its screen had
+	# it; and its hit's sound goes out as its tank's, for that client to leave out.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	judge_world._seen.clear()
+	var listener := NetHostWorld.ClientView.new()
+	judge_world._views[PEER] = listener
+	var t_g := Time.get_ticks_msec() - 100.0
+	var vanished := _enemy_shell(home + Vector2(0, -30), Vector2.DOWN)
+	_keep_at(judge_world, t_g)
+	_keep_at(judge_world, t_g + 34.0)
+	vanished.free()
+	_judge_report(home, Vector2.UP, t_g + 10.0)
+	check(_player.health == 3, "one gone here already still hits it, as its screen showed")
+	check(listener.events.has([NetWorld.EV_SOUND, "tank_hit", 0]), "its hit's sound goes out as its tank's")
+	judge_world._views.erase(PEER)
+	# The grace after a hit goes by its screen's frames: a shell its screen shows
+	# on its tank within HIT_GRACE of a hit there is in that grace, though the
+	# grace here has run out (its reports came unevenly); one after it lands,
+	# though the grace here runs on.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	judge_world._seen.clear()
+	var t_r := Time.get_ticks_msec() - 300.0
+	var graced_shells: Array[Bullet] = []
+	for i in 3:
+		graced_shells.append(_enemy_shell(home + Vector2(0, -330), Vector2.DOWN))
+	for i in 3:
+		for each_shell: Bullet in graced_shells:
+			each_shell.global_position = _at(home + Vector2(0, -330))
+		graced_shells[i].global_position = _at(home + Vector2(0, -30))
+		_keep_at(judge_world, t_r + 34.0 * i)
+	_judge_report(home, Vector2.UP, t_r)
+	var hp_first := _player.health
+	_player.is_invincible = false  # (the grace here over already)
+	_client_frame += 9
+	_judge_report(home, Vector2.UP, t_r + 34.0)
+	var hp_graced := _player.health
+	_player.is_invincible = true  # (the grace here still running)
+	_player.invincible_timer = PlayerTank.HIT_GRACE
+	_player._hit_grace_only = true
+	_client_frame += 30
+	_judge_report(home, Vector2.UP, t_r + 68.0)
+	check(hp_first == 3 and hp_graced == 3 and _player.health == 2,
+		"a hit, then another 10 of its frames later in that grace (none), then one 40 frames on (a hit): %d, %d, %d" % [hp_first, hp_graced, _player.health])
+	for each_shell: Bullet in graced_shells:
+		if is_instance_valid(each_shell):
+			each_shell.queue_free()
+	# One its own shot met on its screen a moment later still hit its tank the
+	# moment before, as that screen showed.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	judge_world._seen.clear()
+	var t_m := Time.get_ticks_msec() - 100.0
+	var met_later := _enemy_shell(home + Vector2(0, -30), Vector2.DOWN)
+	_keep_at(judge_world, t_m)
+	met_later.global_position = _at(home + Vector2(0, -330))
+	_keep_at(judge_world, t_m + 34.0)
+	judge_world.mark_gone(PEER, met_later.get_instance_id(), t_m + 30.0)
+	_judge_report(home, Vector2.UP, t_m)
+	check(_player.health == 3, "one its own shot met there a moment later still hit it the moment before")
+	# A report from somewhere this copy couldn't be following: nothing hits it
+	# there. Its screen further behind than the host keeps: the copy here is
+	# what's hit.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	judge_world._seen.clear()
+	var t_far := Time.get_ticks_msec() - 100.0
+	var out_there := _enemy_shell(home + Vector2(200, -30), Vector2.DOWN)
+	_keep_at(judge_world, t_far)
+	_keep_at(judge_world, t_far + 34.0)
+	_judge_report(home + Vector2(200, 0), Vector2.UP, t_far)
+	check(_player.health == 3 and is_instance_valid(out_there) and not out_there._destroyed,
+		"a report from somewhere this copy couldn't be following: nothing hits it there")
+	out_there.queue_free()
+	_judge_report(home, Vector2.UP, Time.get_ticks_msec() - NetHostWorld.SEEN_KEEP_MS)
+	check(not _player.hits_judged_there(), "its screen further behind than the host keeps: the copy here is what's hit")
+	_judge_report(home, Vector2.UP, Time.get_ticks_msec() - 100.0)
+	# One going on through the copy here to a brick behind, before its screen
+	# has shown that moment: the brick waits for that screen.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	judge_world._seen.clear()
+	_place(home, Vector2.UP)
+	var wall_behind := _lm.world_to_tile(_at(home + Vector2(0, 64)))
+	var far_cell := _lm.world_to_tile(_at(home + Vector2(320, 64)))
+	var in_front := _lm.world_to_tile(_at(home + Vector2(0, -64)))
+	var lag := 600.0
+	var effects_box := tree.get_first_node_in_group("effects_container")
+	var from_above := home + Vector2(0, -100)
+	var flights := [
+		[home + Vector2(50, 0), wall_behind, 0b0011, 3, "its tank clear of it there: the brick waits for its screen, then breaks", from_above],
+		[home, wall_behind, 0b1111, 3, "its screen showed it hitting its tank first: a hit, and the brick never breaks", from_above],
+		[home, far_cell, 0b0011, 0, "one nowhere near its tank: its brick breaks at once", home + Vector2(320, -100)],
+		[home, in_front, 0b0011, 0, "one at the brick in front of its tank, the tank behind it: the brick breaks at once", home + Vector2(0, -200)],
+		[home + Vector2(64, 0), in_front, 0b0011, 3, "one at a brick beside its tank's column (it could come round in front): the brick waits, then breaks",
+			home + Vector2(0, -200), home + Vector2(64, 0)],
+		[home + Vector2(50, 0), wall_behind, 0b0011, 1, "its client quiet too long: the brick breaks all the same", from_above]]
+	for each: Array in flights:
+		var cell: Vector2i = each[1]
+		_lm._remove_fg_tile(cell)
+		_lm._brick_damage.erase(cell)
+		_lm._place_fg_tile(cell, 0x19)
+		_player.is_invincible = false
+		_player._screen_grace_run = -1
+		var hp_before := _player.health
+		_place(each[6] if each.size() > 6 else home, Vector2.UP)
+		var flier := _enemy_shell(each[5], Vector2.DOWN, true)
+		var shooter := _spawn_enemy(home + Vector2(-320, -320))
+		shooter.active_bullets = 1
+		flier.owner_tank = shooter
+		var flier_end := [Vector2.INF]
+		flier.tree_exiting.connect(func() -> void: flier_end[0] = flier.global_position)
+		var pictures := [0]
+		var count_pictures := func(_node: Node) -> void: pictures[0] += 1
+		effects_box.child_entered_tree.connect(count_pictures)
+		var waited := -1
+		var frames_waited := 0
+		var shot_back := false
+		var pictured := 0
+		for i in 150:
+			await tree.physics_frame
+			var clock := float(Time.get_ticks_msec())
+			_keep_at(judge_world, clock)
+			_judge_report(each[0], Vector2.UP, clock - lag)
+			if not is_instance_valid(flier):
+				break
+			if flier._parked_end.is_valid():
+				frames_waited += 1
+				if waited < 0:
+					waited = int(_lm._brick_damage.get(cell, -1))
+					shot_back = shooter.active_bullets == 0
+					pictured = pictures[0]
+					if int(each[3]) == 1:
+						flier._parked_since -= Bullet.PARK_MAX_MS + 1  # as if no word came for that long
+		effects_box.child_entered_tree.disconnect(count_pictures)
+		shooter.queue_free()
+		var brick := int(_lm._brick_damage.get(cell, -1))
+		var hit := _player.health < hp_before
+		match int(each[3]):
+			3:
+				check(waited == 0b1111 and brick == each[2] and hit == (each[0] == home), each[4])
+				if each[0] != home:
+					check(shot_back and pictured == 1 and pictures[0] == 1,
+						"gone from sight at once, its end's picture shown then (once), its tank's shot back")
+					check(frames_waited <= int((lag + 150.0) / 1000.0 * Engine.physics_ticks_per_second),
+						"its end came as soon as its screen had shown that moment (%d frames on)" % frames_waited)
+			0:
+				check(waited < 0 and brick == each[2] and not hit, each[4])
+			1:
+				check(waited == 0b1111 and frames_waited <= 2 and brick == each[2], each[4] + " (%d frames on)" % frames_waited)
+		if each[0] == home and cell == wall_behind:
+			check(absf(flier_end[0].y - (_at(home).y - 35.0)) < 6.0,
+				"and it ends where its screen had them meet (%s)" % str(flier_end[0] - _lm.global_position))
+		_lm._remove_fg_tile(cell)  # (what's left of it isn't in the next one's way)
+		_lm._brick_damage.erase(cell)
+	# No reports of its tank there (it doesn't drive one just now): the copy here
+	# is what's hit, as before.
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 4
+	_client_has = false
+	_send_report(home, Vector2.UP, false, 0)
+	_client_has = true
+	check(not _player.hits_judged_there(), "no reports of its tank there just now: the copy here is what's hit")
+	var plain := _enemy_shell(home + Vector2(0, -20), Vector2.DOWN)
+	await _wait_frames(3)
+	check(_player.health == 3 and (not is_instance_valid(plain) or plain._destroyed), "a shell on the copy: a hit, as before")
+	for cell: Vector2i in [wall_behind, far_cell, in_front]:
+		_lm._remove_fg_tile(cell)
+		_lm._brick_damage.erase(cell)
+	# What finishes its tank, so that it goes up where its screen had it: as
+	# much damage as it has health, not on its moon shield's front nor in a blink.
+	var plain_kept := [NetHostWorld.SEEN_SHELL, Vector2.ZERO, Vector2.DOWN, [0.0], false, 1, false, "regular", false]
+	var blast_kept := plain_kept.duplicate()
+	blast_kept[5] = 2
+	blast_kept[7] = "explosion"
+	_player.is_invincible = false
+	_player._screen_grace_run = -1
+	_player.health = 1
+	var finished := _player._finished_by(plain_kept, Vector2.UP)
+	_player.health = 2
+	var spared := not _player._finished_by(plain_kept, Vector2.UP)
+	var by_blast := _player._finished_by(blast_kept, Vector2.UP)
+	_player.health = 1
+	_player.has_moon_shield = true
+	var by_shield := not _player._finished_by(plain_kept, Vector2.UP) and _player._finished_by(plain_kept, Vector2.LEFT)
+	_player.has_moon_shield = false
+	_player.is_invincible = true
+	var by_blink := not _player._finished_by(plain_kept, Vector2.UP)
+	check(finished and spared and by_blast and by_shield and by_blink,
+		"what finishes its tank: a point at 1 HP, not at 2, an explosion's direct hit of 2 at 2; not on its moon shield's front, nor in a blink")
+	_player.health = hp_was
+	_player.has_memory_save = memory_was
+	_player.is_invincible = true
+	_player.invincible_timer = 999.0
+	_player.set_physics_process(true)
+	judge_world.queue_free()
+	_client_view = 0.0
+	_report(home, Vector2.RIGHT, false)
 	await tree.physics_frame
 
 	print("\n[E] A client with its lag compensation off: its keys drive the copy, as before")
@@ -1821,6 +2132,129 @@ func _run() -> void:
 	world._predicted_hits.clear()
 	SoundManager._predicted.clear()
 
+	print("\n[H2] What hits its own tank: shown at once, as the host judges it")
+	world._nodes[5] = _player
+	_player.set_net_predicted(true, 0)
+	_place(home, Vector2.UP)
+	var hp_kept := _player.health
+	var shield_kept := _player.has_moon_shield
+	_player.health = 4
+	_player.is_invincible = false
+	_player.has_moon_shield = false
+	Net.ping_ms = 30.0
+	var end_event := func(at: Vector2) -> Array:
+		return [NetWorld.EV_HIT, "regular", at.x, at.y] if themed else [NetWorld.EV_EXPLOSION, at.x, at.y, 1.0]
+	var fx_before := fx.get_child_count()
+	var incoming := _shown_enemy_shell(world, 130, home + Vector2(0, -30), Vector2.DOWN)
+	world._show_own_hits()
+	check(not incoming.visible and world._guessed_hits.has(incoming.get_instance_id()) and world._predicted_hits.size() == 1
+		and fx.get_child_count() > fx_before,
+		"an enemies' shell on its own tank as shown here: it ends there at once, its end's picture shown")
+	check(SoundManager._predicted.size() == 1 and SoundManager._predicted[0][0] == 0 and SoundManager._predicted[0][1] == &"tank_hit"
+		and _player._damage_flash_timer > 0.3, "a hit it survives: its red flash and its sound at once")
+	var before_word := _player.net_state()
+	before_word[4] = 0.0
+	_player.net_apply(before_word)
+	check(_player._damage_flash_timer > 0.3, "the host's state from before its word of the hit doesn't stop the flash")
+	# The host's word of that hit brings its flash again, after the one here has
+	# ended (a long line): left out, it's the same hit's. A later one of the
+	# host's own flashes.
+	_player._flash_guessed_until = Time.get_ticks_msec()
+	var flashing := _player.net_state()
+	flashing[4] = BaseTank.DAMAGE_FLASH_DURATION
+	_player.net_apply(flashing)
+	check(_player._damage_flash_timer <= 0.0, "the host's flash of that same hit, come after it ended here: left out")
+	flashing[4] = 0.0
+	_player.net_apply(flashing)
+	flashing[4] = BaseTank.DAMAGE_FLASH_DURATION
+	_player.net_apply(flashing)
+	check(_player._damage_flash_timer > 0.3, "the host's flash of a later hit of its own: shown")
+	flashing[4] = 0.0
+	_player.net_apply(flashing)
+	# The host's word: the shell gone, with its end's picture there and its hit's
+	# sound, shown and heard here already; and the picture of its end further on,
+	# where the host had it wait for this screen's word (Bullet._end_with), which
+	# never came here.
+	var at_hit := incoming.global_position
+	var further := at_hit + Vector2.DOWN * 90.0
+	var hit_word := _host_says(world, [130], [end_event.call(at_hit), end_event.call(further), [NetWorld.EV_SOUND, "tank_hit", 0]])
+	var events_left: Array = hit_word.get("events", [])
+	check(world._guessed_hits.is_empty() and events_left.size() == 2 and not events_left.has(end_event.call(further)),
+		"the host's word, the shell gone: settled, and the picture of its end further on left out")
+	var fx_now := fx.get_child_count()
+	for event: Array in events_left:
+		world._play(event)
+	check(fx.get_child_count() == fx_now and SoundManager._predicted.is_empty(),
+		"its end's picture there and its sound, shown and heard already, aren't again")
+	world._despawn(130)
+	# Within its grace after that, another: it ends there, no second sound.
+	var another := _shown_enemy_shell(world, 131, home + Vector2(0, -28), Vector2.DOWN)
+	world._show_own_hits()
+	check(not another.visible and SoundManager._predicted.is_empty(), "another within its grace: it ends there, no sound again")
+	# The host's word not come yet by a moment it would have: still ended here.
+	# A moment past that, the shell still there: it missed, and flies on here.
+	world._guessed_hits[another.get_instance_id()]["until"] = Time.get_ticks_msec() + 1.0e9
+	_host_says(world, [], [])
+	check(not another.visible and world._guessed_hits.size() == 1, "no word yet: still ended here")
+	world._guessed_hits[another.get_instance_id()]["until"] = 0.0
+	var undone_hits := world.guesses_undone
+	_host_says(world, [], [])
+	check(another.visible and world._guessed_hits.is_empty() and world.guesses_undone == undone_hits + 1,
+		"the host's world past when its word would have come, the shell still in it: it missed, on it flies here")
+	world._despawn(131)
+	# The host's invincibility only a hit's grace, over on this machine's frames:
+	# a hit shown at once (the host judges it so too).
+	_player.is_invincible = true
+	_player.net_hit_grace_only = true
+	_player._grace_guessed_frame = Net.reported_frame(0) - 40
+	SoundManager._predicted.clear()
+	var past_grace := _shown_enemy_shell(world, 136, home + Vector2(0, -30), Vector2.DOWN)
+	world._show_own_hits()
+	check(not past_grace.visible and SoundManager._predicted.size() == 1,
+		"its grace over by this machine's frames, the host's flag only that grace's: a hit, shown at once")
+	world._despawn(136)
+	world._guessed_hits.clear()
+	SoundManager._predicted.clear()
+	_player.is_invincible = false
+	_player.net_hit_grace_only = false
+	_player._grace_guessed_frame = -100000
+	_player._flash_guessed_until = 0
+	# Not shown at once: a shell meeting it by a hair (left to the host's word);
+	# and while shown further behind the host than it looks back.
+	var reach_y := Bullet.box_half(Vector2.DOWN, [0.0]).y + BaseTank.HITBOX_SIZE * 0.5
+	var hair := _shown_enemy_shell(world, 132, home + Vector2(0, -(reach_y - 0.3)), Vector2.DOWN)
+	world._show_own_hits()
+	check(hair.visible and world._guessed_hits.is_empty(), "one meeting it by a hair: the host's word to say")
+	world._despawn(132)
+	Net.ping_ms = NetClientWorld.HIT_GUESS_MAX_LAG_MS
+	var far_behind_hit := _shown_enemy_shell(world, 133, home + Vector2(0, -30), Vector2.DOWN)
+	world._show_own_hits()
+	check(far_behind_hit.visible and world._guessed_hits.is_empty(), "shown further behind the host than it looks back: its word to say")
+	Net.ping_ms = 30.0
+	world._despawn(133)
+	# Ended here, without a flash or sound: on its moon shield's front, or a
+	# fatal hit (the explosion is the host's word to show).
+	_player.has_moon_shield = true
+	var on_shield := _shown_enemy_shell(world, 134, home + Vector2(0, -30), Vector2.DOWN)
+	world._show_own_hits()
+	check(not on_shield.visible and SoundManager._predicted.is_empty() and _player._flash_guessed_until <= Time.get_ticks_msec(),
+		"on its moon shield's front: it ends there, no flash, no sound")
+	_player.has_moon_shield = false
+	world._despawn(134)
+	_player.health = 1
+	var fatal := _shown_enemy_shell(world, 135, home + Vector2(0, -30), Vector2.DOWN)
+	world._show_own_hits()
+	check(not fatal.visible and SoundManager._predicted.is_empty(), "a fatal one: it ends there; its explosion is the host's word")
+	world._despawn(135)
+	world._guessed_hits.clear()
+	world._predicted_hits.clear()
+	SoundManager._predicted.clear()
+	_player._flash_guessed_until = 0
+	_player.health = hp_kept
+	_player.has_moon_shield = shield_kept
+	_player.is_invincible = true
+	world._nodes.erase(5)
+
 	print("\n[I] How far behind the host the world is shown (SMOOTHING)")
 	var spacing := 1000.0 * NetHostWorld.SEND_EVERY / Engine.physics_ticks_per_second
 	var calm: Array[float] = []
@@ -1866,6 +2300,32 @@ func _run() -> void:
 	check(menu._player_line(5) == "CLIENTA   ·   DRIVING P2   ·   84 ms", "then the trip there and back: %s" % menu._player_line(5))
 	Net.peers.erase(5)
 	PlayerInput.reset_to_local()
+
+	print("\n[K] A hit its screen showed finishing its tank: it goes up where that screen had it")
+	# (Last: the tank is gone after it.)
+	PlayerInput.set_remote(PEER, 0, -1, [false, false], [0, 0])
+	PlayerInput.set_seat(0, PlayerInput.controller_key(PEER, 0))
+	var last_world := NetHostWorld.new()
+	last_world.setup(_game, _lm, null)
+	_game.add_child(last_world)
+	_feeding = false
+	_player.set_physics_process(false)
+	_player._host_drives = false
+	_player.is_invincible = false
+	_player.has_moon_shield = false
+	_player.health = 1
+	_place(home, Vector2.UP)
+	var t_k := Time.get_ticks_msec() - 100.0
+	var fatal_shell := _enemy_shell(home + Vector2(40, -30), Vector2.DOWN)
+	_keep_at(last_world, t_k)
+	fatal_shell.global_position = _at(home + Vector2(40, -330))
+	_keep_at(last_world, t_k + 34.0)
+	var went_up := [Vector2.INF]
+	_player.tree_exiting.connect(func() -> void: went_up[0] = _player.global_position)
+	_judge_report(home + Vector2(40, 0), Vector2.UP, t_k)
+	await tree.process_frame
+	check(went_up[0].distance_to(_at(home + Vector2(40, 0))) < 0.01,
+		"finished where its screen had it, 40 px from the copy here (%s)" % str(went_up[0] - _lm.global_position))
 
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

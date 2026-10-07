@@ -38,8 +38,9 @@ enum Role { OFFLINE, HOST, CLIENT }
 ## How a host takes its players: TCP (a WebSocket) or UDP (ENet).
 enum Transport { TCP, UDP }
 
-## Bump when the messages change: a host only lets in its own protocol.
-const PROTOCOL := 7
+## Bump when the messages change, or what either side makes of them: a host
+## only lets in its own protocol.
+const PROTOCOL := 8
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -919,6 +920,14 @@ func report_tank(slot: int, position: Vector2, facing: int, moving: bool, overri
 		return
 	_tank_reports[slot] = {"position": position, "facing": facing, "moving": moving, "override": override,
 			"frame": Engine.get_physics_frames()}
+
+
+## Client: the physics frame of local slot [param slot]'s tank's latest report
+## (report_tank): what the host judges this machine's screen by, frame by frame.
+func reported_frame(slot: int) -> int:
+	if slot < 0 or slot > 1 or _tank_reports[slot].is_empty():
+		return Engine.get_physics_frames()
+	return int(_tank_reports[slot]["frame"])
 
 
 ## Client: local slot [param slot]'s tank fired a shot here at once with fire

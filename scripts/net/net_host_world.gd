@@ -4,9 +4,10 @@ extends Node
 ## Thirty times a second it gathers every replicated entity, the map cells that
 ## changed, the game state and the events since, and sends each client what
 ## that client doesn't have yet: all of it to a client new to this world, only
-## the changes to one already following it. It keeps the last second of the
-## tanks and shells it sent, so a client's own shots are judged by what that
-## client's screen showed as they flew (seen_at; Bullet._meet_as_seen).
+## the changes to one already following it. It keeps the last second and a half
+## of the tanks and shells it sent, so a client's own shots, and the enemies'
+## shells reaching its own tank, are judged by what that client's screen showed
+## (seen_at; Bullet._meet_as_seen, PlayerTank._judge_reported_hits).
 ##
 ## Flow control: a client that hasn't acknowledged the snapshots sent it in the
 ## last MAX_UNACKED sends, or whose connection still has MAX_PENDING bytes
@@ -21,13 +22,15 @@ const MAX_PENDING := 48 * 1024
 ## a client that far behind would only play them late.
 const MAX_QUEUED_EVENTS := 256
 ## How long back the host keeps the tanks and shells it sent (seen_at), ms: a
-## client's own shots are judged by what its screen showed, and a screen can be
-## that far behind (a trip, its smoothing, a shot held up here).
-const SEEN_KEEP_MS := 1000.0
+## client's own shots, and what reaches its own tank, are judged by what its
+## screen showed, and a screen can be that far behind (a trip, its smoothing, a
+## shot held up here).
+const SEEN_KEEP_MS := 1500.0
 ## What's kept of each (seen_at): a tank's [SEEN_TANK, where, facing, solid (it
 ## can be hit), its moon shield on, health, an enemy's, blinking (an item's
 ## invulnerability)], a shell's [SEEN_SHELL, where, way, collision lanes, a
-## player's, damage, fire or explosion (it goes on meeting anything)].
+## player's, damage, fire or explosion (it goes on meeting anything), its look
+## (visual style), drills (AP)].
 const SEEN_TANK := 0
 const SEEN_SHELL := 1
 
@@ -51,9 +54,11 @@ var _views: Dictionary = {}   # peer id -> ClientView
 ## The tanks and shells as each snapshot had them, oldest first, SEEN_KEEP_MS
 ## of them: [the snapshot's time (its SNAP_TIME), {instance id: what's kept}].
 var _seen: Array = []
-## Per client (peer id): the tanks and shells its own shots, judged by what its
-## screen showed, have finished (instance id -> true). Its screen shows them gone
-## at once, so its later shots aren't judged to meet them.
+## Per client (peer id): the tanks and shells its screen shows gone at once,
+## finished by its own shots or ended on its own tank, judged by what that
+## screen showed (instance id -> the moment of this world from which they're
+## gone there, the host's clock; 0 all along). Its later shots aren't judged to
+## meet them, nor its tank to be hit by them.
 var _gone_for: Dictionary = {}
 var _seen_asked: Array = []
 var _seen_answer: Array = []
@@ -201,7 +206,7 @@ func _keep_seen(now: int) -> void:
 			var shell := node as Bullet
 			kept[shell.get_instance_id()] = [SEEN_SHELL, shell.global_position, shell.direction,
 					shell.collision_lane_offsets, shell.is_player_bullet, shell.damage,
-					shell.ignites_ground or shell.explodes]
+					shell.ignites_ground or shell.explodes, shell.visual_style, shell.pierces]
 	_seen.append([float(now), kept])
 	while _seen.size() > 2 and now - float(_seen[1][0]) > SEEN_KEEP_MS:
 		_seen.pop_front()
@@ -219,7 +224,7 @@ func _keep_seen(now: int) -> void:
 ## [param time] (the host's clock, ms; <= 0: as the newest snapshot had them),
 ## worked out as that client does between the two snapshots around it
 ## (NetClientWorld._glide: the places glide, the rest as the earlier one had it),
-## less those its own shots have finished (mark_gone). Further back than what's
+## less those its screen shows gone by then (mark_gone). Further back than what's
 ## kept, as the oldest had them. [[instance id, what's kept (SEEN_TANK,
 ## SEEN_SHELL)], ...].
 func seen_at(time: float, peer: int) -> Array:
@@ -241,7 +246,7 @@ func seen_at(time: float, peer: int) -> Array:
 		var weight := clampf((time - float(_seen[at][0])) / span, 0.0, 1.0) if span > 0.0 and time > 0.0 else 0.0
 		var gone: Dictionary = _gone_for.get(peer, {})
 		for id: int in before:
-			if gone.has(id):
+			if gone.has(id) and (time <= 0.0 or time >= float(gone[id])):
 				continue
 			var kept: Array = before[id]
 			if after.has(id) and weight > 0.0:
@@ -253,13 +258,14 @@ func seen_at(time: float, peer: int) -> Array:
 	return out
 
 
-## Client [param peer]'s own shot, judged by what its screen showed, has
-## finished tank or shell [param id]: its screen shows it gone at once, so its
-## later shots don't meet it.
-func mark_gone(peer: int, id: int) -> void:
+## Client [param peer]'s screen shows tank or shell [param id] gone at once from
+## the moment [param from] of this world (the host's clock; 0 all along): its
+## own shot finished it, or it ended on its own tank, judged by what that screen
+## showed. So its later shots don't meet it, nor does it hit its tank after.
+func mark_gone(peer: int, id: int, from: float = 0.0) -> void:
 	if not _gone_for.has(peer):
 		_gone_for[peer] = {}
-	_gone_for[peer][id] = true
+	_gone_for[peer][id] = minf(from, float(_gone_for[peer].get(id, from)))
 	_seen_asked = []
 
 

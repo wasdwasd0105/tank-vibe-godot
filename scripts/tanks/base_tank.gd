@@ -757,7 +757,17 @@ func take_damage() -> void:
 	else:
 		# The original only sounded a hit the tank actually survived; a fatal
 		# hit is covered by the destruction sound instead.
-		SoundManager.play(&"tank_hit")
+		SoundManager.play(&"tank_hit", _hit_sound_tank())
+
+## Online: whose tank the hit sound is (a player's number), or -1.
+func _hit_sound_tank() -> int:
+	return -1
+
+## Online, on a client: how long the tank flashes red, from the host's state
+## of it, [param host] (PlayerTank keeps a hit it showed at once, and leaves out
+## the host's flash of that same hit).
+func _shown_flash(host: float) -> float:
+	return host
 
 func destroy() -> void:
 	_spawn_explosion()
@@ -850,7 +860,7 @@ func net_apply(state: Array) -> void:
 	if is_flying and sprite:
 		sprite.scale = _fly_base_sprite_scale * (1.0 + float(state[5]))
 		sprite.rotation = _fly_base_rotation + float(state[6]) * TAU / 256.0
-	var flash := float(state[4])
+	var flash := _shown_flash(float(state[4]))
 	if flash <= 0.0 and _damage_flash_timer > 0.0 and sprite:
 		sprite.modulate = Color.WHITE
 	_damage_flash_timer = flash

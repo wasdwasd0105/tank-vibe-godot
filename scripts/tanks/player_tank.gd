@@ -167,6 +167,36 @@ var _played: Array = []
 var _client_shot: Array = []
 ## Client: the fire button of the shot being fired just now (_predict_fire).
 var _firing_button := 0
+## Host: the latest moment of the host's world (its clock, ms) that the screen
+## of the client driving this tank has been judged for (_judge_reported_hits):
+## the enemies' shells it may yet show hitting it wait for that
+## (Bullet._end_with).
+var judged_view := 0.0
+## Host: a shell of the enemies' is noted as maybe on this tank as its client's
+## screen will show it (may_be_met_there) this much further out than the way the
+## tank can drive meanwhile: a turn's snap to the grid.
+const MEET_SPARE := HALF_TILE
+## Host: the frame of the client driving this tank (and the run of its reports)
+## in which a hit its screen showed started the tank's grace
+## (_judge_reported_hits): another hit its screen shows within HIT_GRACE of that,
+## by its own frames, is in that grace, whenever the reports come here; one after
+## it isn't. And whether this tank's invincibility here is no more than a hit's
+## grace (lift_hit_grace).
+var _screen_grace_frame := 0
+var _screen_grace_run := -1
+var _hit_grace_only := false
+## Client: a hit this machine's own tank survives, shown here at once
+## (NetClientWorld._show_own_hits): its red flash till then (msec), and the
+## physics frame its grace began in, as the host judges it (by the frames this
+## machine reports, _judge_reported_hits); and those hits whose flash the
+## host's word is still to bring (msec each, oldest first), which it then
+## doesn't start again (_shown_flash). One owed this long goes unpaid.
+var _flash_guessed_until := 0
+var _grace_guessed_frame := -100000
+var _flashes_owed: Array[int] = []
+var _host_flash_was := 0.0
+var _host_flash_left_out := false
+const FLASH_OWED_MS := 1500
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
 ## host by the trip there, and the host's copy follows it.
@@ -222,6 +252,7 @@ func _physics_process(delta: float) -> void:
 		if is_net_driving():
 			_predict()
 		return  # the host drives every other tank; this one only shows it
+	_judge_reported_hits()
 	if is_materializing:
 		velocity = Vector2.ZERO
 		_take_over()
@@ -479,10 +510,138 @@ func _shooter_report() -> Array:
 			report = pad.reports[-1]
 	if report.is_empty():
 		return []
-	var reach := move_speed * (PLAY_BEHIND_MAX + PLAY_CARRY) * get_physics_process_delta_time() + HALF_TILE
-	if int(report[4]) != net_override or (report[1] as Vector2).distance_to(global_position) > reach:
+	if int(report[4]) != net_override or (report[1] as Vector2).distance_to(global_position) > _report_reach():
 		return []
 	return report
+
+## Host: how far from this copy a report of the client driving it can be: the
+## playback is never further behind it, nor past it, than this.
+func _report_reach() -> float:
+	return move_speed * (PLAY_BEHIND_MAX + PLAY_CARRY) * get_physics_process_delta_time() + HALF_TILE
+
+## Host: the screen of the client driving this tank says which of the enemies'
+## shells hit it (_judge_reported_hits), not this copy (Bullet._on_body_entered
+## lets it be): that client runs it itself (its lag compensation on), reports
+## where, with the moment of this world its screen showed, not further back
+## than what's kept of it (NetHostWorld.SEEN_KEEP_MS), and the host isn't
+## driving it just now.
+func hits_judged_there() -> bool:
+	if Net.is_client() or NetHostWorld.active == null or not PlayerInput.remote_predicts(player_id):
+		return false
+	if _host_drives or is_materializing or is_flying or is_queued_for_deletion():
+		return false
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.report_frame < 0 or pad.views.is_empty():
+		return false
+	return Time.get_ticks_msec() - float(pad.views[-1][2]) < NetHostWorld.SEEN_KEEP_MS - 100.0
+
+## Host: the client driving this tank, its frames as they come: the enemies'
+## shells its screen had on its tank in each (where it said its tank was, at the
+## moment of this world it said its screen showed: NetHostWorld.seen_at) hit
+## it, as they would here (Bullet.hit_seen_tank), each once, its facing there
+## saying whether its moon shield took it. Its screen shows them ending there at
+## once (NetClientWorld._show_own_hits) and gone after, for its own shots too
+## (NetHostWorld.mark_gone). So a shell it dodged on its screen misses it, and
+## one it drove into hits it, however far behind its tank this copy is: the
+## popular shooters favor the shooter; this favors the player, the enemies
+## being the machine's.
+func _judge_reported_hits() -> void:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.judge.is_empty():
+		return
+	var world := NetHostWorld.active
+	var judging := hits_judged_there()
+	var peer := PlayerInput.controller_peer(PlayerInput.seats[player_id])
+	while not pad.judge.is_empty():
+		var said: Array = pad.judge.pop_front()
+		var view := float(said[3])
+		judged_view = maxf(judged_view, view)
+		if not judging or health <= 0 or is_queued_for_deletion():
+			continue
+		var at: Vector2 = said[1]
+		if at.distance_to(global_position) > _report_reach():
+			continue  # nowhere this copy could be following
+		var met: Array = []
+		for seen: Array in world.seen_at(view, peer):
+			var kept: Array = seen[1]
+			if int(kept[0]) == NetHostWorld.SEEN_SHELL and not bool(kept[4]) \
+					and Bullet.touches_tank(kept[1], kept[2], kept[3], at):
+				met.append(seen)
+		var facing: Vector2 = FACINGS[int(said[2])]
+		var frame := int(said[0])
+		for seen: Array in met:
+			world.mark_gone(peer, int(seen[0]), view)
+			var graced := _screen_grace_run == pad.report_run \
+					and frame - _screen_grace_frame < roundi(HIT_GRACE * Engine.physics_ticks_per_second)
+			if not graced:
+				lift_hit_grace()  # (over on its screen, if it's still running here)
+				if _finished_by(seen[1], facing):
+					global_position = at  # it goes up where its screen had it
+			var was := health
+			Bullet.hit_seen_tank(seen, self, facing, graced)
+			if health <= 0 or is_queued_for_deletion():
+				break
+			if health < was:
+				_screen_grace_frame = frame  # its grace, as its screen has it
+				_screen_grace_run = pad.report_run
+
+## Host: ends this tank's invincibility here if it's no more than the grace
+## after a hit: the screen of the client driving it, which judges what hits it,
+## has that grace over by now (_judge_reported_hits).
+func lift_hit_grace() -> void:
+	if is_invincible and _hit_grace_only:
+		is_invincible = false
+		invincible_timer = 0.0
+		_hit_grace_only = false
+		_sync_wreath()
+
+## Host: whether the enemies' shell [param kept] (as NetHostWorld.seen_at keeps
+## it) finishes this tank, facing [param facing]: not on its moon shield's
+## front, nor while it blinks, and with as much damage as it has health (a
+## direct hit's for an explosion shell, its pool for an AP shell).
+func _finished_by(kept: Array, facing: Vector2) -> bool:
+	if is_invincible or (has_moon_shield and (kept[2] as Vector2).dot(facing) < 0.0):
+		return false
+	var damage := int(kept[5]) if bool(kept[8]) or str(kept[7]) == "explosion" else 1
+	return damage >= health
+
+## Host: whether a shell at [param at] going [param way] on [param lanes] may be
+## on this tank as the screen of the client driving it will show the moment
+## [param now] of this world (the host's clock, ms): within the way it can drive
+## from where it said it was in its newest frame, in the time between the
+## moment that frame showed and this one (and MEET_SPARE); or on this copy.
+func may_be_met_there(at: Vector2, way: Vector2, lanes: Array, now: float) -> bool:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.reports.is_empty() or pad.views.is_empty():
+		return false
+	var since := maxf(now - float(pad.views[-1][2]), 0.0) / 1000.0 * Engine.time_scale
+	var reach := Bullet.box_half(way, lanes) + Vector2.ONE * (HITBOX_SIZE * 0.5 + move_speed * since + MEET_SPARE)
+	for center: Vector2 in [pad.reports[-1][1], global_position]:
+		var offset := center - at
+		if absf(offset.x) < reach.x and absf(offset.y) < reach.y:
+			return true
+	return false
+
+## Host: whether a shell of the enemies' going [param way] that ends at walls
+## [param walls] (cells of [param level_manager]'s) at [param end_at] can't
+## have met this tank on its client's screen on its way: the tank, where that
+## client last said it was and as this copy, is on the far side of them, in
+## their way, so it couldn't have come round in front of them.
+func walled_off(end_at: Vector2, way: Vector2, walls: Array[Vector2i], level_manager: LevelManager) -> bool:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.reports.is_empty() or level_manager == null:
+		return false
+	var across := Vector2(absf(way.y), absf(way.x))
+	for center: Vector2 in [pad.reports[-1][1], global_position]:
+		if (center - end_at).dot(way) <= HITBOX_SIZE * 0.5:
+			return false  # not past where it ends
+		var in_way := false
+		for cell: Vector2i in walls:
+			in_way = in_way or absf((level_manager.tile_to_world(cell) - center).dot(across)) \
+					< (HITBOX_SIZE + LevelManager.TILE_SIZE) * 0.5
+		if not in_way:
+			return false
+	return true
 
 ## Host: the client driving this tank doesn't run it ahead (its lag
 ## compensation is off): its keys drive it here as they come, as they did
@@ -964,6 +1123,7 @@ func _sink_if_stranded_on_water() -> void:
 		destroy()  # sank — no boat on water
 
 func _activate_invincibility(duration: float) -> void:
+	_hit_grace_only = false
 	is_invincible = true
 	invincible_timer = maxf(invincible_timer, duration)
 	_sync_wreath()
@@ -1110,10 +1270,15 @@ func _rumble(pattern: Array[float]) -> void:
 # --- Online (see BaseTank's net_state) ---
 
 ## Past the base's flags: invincible (it blinks), showing the helmet's wreath,
-## and slowed by a mine (a client driving it drives slow too).
+## slowed by a mine (a client driving it drives slow too), and invincible only
+## for the grace after a hit (which the client driving it judges by its own
+## frames, as the host does: NetClientWorld._guess_hit).
 const NET_INVINCIBLE := NET_OWN_FLAGS
 const NET_WREATH := NET_OWN_FLAGS << 1
 const NET_SLOWED := NET_OWN_FLAGS << 2
+const NET_HIT_GRACE := NET_OWN_FLAGS << 3
+## Client: the host's invincibility for this tank is only a hit's grace.
+var net_hit_grace_only := false
 ## Past the base's state: the host's net_override.
 const NET_OVERRIDE_AT := 9
 
@@ -1136,6 +1301,8 @@ func net_state() -> Array:
 		flags |= NET_WREATH
 	if is_mine_slowed:
 		flags |= NET_SLOWED
+	if is_invincible and _hit_grace_only:
+		flags |= NET_HIT_GRACE
 	state[3] = flags
 	state.append(net_override)
 	return state
@@ -1144,6 +1311,7 @@ func net_apply(state: Array) -> void:
 	super.net_apply(state)
 	var flags := int(state[3])
 	is_invincible = flags & NET_INVINCIBLE != 0
+	net_hit_grace_only = flags & NET_HIT_GRACE != 0
 	# The wreath shows while more than WREATH_MIN_LEFT is left; the host says
 	# when, so the clock here only has to sit on the right side of it.
 	_helmet_invincible = flags & NET_WREATH != 0
@@ -1192,8 +1360,50 @@ func take_damage() -> void:
 	_rumble(HIT_RUMBLE)  # a fatal hit's destroy() takes over with the big one
 	super.take_damage()  # reduces health + triggers the shared damage flash
 	if health > 0 and not is_flying:
+		var longer := is_invincible and invincible_timer > HIT_GRACE  # (a helmet's, say, runs on)
 		_hit_grace_frame = Engine.get_process_frames()
 		_activate_invincibility(HIT_GRACE)
+		_hit_grace_only = not longer
+
+## The hit's sound is this player's tank's: the client driving it, having shown
+## the hit at once (guess_hit_here), leaves the host's out.
+func _hit_sound_tank() -> int:
+	return player_id
+
+## Client: a shell of the enemies' met this machine's own tank as this screen
+## shows it in its physics frame [param frame], a hit it survives, which the
+## host judges by what this screen shows (NetClientWorld._show_own_hits): its
+## red flash and its sound at once, and the grace after it, as the host's word
+## will have them. Its damage and the rumble come with that word.
+func guess_hit_here(frame: int) -> void:
+	var now := Time.get_ticks_msec()
+	_flash_guessed_until = now + int(DAMAGE_FLASH_DURATION * 1000.0)
+	_grace_guessed_frame = frame
+	_damage_flash_timer = DAMAGE_FLASH_DURATION
+	_flashes_owed.append(now)
+	SoundManager.play_predicted(&"tank_hit", player_id)
+
+## Client: in its physics frame [param frame], within the grace after a hit
+## shown here at once (guess_hit_here), counted in frames as the host does.
+func in_guessed_grace(frame: int) -> bool:
+	return frame - _grace_guessed_frame < roundi(HIT_GRACE * Engine.physics_ticks_per_second)
+
+## Client: the host's flash of a hit shown here at once already (the host's
+## state starting a flash with one owed) is left out, and a flash shown here at
+## once runs on whatever the host's state says meanwhile.
+func _shown_flash(host: float) -> float:
+	var now := Time.get_ticks_msec()
+	if host > _host_flash_was + 0.05:
+		while not _flashes_owed.is_empty() and now - _flashes_owed[0] > FLASH_OWED_MS:
+			_flashes_owed.pop_front()
+		_host_flash_left_out = not _flashes_owed.is_empty()
+		if _host_flash_left_out:
+			_flashes_owed.pop_front()
+	elif host <= 0.0:
+		_host_flash_left_out = false
+	_host_flash_was = host
+	var guessed := maxf(float(_flash_guessed_until - now), 0.0) / 1000.0
+	return maxf(0.0 if _host_flash_left_out else host, guessed)
 
 func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
 	if not is_flying:

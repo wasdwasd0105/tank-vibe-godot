@@ -53,6 +53,18 @@ const SURE_INSIDE := 4.0
 ## smoothing), the host may not look back as far as this machine's screen
 ## (NetHostWorld.SEEN_KEEP_MS, less a shot held up there): no guess.
 const GUESS_MAX_LAG_MS := 700.0
+## A shell of the enemies' shown meeting this machine's own tank by this much
+## (px, on both axes) is a hit for sure (_show_own_hits): the host looks at what
+## this machine shows to within a hair.
+const SURE_HIT := 0.5
+## The host's word of such a hit comes within the trip there and back and this
+## long (ms) on its clock: a snapshot of a later moment still with that shell
+## in it says it missed (_settle_guesses).
+const HIT_WORD_MS := 150.0
+## Shown further behind the host than this (the trip there and back and the
+## smoothing), the host may not judge its hits by this screen (it looks back
+## NetHostWorld.SEEN_KEEP_MS, less 100 ms): none shown at once.
+const HIT_GUESS_MAX_LAG_MS := NetHostWorld.SEEN_KEEP_MS - 300.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -118,6 +130,11 @@ var _walls_guessed := 0
 ## Items this machine's own tanks took here at once (predict_pickups), till the
 ## host's word: cookie instance id -> {"nid", "type", "at" where, "msec"}.
 var _guessed_pickups: Dictionary = {}
+## The enemies' shells shown ending on this machine's own tanks at once
+## (_show_own_hits), till the host's word: shell instance id -> {"nid", "at"
+## where, "way" it went, "lanes" it hits on, "style" its look, "until" the
+## host's clock by which that word comes, "msec"}.
+var _guessed_hits: Dictionary = {}
 
 
 func _init() -> void:
@@ -239,6 +256,8 @@ func _process(delta: float) -> void:
 	_take_own_tanks()
 	_glide(render)
 	Net.client_view_time = _view_time(render) if _started else 0.0
+	if _started:
+		_show_own_hits()
 	_fly_own_shells()
 	for id: int in _guessed_kills:
 		var gone := instance_from_id(id) as Node2D
@@ -379,6 +398,7 @@ func _clear() -> void:
 	_guessed_clashes.clear()
 	_guessed_walls.clear()
 	_guessed_pickups.clear()
+	_guessed_hits.clear()
 	_game.clear()
 
 
@@ -727,13 +747,8 @@ func clash(shell: Bullet, theirs: Bullet, damage: int, end: Vector2) -> void:
 ## A guess of what own [param shell], ending at [param end], did to
 ## [param target] (guess_kill, clash), for _settle_guesses.
 func _guess(target: Node, shell: Bullet, end: Vector2) -> Dictionary:
-	var nid := 0
-	for key: int in _nodes:
-		if _nodes[key] == target:
-			nid = key
-			break
-	return {"nid": nid, "owner": shell.owner_player, "shot": shell.net_shot, "end": end, "way": shell.direction,
-			"msec": Time.get_ticks_msec()}
+	return {"nid": _nid_of(target), "owner": shell.owner_player, "shot": shell.net_shot, "end": end,
+			"way": shell.direction, "msec": Time.get_ticks_msec()}
 
 
 ## How far an AP shell of this machine's own gets, drilling on as the host's
@@ -930,6 +945,96 @@ func _show_own_pickups(snapshot: Dictionary) -> void:
 	snapshot["events"] = events
 
 
+## The enemies' shells shown here meeting this machine's own tanks. The host
+## judges what hits those by what this machine shows (PlayerTank's
+## _judge_reported_hits), so each hit shows at once, rather than a trip and the
+## smoothing later: the shell ends there, its end's picture shown, and a hit the
+## tank survives flashes it red with its sound (_guess_hit). Its damage, a fatal
+## hit's explosion and the rumble come with the host's word, which settles it
+## (_settle_guesses). Not a meeting by a hair (SURE_HIT), nor while shown
+## further behind the host than it judges this screen's hits by
+## (HIT_GUESS_MAX_LAG_MS).
+func _show_own_hits() -> void:
+	if Net.ping_ms + _delay_ms > HIT_GUESS_MAX_LAG_MS:
+		return
+	var shells := _shown_enemy_shells()
+	if shells.is_empty():
+		return
+	for node: Variant in _nodes.values():
+		if not is_instance_valid(node) or not node is PlayerTank or not (node as PlayerTank).is_net_driving():
+			continue
+		var tank := node as PlayerTank
+		for theirs: Bullet in shells:
+			if not theirs.visible:
+				continue  # ended on the other tank of this machine's
+			var reach := Bullet.box_half(theirs.direction, theirs.collision_lane_offsets) \
+					+ Vector2.ONE * (BaseTank.HITBOX_SIZE * 0.5 - SURE_HIT)
+			var off := tank.global_position - theirs.global_position
+			if absf(off.x) < reach.x and absf(off.y) < reach.y:
+				_guess_hit(tank, theirs)
+
+
+## Shell [param theirs] of the enemies' ends on this machine's own
+## [param tank] here at once (_show_own_hits): hidden, its end's picture shown
+## (the host's, when it comes, isn't shown again: _seen_here), and if it's a hit
+## the tank survives as shown here, its red flash and sound
+## (PlayerTank.guess_hit_here): not on a moon shield's front, nor in a blink
+## (the grace after a hit counted in this machine's frames, as the host counts
+## it), nor a fatal one (the explosion is the host's word to show), nor an AP
+## shell's (its pool left is the host's to know).
+func _guess_hit(tank: PlayerTank, theirs: Bullet) -> void:
+	theirs.visible = false
+	predict_hit(theirs, theirs.global_position)
+	_guessed_hits[theirs.get_instance_id()] = {"nid": _nid_of(theirs), "at": theirs.global_position,
+			"way": theirs.direction, "lanes": theirs.collision_lane_offsets.duplicate(), "style": theirs.visual_style,
+			"until": Time.get_ticks_msec() + _clock_offset + Net.ping_ms + HIT_WORD_MS, "msec": Time.get_ticks_msec()}
+	var frame := Net.reported_frame(tank.net_slot)
+	var invincible := tank.is_invincible and not tank.net_hit_grace_only
+	if theirs.pierces or invincible or tank.in_guessed_grace(frame) \
+			or (tank.has_moon_shield and theirs.direction.dot(tank.current_direction) < 0.0):
+		return
+	var damage := theirs.damage if theirs.visual_style == "explosion" else 1
+	if damage < tank.health:
+		tank.guess_hit_here(frame)
+
+
+## A shell of the enemies' shown ending on this machine's own tank here
+## ([param hit], _guessed_hits) has gone from the host's world in
+## [param snapshot]. The host may have had it end further on its way, waiting
+## for this machine's word (Bullet._end_with): that end's picture never came on
+## this screen, so it's left out.
+func _drop_ends_past(hit: Dictionary, snapshot: Dictionary) -> void:
+	var way: Vector2 = hit["way"]
+	var across := Vector2(absf(way.y), absf(way.x))
+	var span := 0.0
+	for lane: float in hit["lanes"]:
+		span = maxf(span, absf(lane))
+	var rest: Array = []
+	for event: Array in snapshot["events"]:
+		var at := Vector2.INF
+		match int(event[0]):
+			NetWorld.EV_HIT:
+				if str(event[1]) == str(hit["style"]):
+					at = Vector2(event[2], event[3])
+			NetWorld.EV_EXPLOSION:
+				if is_equal_approx(float(event[3]), 1.0):
+					at = Vector2(event[1], event[2])
+		if at != Vector2.INF:
+			var off: Vector2 = at - (hit["at"] as Vector2)
+			if off.dot(way) > PREDICTED_HIT_NEAR and absf(off.dot(across)) <= span + 1.0:
+				continue
+		rest.append(event)
+	snapshot["events"] = rest
+
+
+## The host's entity number of [param node] shown here, or 0.
+func _nid_of(node: Node) -> int:
+	for key: int in _nodes:
+		if _nodes[key] == node:
+			return key
+	return 0
+
+
 ## One of this machine's own shells reached enemy [param tank] here: if the
 ## host's word that it has gone comes soon (OWN_HIT_MS), it goes at once
 ## (_show_own_kills).
@@ -996,8 +1101,22 @@ func _show_heard_kills() -> void:
 ## (_show_own_kills took a tank). One still there shows again when the host's
 ## shell that was to finish it has gone, or has been seen past where it ended
 ## here (GUESS_PAST), or (never seen, gone at once) a later shot's has come;
-## so does one with no word either way in GUESS_MAX_MS.
+## so does one with no word either way in GUESS_MAX_MS. So do the walls and
+## items guessed here (predict_wall, predict_pickups), and the enemies' shells
+## shown ending on this machine's own tanks (_show_own_hits): one gone is
+## settled, one still there in a snapshot of a moment its word would have come
+## by (or after GUESS_MAX_MS) flies on.
 func _settle_guesses(snapshot: Dictionary) -> void:
+	for id: int in _guessed_hits.keys():
+		var hit: Dictionary = _guessed_hits[id]
+		var shell := instance_from_id(id) as Bullet
+		if shell == null or not _nodes.has(int(hit["nid"])) or int(hit["nid"]) in snapshot["removed"]:
+			_guessed_hits.erase(id)  # gone, as guessed
+			_drop_ends_past(hit, snapshot)
+		elif float(snapshot["time"]) > float(hit["until"]) or Time.get_ticks_msec() - int(hit["msec"]) > GUESS_MAX_MS:
+			_guessed_hits.erase(id)
+			shell.visible = true
+			guesses_undone += 1
 	if not _guessed_walls.is_empty():
 		var heard := {}
 		var tiles: PackedInt32Array = snapshot["tiles"]
