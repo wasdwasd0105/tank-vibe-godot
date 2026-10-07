@@ -97,8 +97,8 @@ func _run() -> void:
 	text.advance(0.02)
 	check(text.is_queued_for_deletion() and is_equal_approx(PickupText.LIFETIME, 1700 * PickupText.TICK),
 		"gone after 1700 ticks")
-	check(text.z_index == 0 and game.hud.get_index() > game.get_node("Entities").get_index(),
-		"drawn under the HUD panels")
+	check(text.z_index == KillText.Z_INDEX and game.hud.z_index > text.z_index,
+		"drawn over the grass and the items, as the kill words, and under the HUD panels")
 
 	print("\n[C] A MAX item: the upgrades' gold, three lines")
 	var max_cookie = load("res://scenes/powerups/powerup.tscn").instantiate()

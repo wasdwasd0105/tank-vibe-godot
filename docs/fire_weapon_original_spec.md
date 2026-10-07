@@ -485,7 +485,7 @@ The same -1 error was in `docs/ice_original_spec.md` ("A player's fire melts it"
 - **The terrain step** (`fire_terrain_step`), 500–999 ticks after a fire starts: the grass beside it burns grey with nobody's fire on it, which does the same in turn; a side's fire melts the ice under itself.
 - **Burning tanks** (`_burn_tanks`), every frame: a tank's box is its picture less 6 px a side (while it blinks, its picture and 12 px more a side), and the first armed fire it strictly overlaps that isn't its side's burns it, one point, as any hit (`BaseTank.burn`); then none for 0.5625 s, 1.125 s after burning grass, even if it blinked. Not a tank appearing, dying or thrown by a mine. A player's fire burns enemies, the enemies' fire players, burning grass everyone.
 - **The shell:** damage 1 at every level; 622 px/s, slowing by 178 px/s a second, dropping its patch 496 px out (`Bullet._change_speed`, and `Bullet.flight` for a joining player's screen); its gun level is the fire's strength (`Bullet.fire_level`).
-- **Drawing:** burning grass red, over the tanks; the enemies' orange and the players' yellow, under them (the sheet's files r1, r2, r3: the original's rows 0, 1, 2).
+- **Drawing:** burning grass red, over the tanks and the grass (grass_original_spec.md); the enemies' orange and the players' yellow, under them (the sheet's files r1, r2, r3: the original's rows 0, 1, 2).
 
 **What it replaced:** a field of 12 tiles that grew a ring with each shell up to 8x8, burning 5 s a ring and then shrinking a ring at a time; one point a second from any fire; fire shells of 2 at gun levels 3 and 4; only the players' fire melting ice; burning grass started from the field's edge, burning 3 s and spreading every 0.5 s.
 

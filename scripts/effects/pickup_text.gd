@@ -92,8 +92,9 @@ func setup(cookie_type: int, at: Vector2) -> void:
 
 
 func _ready() -> void:
-	# Above the tanks and items, under the HUD panels (drawn after it).
-	z_index = 0
+	# Over the grass and the items, as the kill text (the original's words were
+	# Z 12 and up, over its wall layer's 8 and the items' 11).
+	z_index = KillText.Z_INDEX
 	queue_redraw()
 
 

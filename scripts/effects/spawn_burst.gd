@@ -29,7 +29,9 @@ static func spawn_at(tree: SceneTree, world_pos: Vector2) -> void:
 
 
 func _ready() -> void:
-	z_index = 25  # above tanks and blasts
+	# Over the tanks, under the grass and the blasts: the original's appearing
+	# tank showed this picture itself, at its Z 2.
+	z_index = 0
 	_load_frames()
 	_sprite = Sprite2D.new()
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST

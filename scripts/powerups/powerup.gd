@@ -21,6 +21,10 @@ const SPRAY_MIN_DURATION: float = 0.1
 const SPRAY_MAX_DURATION: float = 0.4
 
 const S: int = 64  # sprite size (2x2 tiles)
+## Drawn over the grass (z 10) and the blasts (z 20), under the words
+## (KillText, PickupText: z 21, drawn after the items): the original's items
+## were Z 11, over its wall layer's 8 and the blasts' 10.
+const ITEM_Z := 21
 
 ## "Hold Enemy" taken by an enemy holds the players for 10000 ticks.
 const ENEMY_HOLD_TIME: float = 7.5
@@ -35,6 +39,7 @@ func setup(type: int, delay: float = 0.0, origin: Vector2 = Vector2.ZERO) -> voi
 		_spray_origin = origin
 
 func _ready() -> void:
+	z_index = ITEM_Z
 	add_to_group("cookies")
 	add_to_group(NetWorld.GROUP)
 	body_entered.connect(_on_body_entered)

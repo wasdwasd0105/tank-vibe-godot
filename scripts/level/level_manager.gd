@@ -384,8 +384,9 @@ func _place_fg_tile(pos: Vector2i, code: int) -> void:
 				var gw := gtex.get_size().x
 				if gw > 0:
 					spr.scale = Vector2(TILE_SIZE / gw, TILE_SIZE / gw)  # 16px tile -> 32px
-			spr.z_index = 10  # draw above tanks
-			spr.modulate.a = 0.55  # semi-transparent so tanks are visible underneath
+			# The TreeLayer (z 10) draws it over the tanks, shells, mines and
+			# the base, solid but for the picture's own holes, as the
+			# original's wall layer (Z 8, drawn without alpha) hid them.
 			tree_node.add_child(spr)
 
 		LevelData.TileCategory.SOFT_BRICK_FULL:

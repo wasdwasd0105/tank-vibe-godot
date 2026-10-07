@@ -32,8 +32,8 @@ const LINE_HEIGHT := 12.0 * SCALE
 const LONE_TOP := 8.0 * SCALE
 const COMBO_TOP := 12.0 * SCALE
 const TANK_HALF := 16.0 * SCALE
-## Over the tank's explosion (z 20), as the original's words (draw order 20)
-## read over the blast.
+## Over the grass (z 10), the blasts (z 20) and the items (z 21, drawn before
+## the words), as the original's words (draw order 20) read over them all.
 const Z_INDEX := 21
 
 var _lines: PackedStringArray = []

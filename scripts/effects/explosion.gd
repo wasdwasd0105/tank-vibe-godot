@@ -5,7 +5,12 @@ const DURATION: float = 0.4
 var _frame: int = 0
 
 func _ready() -> void:
-	z_index = 20
+	# Over the tanks and walls, under the grass, as HitEffect (the original's
+	# shell, tank and base turned into their hit and explosion pictures under
+	# its wall layer). Not named here: this scene loads inside the bullet's,
+	# and naming another class from it pulls the tanks' scripts into that load,
+	# emptying their bullet scene.
+	z_index = 0
 
 func _process(delta: float) -> void:
 	_timer += delta

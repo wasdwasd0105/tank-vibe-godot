@@ -42,6 +42,10 @@ var _cached_p1_weapon: String = ""
 var _cached_p2_weapon: String = ""
 
 func _ready() -> void:
+	# Over everything drawn on the field (its highest, a tank thrown by a mine,
+	# is z 30), so the side panels frame it: words spilling off its edge, over
+	# the grass and items at z 21, go under them.
+	z_index = 40
 	# Set static cookie icons for HP, Speed, Weapons (these never change)
 	var hp_tex := CookieData.get_cookie_texture(CookieData.CookieType.HP_UP)
 	var spd_tex := CookieData.get_cookie_texture(CookieData.CookieType.SPEED_UP)

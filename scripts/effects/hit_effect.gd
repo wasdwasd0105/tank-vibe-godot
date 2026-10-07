@@ -17,7 +17,10 @@ static func spawn(parent: Node, at: Vector2, frames: Array, duration: float, net
 	fx._frames = frames
 	fx._frame_time = duration / frames.size()
 	fx.texture = frames[0]
-	fx.z_index = 20  # over tanks and terrain, like the built-in flash
+	# Over the tanks and walls, under the grass (z 10): the original's shell and
+	# tank turned into their hit and explosion pictures at their own Z (7, and
+	# 1 or 2), under its wall layer's 8.
+	fx.z_index = 0
 	parent.add_child(fx)
 	fx.global_position = at
 	return fx

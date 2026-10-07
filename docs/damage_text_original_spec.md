@@ -62,7 +62,7 @@ The words Tank.exe v1.22 shows when a player hits and kills tanks: a hit counter
 - **Look:** `white_font` (the stand-in for Text) at 24 px, i.e. Text at half size, doubled.
 - **Position:** centred across the tank, its top 16 px (lone) or 24 px (combo) under the tank's top edge.
 - **Motion:** down 6 px over 0.225 s, then up 60 px over 1.125 s while fading to 128/255.
-- **Layer:** z 21, over the tank's explosion (z 20).
+- **Layer:** z 21: over the grass, the blasts (z 20) and the items (z 21, drawn before it). The tank's explosion is under the grass now (grass_original_spec.md), as the original's dying tank turned into it at its own draw order.
 
 **Hit counter:** the `P1Hits` / `P2Hits` labels in game.tscn, driven by `GameManager.get_hit_chain`.
 - It reads "N Hits", in the cyan of the Credit line, just above each player's "I P" / "II P" tag.

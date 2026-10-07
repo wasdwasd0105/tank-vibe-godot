@@ -26,7 +26,8 @@ const ARM := 0.09
 const ARM_INNER := 0.06
 const ANIM_FRAME_TIME: float = 0.05 # 8-frame loop = 400ms
 const ANIM_FRAMES: int = 8
-## Grass fire draws over the tanks (the original's Z 9); a side's under them.
+## Grass fire draws over the tanks and over the grass (its TreeLayer, z 10),
+## as the original's Z 9 over its wall layer's 8; a side's under them all.
 const GRASS_Z := 11
 
 ## Whose fire: 1 a player's, 0 the enemies', -1 nobody's (burning grass, which
@@ -112,7 +113,7 @@ func _ready() -> void:
 	add_to_group(NetWorld.GROUP)
 	# A side's fire draws above the floor but BELOW tanks: fire lives in the
 	# Playfield subtree, which renders before the Entities (tank) subtree at the
-	# same z_index. Burning grass draws over them, as the grass does.
+	# same z_index. Burning grass draws over them and the grass.
 	z_index = GRASS_Z if is_grass_fire else 0
 	_frames = _load_textures(_current_row())
 	_sprite = Sprite2D.new()
