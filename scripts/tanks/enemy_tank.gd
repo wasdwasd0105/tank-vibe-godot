@@ -11,27 +11,49 @@ var special_weapon_level: int = 0
 ## it survives knocks back out what items gave it above this; a difficulty
 ## changed mid-stage leaves it be, so lowering one shakes no gun items loose.
 var _base_weapon_level: int = 0
-var _direction_change_timer: float = 0.0
 var _shoot_cooldown: float = 0.0
 var _hits_taken: int = 0
 ## The player credited with destroying this tank: the owner of the weapon that
 ## dealt its last point (-1: an enemy's weapon, grass fire, or nobody).
 var killed_by: int = -1
-var _alive_time: float = 0.0  # Time since spawn (for initial downward push)
-var _collision_cooldown: float = 0.0  # Prevents eagle bias right after a collision
-var _near_eagle: bool = false  # True when within attack range of eagle
-var _water_avoid_dir: Vector2 = Vector2.ZERO  # Direction blocked by water (avoid it)
-var _water_avoid_timer: float = 0.0  # How long to avoid the water-blocked direction
-var _attack_wall_dir: Vector2 = Vector2.ZERO  # Direction of wall we're shooting to break
-var _attack_wall_timer: float = 0.0  # Time left to keep attacking a wall
-var _turn_cooldown: float = 0.0  # Prevents rapid direction changes after collision
 var _rapid_special_fire_step: int = 0
-const TURN_COOLDOWN_DURATION: float = 0.6  # Minimum seconds between collision-triggered turns
-const INITIAL_DOWN_DURATION: float = 2.0  # Move DOWN for first 2 seconds after spawn
-const COLLISION_COOLDOWN_DURATION: float = 1.0  # Seconds to suppress eagle bias after collision
-const EAGLE_ATTACK_RANGE: float = 192.0  # ~6 tiles — enter attack mode
-const WATER_AVOID_DURATION: float = 4.0  # Seconds to commit to going around water
-const ATTACK_WALL_DURATION: float = 3.0  # Seconds to commit to shooting a wall
+
+# --- How it moves: Tank.exe's TEnemyTank.Think (0x00494c38), rule for rule
+# (docs/enemy_ai_original_spec.md). Every AI step it decides what to do: drive
+# up, right, down or left, or stop. A hunter takes the cheapest way to the base
+# on the level's EnemyRoutes map, deciding at each grid line it comes to and
+# whenever it stands; one cut off from the base wanders, as does any enemy that
+# doesn't hunt. A moving tank keeps to the grid line across its way. How it
+# fires is the remake's own (_fire_at_will). ---
+
+## Told to stand (the other commands are BaseTank.FACINGS' indices).
+const STOP := 4
+## The original's AI step: every other 15 ms frame.
+const AI_STEP := 0.03
+## A hit it survives holds its course this long (the original's 250 ticks).
+const HIT_HOLD := 0.1875
+## A wanderer turns at random 1 step in this many, by difficulty (the original's
+## f4, 0x004d2860): the upgraded type of each pair (an even id) as is, the
+## other half as long again.
+const TURN_PERIOD: Array[int] = [80, 65, 50, 40, 32, 25]
+## It fires faster this near the base (~6 tiles).
+const EAGLE_ATTACK_RANGE: float = 192.0
+
+## Every enemy hunts the base here, as in the remake's AI before (Sean kept it,
+## 2026-09-25). The original rolled it once per enemy as it came on, by the
+## difficulty and its gun (docs/enemy_ai_original_spec.md section 4.1).
+var hunts_base := true
+## What it's told to do: 0-3 drive that way (up, right, down, left), STOP stand.
+## A new one starts with right, down, left or stop, which only rules out the
+## way back for its first pick.
+var _command := STOP
+## It moved last frame (the original's speed above 0). Standing, it decides
+## every step.
+var _moving := false
+var _ai_clock := 0.0
+## After a hit it survives, it holds its course this long, deciding nothing.
+var _hit_hold := 0.0
+var _lm: LevelManager = null
 const SPECIAL_FIRE_CHANCE: float = 0.5
 const ENEMY_REGULAR_FIRE_COOLDOWN: float = 0.3
 # Fire is persistent area-denial, so enemies use it sparingly: a lower pick
@@ -178,7 +200,7 @@ func _ready() -> void:
 	special_weapon_level = _base_weapon_level
 	InputSettings.enemy_mines_changed.connect(_on_enemy_mines_changed)
 	current_direction = Vector2.DOWN
-	_direction_change_timer = randf_range(1.0, 3.0)
+	_command = randi_range(1, 4)  # the original's Random(4) + 1
 	_shoot_cooldown = randf_range(0.5, 2.0)
 	# Set collision layers
 	set_collision_layer_value(1, false)
@@ -244,29 +266,26 @@ func _physics_process(delta: float) -> void:
 		glide_while_held("players")
 		return
 
-	_ai_update(delta)
+	_think(delta)
 	if has_anti_ice:
 		is_on_ice = false
+	if _command != STOP:
+		_face(FACINGS[_command])
 
-	# Check if player tank is blocking the path ahead
+	# A player in the way: it stops (it never shoves one) and fires at them.
 	var player_blocking := _is_player_ahead()
-	if player_blocking:
-		# Attack the player: shoot rapidly
-		if _shoot_cooldown <= 0:
+	if _shoot_cooldown <= 0:
+		if player_blocking:
 			_fire_weapon(0.3, 0.6)
-	var speed_factor := MINE_SLOW_FACTOR if is_mine_slowed else 1.0
-	velocity = Vector2.ZERO if player_blocking else current_direction * move_speed * speed_factor
-
-	# Players should block enemies logically, but enemies should not physically push players.
-	var collided := move_and_slide()
-	clamp_to_playfield()
-	if collided and _turn_cooldown <= 0:
-		if _attack_wall_timer > 0:
-			pass  # Stay committed — keep shooting the wall
 		else:
-			_collision_cooldown = COLLISION_COOLDOWN_DURATION
-			_turn_cooldown = TURN_COOLDOWN_DURATION
-			_change_direction()
+			_fire_at_will()
+	var go := _command != STOP and not player_blocking
+	var speed_factor := MINE_SLOW_FACTOR if is_mine_slowed else 1.0
+	velocity = current_direction * move_speed * speed_factor if go else Vector2.ZERO
+	var from := global_position
+	move_and_slide()
+	clamp_to_playfield()
+	_moving = global_position.distance_squared_to(from) > 0.0001
 
 	# (Damage flash is handled centrally in BaseTank._process.)
 
@@ -275,308 +294,173 @@ func _is_player_ahead() -> bool:
 	var lookahead := maxf(move_speed / float(Engine.physics_ticks_per_second), 2.0)
 	return _opponent_ahead("players", current_direction, lookahead)
 
-func _is_water_ahead(dir: Vector2) -> bool:
-	## Check if water specifically blocks movement in the given direction.
-	if not get_collision_mask_value(2):
-		return false  # Has anti-water addon, water is passable
-	if not test_move(global_transform, dir * HALF_TILE * 2):
-		return false  # Not blocked at all
-	# Temporarily disable water collision to check if water is the blocker
-	set_collision_mask_value(2, false)
-	var still_blocked := test_move(global_transform, dir * HALF_TILE * 2)
-	set_collision_mask_value(2, true)
-	return not still_blocked  # True = water was the only thing blocking
+## The AI's clock: a step every AI_STEP of play, as the original's.
+func _think(delta: float) -> void:
+	_shoot_cooldown -= delta
+	_hit_hold = maxf(_hit_hold - delta, 0.0)
+	_ai_clock += delta
+	while _ai_clock >= AI_STEP:
+		_ai_clock -= AI_STEP
+		_ai_step()
 
-func _has_indestructible_ahead(dir: Vector2) -> bool:
-	## Check if indestructible tiles (iron/steel, super block) are ahead in the given direction.
-	## These can't be destroyed by enemy bullets, so we must go around.
-	var game = get_tree().get_first_node_in_group("game")
-	if not game or not game.has_method("get_level_manager"):
+## One step of the original's think (0x00494d7c): a hunter that stands, or has
+## come to the grid line it's driving to, takes the cheapest way on; one cut
+## off from the base, or not hunting, wanders.
+func _ai_step() -> void:
+	var lm := _level()
+	if lm == null or lm.routes == null:
+		return
+	var at := lm.routes.cell_of(global_position)
+	if hunts_base and _hit_hold <= 0.0:
+		if _moving and not _at_line(at):
+			return  # on its way
+		if _hunt(lm.routes, at):
+			return
+	_wander(at)
+
+## On the half cell before the grid line it's driving to, the line itself
+## included (0x00494d96): where a moving hunter decides. [param at] is its
+## footprint's top-left map cell, rounded.
+func _at_line(at: Vector2i) -> bool:
+	var u := (global_position - _level().global_position) / TILE_SIZE
+	if current_direction == Vector2.UP:
+		return at.y <= u.y
+	if current_direction == Vector2.RIGHT:
+		return at.x >= u.x
+	if current_direction == Vector2.LEFT:
+		return at.x <= u.x
+	return at.y >= u.y
+
+## The hunter's choice (0x00494e19): of the footprint where it is and one cell
+## each way, the one summing least on its map, a tie taken 1 time in 3; where
+## it is, it stops. False if its footprint is cut off from the base.
+func _hunt(routes: EnemyRoutes, at: Vector2i) -> bool:
+	var m := routes.map_for(_map_mode())
+	var best := EnemyRoutes.footprint(m, at.x, at.y)
+	if best >= EnemyRoutes.HUNT_LIMIT:
 		return false
-	var lm = game.get_level_manager()
-	if not lm:
-		return false
-	# Check every tile directly ahead across the tank's body: 2 columns when it
-	# sits on a tile corner, 3 when it is snapped to a half-tile.
-	var ahead_center: Vector2 = global_position + dir * (HALF_TANK + HALF_TILE)
-	var perp := Vector2(dir.y, dir.x)  # perpendicular direction
-	for offset in BODY_LANE_OFFSETS:
-		var check_pos: Vector2 = ahead_center + perp * offset
-		var tile_pos: Vector2i = lm.world_to_tile(check_pos)
-		if lm._fg_tile_data.has(tile_pos):
-			var code: int = lm._fg_tile_data[tile_pos].get("code", 0)
-			var cat := LevelData.get_tile_category(code)
-			if cat == LevelData.TileCategory.IRON_BLOCK or cat == LevelData.TileCategory.SUPER_BLOCK:
-				return true
-	return false
-
-func _is_impassable_ahead(dir: Vector2) -> bool:
-	## Check if a direction is blocked by something the tank can never get through
-	## (water without addon, iron block, super block).
-	if _is_water_ahead(dir):
-		return true
-	if _has_indestructible_ahead(dir):
-		return true
-	return false
-
-func _try_direct_eagle_attack() -> bool:
-	## When very close to the eagle, check if we're aligned on an axis.
-	## If so, face the eagle directly and shoot — highest priority action.
-	var eagle = get_tree().get_first_node_in_group("eagle")
-	if not eagle:
-		return false
-	var diff: Vector2 = eagle.global_position - global_position
-	var dist: float = diff.length()
-	if dist > TANK_SIZE * 3:  # Only within ~3 tank-widths (~192px)
-		return false
-
-	# Determine which axis we're aligned on (within half-tank tolerance)
-	var face_dir := Vector2.ZERO
-	if absf(diff.x) < HALF_TANK:
-		# Vertically aligned — eagle is above or below
-		face_dir = Vector2.DOWN if diff.y > 0 else Vector2.UP
-	elif absf(diff.y) < HALF_TANK:
-		# Horizontally aligned — eagle is left or right
-		face_dir = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
-
-	if face_dir == Vector2.ZERO:
-		return false  # Not aligned on either axis
-
-	# Face the eagle and shoot
-	if current_direction != face_dir:
-		current_direction = face_dir
-		_snap_and_update()
-	# Rapid fire at the eagle
-	if _shoot_cooldown <= 0:
-		_fire_weapon(0.1, 0.25)
+	var choice := STOP
+	for i in 4:
+		var d: Vector2i = EnemyRoutes.DIRS[i]
+		var sum := EnemyRoutes.footprint(m, at.x + d.x, at.y + d.y)
+		if sum < best:
+			best = sum
+			choice = i
+		elif sum == best and randi() % 3 == 0:
+			choice = i
+	_command = choice
 	return true
 
-func _ai_update(delta: float) -> void:
-	_alive_time += delta
-	_direction_change_timer -= delta
-	_shoot_cooldown -= delta
-	_collision_cooldown = maxf(_collision_cooldown - delta, 0.0)
-	_turn_cooldown = maxf(_turn_cooldown - delta, 0.0)
-	_water_avoid_timer = maxf(_water_avoid_timer - delta, 0.0)
-	if _water_avoid_timer <= 0:
-		_water_avoid_dir = Vector2.ZERO
+## Which map it goes by: across water with anti-water, over ice unskidding with
+## anti-ice (the original's one add-on, 0x00494e19).
+func _map_mode() -> int:
+	if "anti-water" in addons:
+		return EnemyRoutes.Mode.AMPHI
+	if has_anti_ice:
+		return EnemyRoutes.Mode.ANTISKID
+	return EnemyRoutes.Mode.NORMAL
 
-	# Check proximity to eagle
-	_near_eagle = _check_near_eagle()
-
-	# --- HIGHEST PRIORITY: Direct eagle attack when aligned ---
-	if _near_eagle and _try_direct_eagle_attack():
-		_attack_wall_timer = 0.0  # Cancel wall attack if we can hit the eagle
+## The wanderer's choice (0x00494ebd): standing, facing the field's edge, or
+## at random 1 step in its turn period, it picks up, right, down, left or stop
+## at random, but never off the field, never stop twice, and never back the
+## way it was told unless that's down. So it drifts down, and turns where a
+## wall meets the field's edge, as gaps there. Not while a hit holds it.
+func _wander(at: Vector2i) -> void:
+	var allowed := 0b11111
+	if at.x <= 1:
+		allowed &= ~(1 << 3)
+	elif at.x >= 39:
+		allowed &= ~(1 << 1)
+	if at.y <= 1:
+		allowed &= ~(1 << 0)
+	elif at.y >= 29:
+		allowed &= ~(1 << 2)
+	if _hit_hold > 0.0:
 		return
+	var facing := FACINGS.find(current_direction)
+	if _moving and allowed & (1 << facing) != 0 and randi() % _turn_period() != 0:
+		return
+	var pick := STOP
+	while true:
+		pick = randi() % 5
+		if allowed & (1 << pick) == 0:
+			continue
+		if pick == STOP:
+			if _command != STOP:
+				break
+		elif pick != (_command + 2) & 3 or pick == 2:
+			break
+	_command = pick
 
-	# --- Wall attack mode: keep shooting until the wall breaks or timer expires ---
-	if _attack_wall_timer > 0:
-		_attack_wall_timer -= delta
-		# Check if the wall is now cleared — if so, advance through it
-		if not test_move(global_transform, _attack_wall_dir * HALF_TILE * 2):
-			_attack_wall_timer = 0.0
-			current_direction = _attack_wall_dir
-			_snap_and_update()
-			_attack_wall_dir = Vector2.ZERO
-			return
-		# Timer expired but wall still there — give up, try another way
-		if _attack_wall_timer <= 0:
-			_attack_wall_dir = Vector2.ZERO
-			_change_direction()
-			return
-		# Keep shooting rapidly at the wall
-		if _shoot_cooldown <= 0:
-			_fire_weapon(0.15, 0.3)
-		return  # Skip normal AI while attacking wall
+## Its turn period, AI steps: the difficulty's, half as long again for the
+## basic type of each pair (an odd id).
+func _turn_period() -> int:
+	var period: int = TURN_PERIOD[clampi(GameManager.difficulty, 0, TURN_PERIOD.size() - 1)]
+	return period if tank_type_id % 2 == 0 else period * 3 / 2
 
-	# Periodically reconsider direction
-	if _direction_change_timer <= 0:
-		# Near eagle: re-evaluate faster to stay locked on target
-		_direction_change_timer = randf_range(0.5, 1.5) if _near_eagle else randf_range(2.0, 4.0)
-		_change_direction()
+## Faces [param dir] and keeps to the grid line across it, as the original
+## snapped a moving tank every frame (0x00492244): so it turns on a grid line,
+## and lines up with a gap a tank wide.
+func _face(dir: Vector2) -> void:
+	if dir != current_direction:
+		current_direction = dir
+		_update_sprite_direction()
+	var lm := _level()
+	if lm == null:
+		return
+	var field := global_position - lm.global_position
+	if dir.x != 0.0:
+		field.y = EnemyRoutes.round_even(field.y / TILE_SIZE) * TILE_SIZE
+	else:
+		field.x = EnemyRoutes.round_even(field.x / TILE_SIZE) * TILE_SIZE
+	global_position = lm.global_position + field
 
-	if _shoot_cooldown <= 0:
-		# Near eagle: shoot much faster to break through protective walls
-		if _near_eagle:
-			_fire_weapon(0.15, 0.4)
-		else:
-			_fire_weapon(0.5, 2.0)
+func _level() -> LevelManager:
+	if _lm == null or not is_instance_valid(_lm):
+		_lm = _get_level_manager()
+	return _lm
 
-	# Near eagle: aggressively face toward it every frame (high chance)
-	if _near_eagle and _collision_cooldown <= 0:
-		if randf() < 0.05:  # ~3 times/sec at 60fps
-			_bias_toward_eagle()
-	elif _collision_cooldown <= 0:
-		# Normal eagle correction
-		var eagle_bias: float = 0.02 if _alive_time < INITIAL_DOWN_DURATION else 0.01
-		if randf() < eagle_bias:
-			_bias_toward_eagle()
+## The remake's own firing (Sean kept it, 2026-09-25), along its facing: fast
+## at the base when lined up facing it close by, fast at a brick in its way,
+## faster near the base, else every 0.5-2 s. (The original fired 1 step in its
+## turn period, wherever it faced.)
+func _fire_at_will() -> void:
+	var eagle := get_tree().get_first_node_in_group("eagle") as Node2D
+	var near := eagle != null and global_position.distance_to(eagle.global_position) < EAGLE_ATTACK_RANGE
+	if near and _facing_eagle(eagle):
+		_fire_weapon(0.1, 0.25)
+	elif not _moving and _command != STOP and _brick_ahead():
+		_fire_weapon(0.15, 0.3)
+	elif near:
+		_fire_weapon(0.15, 0.4)
+	else:
+		_fire_weapon(0.5, 2.0)
 
-func _check_near_eagle() -> bool:
-	var eagle = get_tree().get_first_node_in_group("eagle")
-	if not eagle:
+## Lined up with the base (within half a tank) and facing it.
+func _facing_eagle(eagle: Node2D) -> bool:
+	var diff := eagle.global_position - global_position
+	if absf(diff.x) < HALF_TANK:
+		return current_direction == (Vector2.DOWN if diff.y > 0.0 else Vector2.UP)
+	if absf(diff.y) < HALF_TANK:
+		return current_direction == (Vector2.RIGHT if diff.x > 0.0 else Vector2.LEFT)
+	return false
+
+## A wall its shells break right in front of it: a brick or a hard brick.
+func _brick_ahead() -> bool:
+	var lm := _level()
+	if lm == null:
 		return false
-	return global_position.distance_to(eagle.global_position) < EAGLE_ATTACK_RANGE
-
-func _get_clear_dirs(exclude: Vector2 = Vector2.ZERO) -> Array[Vector2]:
-	## Return all 4 directions that are physically passable (1 tile ahead).
-	## Optionally exclude one direction (typically the current blocked one).
-	var result: Array[Vector2] = []
-	for d in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
-		if d == exclude:
+	var ahead := global_position + current_direction * (HALF_TANK + HALF_TILE)
+	var across := Vector2(current_direction.y, current_direction.x)
+	for offset in BODY_LANE_OFFSETS:
+		var data: Variant = lm._fg_tile_data.get(lm.world_to_tile(ahead + across * offset))
+		if data == null:
 			continue
-		if not test_move(global_transform, d * HALF_TILE * 2):
-			result.append(d)
-	return result
-
-func _get_shootable_dirs(exclude: Vector2 = Vector2.ZERO) -> Array[Vector2]:
-	## Return directions blocked by a BREAKABLE wall (not water, iron, or super block).
-	var result: Array[Vector2] = []
-	for d in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
-		if d == exclude:
-			continue
-		# Must be blocked, and NOT by something impassable
-		if test_move(global_transform, d * HALF_TILE * 2) and not _is_impassable_ahead(d):
-			result.append(d)
-	return result
-
-func _start_wall_attack(dir: Vector2) -> void:
-	## Face a wall and shoot it to break through.
-	_attack_wall_dir = dir
-	_attack_wall_timer = ATTACK_WALL_DURATION
-	current_direction = dir
-	_snap_and_update()
-
-func _change_direction() -> void:
-	# During initial spawn phase, prefer DOWN if clear
-	if _alive_time < INITIAL_DOWN_DURATION and current_direction != Vector2.DOWN:
-		if not test_move(global_transform, Vector2.DOWN * HALF_TILE * 2):
-			current_direction = Vector2.DOWN
-			_snap_and_update()
-			return
-
-	# Get clear directions excluding current (we want to change)
-	var clear_dirs := _get_clear_dirs(current_direction)
-	if clear_dirs.is_empty():
-		clear_dirs = _get_clear_dirs()
-
-	# Remove the water-avoided direction while the timer is active
-	if _water_avoid_timer > 0 and _water_avoid_dir != Vector2.ZERO:
-		clear_dirs.erase(_water_avoid_dir)
-
-	# Get primary & secondary eagle directions
-	var eagle_dirs := _get_eagle_directions()
-	var eagle_primary: Vector2 = eagle_dirs[0]
-	var eagle_secondary: Vector2 = eagle_dirs[1]
-
-	# Check if eagle directions are blocked by impassable obstacles (water, iron, super block)
-	var primary_impassable := _is_impassable_ahead(eagle_primary)
-	var secondary_impassable := eagle_secondary != Vector2.ZERO and _is_impassable_ahead(eagle_secondary)
-
-	# If impassable obstacle blocks the eagle path, remember it and commit to going around
-	if primary_impassable and _water_avoid_timer <= 0:
-		_water_avoid_dir = eagle_primary
-		_water_avoid_timer = WATER_AVOID_DURATION
-
-	# Near eagle: 95% seek eagle aggressively; Normal: 75%
-	var seek_chance: float = 0.95 if _near_eagle else 0.75
-	if randf() < seek_chance:
-		# Try primary eagle direction if clear (skip if impassable)
-		if not primary_impassable and eagle_primary in clear_dirs:
-			current_direction = eagle_primary
-			_snap_and_update()
-			return
-		# Try secondary eagle direction if clear (skip if impassable)
-		if not secondary_impassable and eagle_secondary != Vector2.ZERO and eagle_secondary in clear_dirs:
-			current_direction = eagle_secondary
-			_snap_and_update()
-			return
-
-		# Eagle directions not clear — check if we can SHOOT through a breakable wall
-		var shootable := _get_shootable_dirs()
-		# Prefer shooting toward eagle direction, then perpendicular toward eagle
-		if not primary_impassable and eagle_primary in shootable:
-			_start_wall_attack(eagle_primary)
-			return
-		if not secondary_impassable and eagle_secondary != Vector2.ZERO and eagle_secondary in shootable:
-			_start_wall_attack(eagle_secondary)
-			return
-		# Shoot any perpendicular wall (not away from eagle)
-		for d in shootable:
-			if d != -eagle_primary:
-				_start_wall_attack(d)
-				return
-
-		# No shootable walls — go perpendicular if any clear direction exists
-		var perpendicular: Array[Vector2] = []
-		for d in clear_dirs:
-			if d != -eagle_primary:  # Avoid going directly away from eagle
-				perpendicular.append(d)
-		if not perpendicular.is_empty():
-			current_direction = perpendicular[randi() % perpendicular.size()]
-			_snap_and_update()
-			return
-
-	# Fallback: pick any clear direction, or if completely stuck try shooting any wall
-	if not clear_dirs.is_empty():
-		clear_dirs.shuffle()
-		current_direction = clear_dirs[0]
-		_snap_and_update()
-	else:
-		# Completely boxed in by walls — shoot one to escape
-		var shootable := _get_shootable_dirs()
-		if not shootable.is_empty():
-			_start_wall_attack(shootable[randi() % shootable.size()])
-		# else: truly stuck (surrounded by water/steel) — do nothing
-
-func _snap_and_update() -> void:
-	# Snap to grid when changing direction
-	if current_direction.x != 0:
-		position.y = round(position.y / HALF_TILE) * HALF_TILE
-	else:
-		position.x = round(position.x / HALF_TILE) * HALF_TILE
-	_update_sprite_direction()
-
-func _get_eagle_directions() -> Array:
-	## Returns [primary, secondary] directions toward the eagle.
-	## Primary = axis with larger distance, Secondary = other axis.
-	var eagle = get_tree().get_first_node_in_group("eagle")
-	if not eagle:
-		return [Vector2.DOWN, Vector2.ZERO]
-	var diff: Vector2 = eagle.global_position - global_position
-	var primary: Vector2
-	var secondary: Vector2
-	if absf(diff.y) > absf(diff.x):
-		primary = Vector2.DOWN if diff.y > 0 else Vector2.UP
-		if absf(diff.x) > TILE_SIZE:  # Only suggest secondary if meaningful distance
-			secondary = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
-		else:
-			secondary = Vector2.ZERO
-	else:
-		primary = Vector2.RIGHT if diff.x > 0 else Vector2.LEFT
-		if absf(diff.y) > TILE_SIZE:
-			secondary = Vector2.DOWN if diff.y > 0 else Vector2.UP
-		else:
-			secondary = Vector2.ZERO
-	return [primary, secondary]
-
-func _get_eagle_direction() -> Vector2:
-	return _get_eagle_directions()[0]
-
-func _bias_toward_eagle() -> void:
-	var eagle_dirs := _get_eagle_directions()
-	# Try primary, then secondary — skip impassable directions (water, iron, super)
-	for dir in eagle_dirs:
-		if dir == Vector2.ZERO or dir == current_direction:
-			continue
-		if _water_avoid_timer > 0 and dir == _water_avoid_dir:
-			continue  # Don't bias into obstacle we're trying to go around
-		if _is_impassable_ahead(dir):
-			continue  # Don't turn toward impassable obstacles
-		if not test_move(global_transform, dir * HALF_TILE * 2):
-			current_direction = dir
-			_snap_and_update()
-			return
+		var cat := LevelData.get_tile_category(int((data as Dictionary).get("code", 0)))
+		if cat == LevelData.TileCategory.SOFT_BRICK_FULL or cat == LevelData.TileCategory.SOFT_BRICK_PARTIAL \
+				or cat == LevelData.TileCategory.HARD_BRICK:
+			return true
+	return false
 
 func _fire_weapon(regular_min: float, regular_max: float) -> void:
 	if _has_rapid_special() and randf() < SPECIAL_FIRE_CHANCE:
@@ -891,12 +775,17 @@ func _take_points(points: int, bullet_direction: Vector2) -> void:
 	health -= points
 	_hits_taken += 1
 	_damage_flash_timer = DAMAGE_FLASH_DURATION
-	# Turn to face the attacker and retaliate (skip if frozen, including the debug
-	# freeze, which stops this tank from processing)
-	if bullet_direction != Vector2.ZERO and health > 0 and not GameManager.enemies_frozen and can_process():
-		var face_dir := -bullet_direction  # face toward the shooter
-		current_direction = face_dir
-		_snap_and_update()
+	# A hit it survives holds its course a moment, deciding nothing (the
+	# original's). A shot turns it on the shooter, and it fires back at once:
+	# the remake's (the original turned half the time, always with a moon
+	# shield). Not while frozen, the debug freeze included, which stops this
+	# tank from processing.
+	if health > 0:
+		_hit_hold = HIT_HOLD
+	var face := FACINGS.find(-bullet_direction)
+	if face >= 0 and health > 0 and not GameManager.enemies_frozen and can_process():
+		_command = face
+		_face(FACINGS[face])
 		_shoot_cooldown = 0.0  # shoot immediately next frame
 	# Addon drop on 2nd hit: only if tank started with hp>2 and has addon(s)
 	if _hits_taken == 2 and max_health > 2 and not addons.is_empty():

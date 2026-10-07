@@ -42,17 +42,7 @@ Rolled once per enemy at spawn into flag +0x13c (0x49a009). The flag is set when
 - Fire: 2·f0/3, i.e. 14/24/34/44/51/57 %.
 - Mine: f0/3, i.e. 7/12/17/22/26/29 %.
 
-**How a flagged enemy moves (0x494d7c):**
-- It follows a walking-distance map to the base tiles (x 20–21, y 29–30), searched out from them (0x490fb7).
-- At each tile boundary, or when stopped, it steps to the neighbouring tile nearest the base, breaking ties 1 in 3 at random (0x494e59).
-- Indestructible steel (ids 56–64) and water are walls on the map; bricks and ordinary steel aren't (0x490f69).
-- There are three maps (normal, AmphiTank, AntiSkid), rebuilt in turn every 240 frames (0x499dd0).
-- An enemy that can't reach the base, or was just hit, wanders instead.
-
-**Every other enemy wanders:**
-- It picks Random(5) among up, right, down, left and stop, excluding directions off the edge of the map (0x494ebd).
-- It never reverses, unless the reverse is down, so wanderers drift toward the base. It won't pick stop when already stopped (0x494f56).
-- It re-picks at once when stopped or at an edge; otherwise with chance 1/P per AI step (0x494f3e).
+**How a flagged enemy moves (0x494d7c):** it follows a cost map spread out from the base's cells (0x490eec), comparing its 2x2 footprint's sum where it is and a cell each way, standing or on the half cell before each grid line; the cheapest wins, ties 1 in 3. An enemy cut off from the base wanders. **Every other enemy wanders:** Random(5) among up, right, down, left and stop, never off the field, never back the way it was told unless that's down, never stop twice; at once when standing or facing the field's edge, else 1 step in P (0x494ebd). The full rules, with corrections to what was first written here (iron costs 4096 a cell rather than being a wall, the normal map is rebuilt every 120 frames, a hit holds the course rather than making it wander), are in enemy_ai_original_spec.md.
 
 ### f1: special ammo and the reward
 - **Ammo at spawn:** Round(pack × f1 / 100) (0x499f7b): one pack at medium, scaled by f1. Doubled for odd types (0x499fdf), at most 5 packs (0x492f70). A pack holds rapid 50, fire 30, AP 10, explosive 20 or mine 15 shots. An enemy out of ammo uses its plain gun (0x491962).
@@ -78,7 +68,7 @@ P = f4 AI steps for odd types, 1.5 × f4 for even types (0x494d38):
 | Odd types | 2.4 s | 1.95 s | 1.5 s | 1.2 s | 0.96 s | 0.75 s |
 | Even types | 3.6 s | 2.9 s | 2.25 s | 1.8 s | 1.4 s | 1.1 s |
 
-- **Turning:** a wanderer re-picks its direction with chance 1/P per step.
+- **Turning:** a wanderer re-picks its direction with chance 1/P per step. (P for the basic types is (3·f4) div 2.)
 - **The plain gun:** fires with chance 1/P per step, so once every P on average. For 250 ticks after the enemy is hit, the chance is 1/(P/2) (0x494fb2).
 - There is no aiming: an enemy fires along its facing. Hunters face the base, so their shots go that way.
 
@@ -122,13 +112,12 @@ P = f4 AI steps for odd types, 1.5 × f4 for even types (0x494d38):
 
 On the bundled map, stage 1 (4, 2, 4, 2 = 12 tanks, 4 at once) now sends 8–10 tanks on EASY, 12 on NORMAL and 20–22 on INSANE. The limit is 4 at once up to NORMAL, 4–5 on HARD, 5–6 on EXPERT and 6 on INSANE.
 
-**Not ported (Sean's call, 2026-09-25):** every other field. The remake keeps its own enemy AI, so difficulty still doesn't change these:
+**Not ported (Sean's call, 2026-09-25):** the other fields, but for f4's turning: since 2026-10-08 the enemies move by the original's rules (enemy_ai_original_spec.md), and a wanderer turns 1 step in P, P by the difficulty. The remake keeps the rest of its own AI, so difficulty still doesn't change these:
 
 | | Remake, every level | Original medium (2) | Original easy (1) |
 |---|---|---|---|
-| Heading for the base | every enemy, 75 % of turns (95 % near the base) | 51 % of enemies | 36 % of enemies |
-| Plain-gun fire | every 0.5–2 s; 0.15–0.4 s within 6 tiles of the base; 0.1–0.25 s lined up with it; 0.15–0.3 s breaking a wall; 0.3–0.6 s against a player | every 1.5 s / 2.25 s | every 1.95 s / 2.9 s |
-| Turning | every 2–4 s (0.5–1.5 s near the base), and a pull toward the base 1–2 % of frames | 1/P per step (wanderers) | 1/P per step (wanderers) |
+| Heading for the base | every enemy (by the original's way to it) | 51 % of enemies | 36 % of enemies |
+| Plain-gun fire | every 0.5–2 s; 0.15–0.4 s within 6 tiles of the base; 0.1–0.25 s lined up facing it; 0.15–0.3 s stopped at a brick; 0.3–0.6 s against a player | every 1.5 s / 2.25 s | every 1.95 s / 2.9 s |
 | Speed | the tank table's | + 0 | − 1 |
 | Gun | tank table (rapid), original (mine), 0 (others) | + 0 | + 0 |
 | Special ammo | unlimited | 1 pack (2 for odd types) | medium's × 66 %, rounded |

@@ -56,6 +56,8 @@ const BG_ASSETS_DIR: String = "res://assets/background/"
 var net_mirror := false
 ## The stage's background picture's file name, for net_map().
 var _bg_bitmap := ""
+## The enemies' way to the base (the host's).
+var routes: EnemyRoutes = null
 
 func _ready() -> void:
 	terrain_node = $TerrainLayer
@@ -72,6 +74,10 @@ func _ready() -> void:
 	_load_animated_tile_frames()
 	_load_grass_variants()
 	_create_boundaries()
+	routes = EnemyRoutes.new()
+	routes.name = "EnemyRoutes"
+	routes.level_manager = self
+	add_child(routes)
 
 	# Set up eagle (2x2 tiles)
 	var eagle = $Eagle
@@ -175,6 +181,8 @@ func load_stage(stage_num: int) -> void:
 
 	_place_base_walls()
 	_set_flag_invincible(false)   # no guard yet, unless BASE INVINCIBLE is on
+	if not net_mirror:
+		routes.restart()
 
 func _load_background_image(bg_bitmap: String) -> void:
 	if not _bg_image_sprite:

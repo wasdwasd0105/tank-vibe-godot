@@ -120,9 +120,8 @@ func _run() -> void:
 	# And the bot, left to its own AI with no turns or shots due.
 	_player.global_position = _at(home)
 	_face(stuck, Vector2.UP)
-	stuck._alive_time = 99.0
-	stuck._direction_change_timer = 99.0
-	stuck._collision_cooldown = 99.0
+	stuck._command = 0  # up
+	stuck._ai_clock = -99.0
 	stuck._shoot_cooldown = 99.0
 	var bot_from := stuck.global_position
 	stuck.set_physics_process(true)

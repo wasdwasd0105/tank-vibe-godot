@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cenemyaitest1"]
+
+[ext_resource type="Script" path="res://scripts/tests/enemy_ai_test.gd" id="1_aitest"]
+
+[node name="EnemyAiTest" type="Node"]
+script = ExtResource("1_aitest")
