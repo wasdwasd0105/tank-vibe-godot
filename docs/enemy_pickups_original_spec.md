@@ -71,7 +71,7 @@ The remake checks overlap every frame, as the original did. An enemy parked on a
 - **Gun level.** Items raise `special_weapon_level`: rapid, fire, AP and explosive enemies fire at the higher level, and mine enemies lay higher-level mines (still capped at L2). The plain gun has no levels in the remake. In the original, gun levels allow more shells in flight: 3/4/5/6.
 - **Ammo.** The remake's enemies never run out of special ammo, so ammo packs add nothing. Caisson and the gun items are still taken, which denies them to the players. In the original, an enemy spawns with one pack (two for an odd type) at normal difficulty and falls back to the plain gun when empty (0x491962).
 - **Flag On Guard.** A player's pickup gives the wall ring 30000 ticks (0x494555), so an enemy's pickup ends a single fortification at once; only a ring stacked from several pickups survived it. The remake's fortification never stacks, so an enemy's Flag On Guard ends it at once. The walls go back to the map's own, the remake's existing revert.
-- **Hold Enemy on the players.** The hold is GameManager `players_frozen`. The remake's GameManager is pausable, so the hold stops while paused.
+- **Hold Enemy on the players.** The hold is GameManager `players_frozen`. The remake's GameManager is pausable, so the hold stops while paused. Like the original's, a hold (either way) runs on into the next stage (stage_screens_original_spec.md, section 7).
 
 ## 4. Knocking an upgrade back out (Damage, 0x492763–0x4927f7)
 

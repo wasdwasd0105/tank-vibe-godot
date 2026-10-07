@@ -348,13 +348,14 @@ func _run() -> void:
 	var w_late := _spawn_enemy(Vector2(352, 96), 6)
 	w_late.begin_materialize(5.0)
 	var player_addons := _player.get_addon_names()
+	var player_shield := _player.invincible_timer
 	await _feed(w_taker, T.INVINCIBLE_HELMET)
 	var shielded := true
 	for e: EnemyTank in [w_taker, w2, w1, w_late]:
 		shielded = shielded and e.addons == ["moon-shield"] and e.has_moon_shield
 	check(shielded, "all four wear the moon shield, in place of anti-water, anti-ice, memory-save")
 	check(w2.get_collision_mask_value(2), "type 2 lost its anti-water with it")
-	check(_player.get_addon_names() == player_addons and not _player._helmet_invincible,
+	check(_player.get_addon_names() == player_addons and _player.invincible_timer <= player_shield,
 		"the players get nothing")
 	await _clear()
 

@@ -162,6 +162,15 @@ The three fonts: **Text3** (gold, 18×36 cells, `tank_font`), **Text** (white, 1
 
 ---
 
+## 7. What one stage hands the next
+
+Checked 2026-10-08, after Sean remembered a freeze or a helmet taken at a stage's end lasting a short while into the next:
+
+- **A hold runs on.** "Hold Enemy" sets one of two global timers (0x4d74d8, the enemies held; 0x4d74dc, the players held: 0x495b8c–0x495bb6). Only the game's creation zeroes them (0x49805e); no stage does. The frame loop counts them down every frame of every state but a pause (0x4c7a6a, before the play tick), through the mission, results and intro screens too. So a hold taken near a stage's end holds on for what's left of it once the next starts. The original's hold is 20000 ticks (15 s), or 10000 more when over 10000 are left.
+- **A helmet doesn't, but every stage starts under a shield.** The results (state 7) open by clearing the field (0x4ca640 → 0x499728): each player's tank is killed, its HP, weapon, ammo, speed, gun level and add-on kept in the player's record (0x4997d4), and its invulnerability with it. The next stage's start (0x499688, from the play state's entry) makes each player a new tank (0x49838c), and a new tank gets 5000 ticks (3.75 s) of invulnerability (TPlayerTank.Create, 0x4948e3), with the wreath while 3000 or more are left (SetInvulnerable, 0x492fac): the wreath for its first 1.5 s, then blinking. That's every stage's start, and every return after a death, helmet or not.
+
+**The remake** (2026-10-08): `GameManager.advance_stage` no longer ends a hold, whose timers already counted down through the stage screens (`GameManager._process`); a new game, a loaded one and a restarted stage start without one, and it's never saved. A player's fresh tank gets `PlayerTank.SPAWN_INVINCIBILITY` 3.75 s (was 3.0), and the wreath now goes by the time left, as the original's: any invulnerability with more than 2.25 s left shows it (was the helmet's only). The remake's own hold (40 s) and helmet (60 s) are longer than the original's (15 s, 18.75 s), so more of a hold can carry over. Test: scenes/test/stage_carry_test.tscn.
+
 ## Remake notes
 
 - The overlay covers the 1280×960 playfield at (160,16), which is the original's screen at 2×. The remake's HUD sits in side panels outside it.

@@ -114,8 +114,11 @@ func next_stage() -> void:
 func advance_stage() -> void:
 	current_stage += 1
 	enemies_remaining = 20
-	enemies_frozen = false
-	players_frozen = false
+	# A hold runs on into the next stage, as the original's: its two hold
+	# timers (0x004d74d8 the enemies', 0x004d74dc the players') were never reset
+	# by a stage, and counted down through the stage screens too (0x004c7a6a),
+	# as these do (_process). So one taken near a stage's end holds on for what
+	# is left once the next begins. Not saved: a game loaded starts without.
 	player_kills = [{}, {}]
 	if current_stage > get_max_stages():
 		current_stage = 1  # Loop back to stage 1

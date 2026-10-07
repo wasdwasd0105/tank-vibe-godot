@@ -40,13 +40,19 @@ const ADDON_CONFIG: Dictionary = {
 	"memory-save":  { "scale": 1.0 },
 }
 
-const SPAWN_INVINCIBILITY: float = 3.0
+## A fresh tank's shield: the original's 5000 ticks (TPlayerTank.Create,
+## 0x004948e3), at every stage's start and every return to the field, the
+## first 1.5 s of it under the wreath (WREATH_MIN_LEFT). The original's player
+## tanks were made anew for every stage (0x00499728 cleared the field at the
+## results, 0x0049838c made them at the next start), so this, not a helmet's
+## time, is what a stage starts with.
+const SPAWN_INVINCIBILITY: float = 3.75
 ## Tank.exe showed the shield wreath only while at least 3000 ticks (2.25 s) of
-## invulnerability were left, which in practice means the helmet cookie. Any
-## shorter invulnerability, and the helmet's last 2.25 s, blinked instead: the
-## tank drawn on every other frame (its DoDraw, 0x0049208c).
+## invulnerability were left (SetInvulnerable, 0x00492fac): the helmet cookie's,
+## and a fresh tank's first 1.5 s. Any shorter invulnerability, and their last
+## 2.25 s, blinked instead: the tank drawn on every other frame (its DoDraw,
+## 0x0049208c).
 const WREATH_MIN_LEFT: float = 2.25
-var _helmet_invincible: bool = false
 var _wreath_shown: bool = false
 ## A player held by an enemy's "Hold Enemy" is wrapped in frost: the ringed web
 ## while more than 5000 ticks of the hold are left, the bare web down to 1000,
@@ -265,7 +271,6 @@ func _physics_process(delta: float) -> void:
 		invincible_timer -= delta
 		if invincible_timer <= 0:
 			is_invincible = false
-			_helmet_invincible = false
 			_sync_wreath()
 	if GameManager.players_frozen:
 		glide_while_held("enemies")  # an enemy took "Hold Enemy"
@@ -1122,9 +1127,8 @@ func _activate_invincibility(duration: float) -> void:
 	invincible_timer = maxf(invincible_timer, duration)
 	_sync_wreath()
 
-## The invincible helmet cookie: the one invincibility that shows the wreath.
+## The invincible helmet cookie: under the wreath till its last 2.25 s.
 func activate_helmet(duration: float) -> void:
-	_helmet_invincible = true
 	_activate_invincibility(duration)
 
 func _process(delta: float) -> void:
@@ -1133,7 +1137,7 @@ func _process(delta: float) -> void:
 	_blink_while_invincible()
 
 func _sync_wreath() -> void:
-	var wreath := is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT
+	var wreath := is_invincible and invincible_timer > WREATH_MIN_LEFT
 	var hold := _hold_stage()
 	if wreath != _wreath_shown or hold != _hold_shown:
 		_wreath_shown = wreath
@@ -1291,7 +1295,7 @@ func net_state() -> Array:
 	var flags: int = state[3]
 	if is_invincible:
 		flags |= NET_INVINCIBLE
-	if is_invincible and _helmet_invincible and invincible_timer > WREATH_MIN_LEFT:
+	if is_invincible and invincible_timer > WREATH_MIN_LEFT:
 		flags |= NET_WREATH
 	if is_mine_slowed:
 		flags |= NET_SLOWED
@@ -1308,8 +1312,7 @@ func net_apply(state: Array) -> void:
 	net_hit_grace_only = flags & NET_HIT_GRACE != 0
 	# The wreath shows while more than WREATH_MIN_LEFT is left; the host says
 	# when, so the clock here only has to sit on the right side of it.
-	_helmet_invincible = flags & NET_WREATH != 0
-	invincible_timer = WREATH_MIN_LEFT + 1.0 if _helmet_invincible else (1.0 if is_invincible else 0.0)
+	invincible_timer = WREATH_MIN_LEFT + 1.0 if flags & NET_WREATH != 0 else (1.0 if is_invincible else 0.0)
 	is_mine_slowed = flags & NET_SLOWED != 0
 	# The host's correction: this machine's tank starts again from the host's
 	# position. (While the host drives it, it's already there: NetClientWorld.)
