@@ -23,7 +23,8 @@ extends Area2D
 ## rule; the original hit it as it was thrown, let an add-on soak the hit and
 ## never threw a memory-save tank.
 ## Opposing explosions set mines off too, so fields chain. Bullets never do.
-## A player's bomb sets every mine off at once, sparing the players (Sean).
+## A player's bomb sets every enemy mine off at once, sparing the players and
+## their own mines (Sean).
 
 const TILE_SIZE: int = 32
 
@@ -156,7 +157,8 @@ func net_apply(state: Array) -> void:
 
 
 ## Go off with no one on it: the blast alone. Used when an explosion reaches it,
-## and for a player's bomb ([param spare_players]: no player tank takes the blast).
+## and for a player's bomb ([param spare_players]: the players' tanks, shells
+## and mines take nothing from the blast).
 func set_off(spare_players: bool = false) -> void:
 	if _triggered:
 		return

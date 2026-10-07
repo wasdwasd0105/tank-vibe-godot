@@ -260,11 +260,13 @@ default, and the settings can turn enemy mines off (see section 6).
   clamp. The original kept the tank's centre 32 px from the left and top edges
   but let it reach the right and bottom edges; the remake keeps the whole tank
   on the field. (Before 2026-09-23 the remake threw tanks to a random spot.)
-- **A player's bomb sets every mine off** (Sean's rule, 2026-09-27). When a
-  player takes the bomb, every mine on the field goes off at once, both sides'
-  and those still being laid (`LevelManager.set_off_all_mines`).
-  - Each makes its own blast, which breaks walls and hurts enemies as usual,
-    but no player tank takes its spray (`ExplosionBlast.spare_players`).
+- **A player's bomb sets the enemies' mines off** (Sean's rule, 2026-09-27;
+  enemies' only since 2026-10-08). When a player takes the bomb, every enemy
+  mine on the field goes off at once, those still being laid too
+  (`LevelManager.set_off_enemy_mines`). The players' own mines stay.
+  - Each makes its own blast, which breaks walls as usual, but no player
+    tank, shell or mine takes anything from it (`ExplosionBlast.spare_players`),
+    so it can't set off a player's mine beside it either.
   - No tank touches a mine this way, so nobody is slowed or thrown either.
   - The original's bomb only destroyed the enemy tanks.
 - **Chains** are tested as the original's: every frame, on the blast's burning

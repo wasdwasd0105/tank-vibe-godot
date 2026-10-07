@@ -1,7 +1,8 @@
 extends Node
 ## Headless integration test for the mine weapon against the original game's
-## rules (docs/mine_weapon_original_spec.md), and a player's bomb setting every
-## mine off with the players spared (Sean's rule). Run as an override main scene:
+## rules (docs/mine_weapon_original_spec.md), and a player's bomb setting the
+## enemies' mines off with the players and their mines spared (Sean's rule). Run
+## as an override main scene:
 ##   Godot --headless res://scenes/test/mine_test.tscn
 ##
 ## Test enemies run with physics (AI) disabled so the harness is deterministic;
@@ -636,13 +637,14 @@ func _run() -> void:
 		and hard_layer.special_weapon_level == 3,
 		"an INSANE type-24 tank (gun level 3) lays level-2 mines: enemy mines stop at L2")
 
-	print("\n[M] A player's bomb_cookie sets every mine off, sparing the players (Sean)")
+	print("\n[M] A player's bomb_cookie sets the enemies' mines off, sparing the players and theirs (Sean)")
 	await _reset()
 	_clear_arena()
 	_place(_player, Vector2(320, 320), Vector2.UP)
 	var bomb_hp := _player.health
 	var near_enemy_mine := _lm._spawn_mine(Vector2i(12, 9), 3, false)   # 3 tiles right: its blast reaches 4
 	var own_mine := _lm._spawn_mine(Vector2i(6, 9), 2, true, 0)         # 3 tiles left, the player's
+	var p2_mine := _lm._spawn_mine(Vector2i(12, 7), 0, true, 1)         # 2 above the enemy mine: its blast would set it off
 	var laying_mine := _lm._spawn_mine(Vector2i(24, 20), 1, false)   # still being laid
 	_put_fg(Vector2i(14, 9), 0x19)   # a brick beside the enemy mine
 	var bomb_victim := _spawn_enemy(Vector2(640, 480))
@@ -657,6 +659,7 @@ func _run() -> void:
 	var p2_hp := p2.health
 	_arm(near_enemy_mine)
 	_arm(own_mine)
+	_arm(p2_mine)
 	laying_mine._age = -100.0
 	await _frames()
 	var bomb_cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
@@ -665,10 +668,12 @@ func _run() -> void:
 	bomb_cookie._apply_effect(_player)
 	bomb_cookie.queue_free()
 	await _frames()
-	check(_lm.get_mines().is_empty() and not is_instance_valid(near_enemy_mine) and not is_instance_valid(own_mine)
-		and not is_instance_valid(laying_mine), "every mine goes off, the one still being laid too")
-	check(_blast_count() == 3, "each in its own blast (%d)" % _blast_count())
+	check(not is_instance_valid(near_enemy_mine) and not is_instance_valid(laying_mine),
+		"the enemies' mines go off, the one still being laid too")
+	check(_blast_count() == 2, "each in its own blast (%d)" % _blast_count())
 	await _settle()
+	check(_lm.get_mines().size() == 2 and _lm.has_mine(Vector2i(6, 9)) and _lm.has_mine(Vector2i(12, 7)),
+		"the players' own mines stay, even one the enemy mine's blast reaches (%d left)" % _lm.get_mines().size())
 	check(_player.health == bomb_hp and not _player.is_flying and not _player.is_mine_slowed,
 		"the player, within the enemy L3 mine's reach, is unhurt, not thrown, not slowed (HP %d)" % _player.health)
 	check(p2.health == p2_hp and not p2.is_flying and not p2.is_mine_slowed,
@@ -677,17 +682,21 @@ func _run() -> void:
 	p2.queue_free()
 	check(not _lm._fg_tile_data.has(Vector2i(14, 9)) or int(_lm._brick_damage.get(Vector2i(14, 9), 0b1111)) != 0b1111,
 		"the brick beside the enemy mine breaks (a whole one keeps half), as in any mine blast")
-	# The control: the same mine going off as usual_mine hurts the player.
+	# The control: the same mine going off as usual_mine hurts the player, and
+	# sets off player 2's mine above it.
 	await _reset()
 	_clear_arena()
 	_place(_player, Vector2(320, 320), Vector2.UP)
 	var usual_mine := _lm._spawn_mine(Vector2i(12, 9), 3, false)
+	var usual_p2_mine := _lm._spawn_mine(Vector2i(12, 7), 0, true, 1)
 	await _frames()
 	_arm(usual_mine)
+	_arm(usual_p2_mine)
 	await _frames()
 	usual_mine.set_off()
 	await _settle()
 	check(_player.health < bomb_hp, "while the same mine going off on its own hurts the player (HP %d)" % _player.health)
+	check(not _lm.has_mine(Vector2i(12, 7)), "and sets off player 2's mine above it")
 	_player.health = bomb_hp
 
 	# The last lay sound (0.92 s) must finish, or the engine reports its playback

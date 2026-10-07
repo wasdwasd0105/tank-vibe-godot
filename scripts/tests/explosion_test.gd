@@ -259,6 +259,31 @@ func _run() -> void:
 	await _play_out(spared)
 	check(_player.health == php, "a mine a player's bomb set off spares the players")
 	_player.global_position = _lm.global_position + Vector2(64, 900)
+	# Their shells and mines too: an enemy's blast takes a player's shell and sets
+	# off a player's mine; one from a mine a player's bomb set off leaves them be.
+	var kept: Array = []
+	for spare in [false, true]:
+		var own_shell: Bullet = load("res://scenes/tanks/bullet.tscn").instantiate()
+		own_shell.is_player_bullet = true
+		own_shell.direction = Vector2.LEFT
+		_game.get_node("Entities/Bullets").add_child(own_shell)
+		own_shell.set_physics_process(false)
+		own_shell.global_position = _at(Vector2(0.5, 0.5))
+		var own_mine := _lm._spawn_mine(_corner + Vector2i(1, -1), 0, true, 0)
+		await _frames()
+		own_mine._age = Mine.ARM_TIME + 0.001
+		var by_enemy := ExplosionBlast.new()
+		by_enemy.setup(2, false, _lm, false, -1, spare)
+		by_enemy.origin = _corner - Vector2i(4, 4)
+		_game.get_node("Entities/Effects").add_child(by_enemy)
+		await _play_out(by_enemy)
+		kept.append([is_instance_valid(own_shell) and not own_shell._destroyed, _lm.has_mine(_corner + Vector2i(1, -1))])
+		if is_instance_valid(own_shell):
+			own_shell.queue_free()
+		_lm._clear_mines()
+		await tree.create_timer(0.3).timeout
+	check(kept[0] == [false, false], "an enemy's blast takes a player's shell and sets off a player's mine (%s)" % str(kept[0]))
+	check(kept[1] == [true, true], "a mine a player's bomb set off leaves the players' shells and mines be (%s)" % str(kept[1]))
 
 	print("\n[F] A moon shield facing the centre saves its tank from that side's tiles")
 	# Below the centre, facing up: every tile it's on is covered.

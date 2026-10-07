@@ -1099,12 +1099,14 @@ func get_mines() -> Array[Mine]:
 	return mines
 
 
-## A player's bomb (Sean, 2026-09-27): every mine on the field goes off, each
-## with its own blast, which breaks walls and hurts enemies as usual but spares
-## the players.
-func set_off_all_mines() -> void:
+## A player's bomb (Sean, 2026-09-27): every enemy mine on the field goes off,
+## those still being laid too, each with its own blast, which breaks walls as
+## usual but spares the players: their tanks, shells and mines. The players'
+## own mines stay (Sean, 2026-10-08).
+func set_off_enemy_mines() -> void:
 	for mine in get_mines():
-		mine.set_off(true)
+		if not mine.from_player:
+			mine.set_off(true)
 
 
 ## ENEMY MINES switched off mid-stage (the pause menu): the enemies' mines

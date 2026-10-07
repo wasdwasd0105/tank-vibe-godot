@@ -64,7 +64,7 @@ var level: int = 0
 var from_player: bool = true
 var neutral: bool = false  # a mine-thrown tank's landing: it hurts both sides
 var owner_id: int = -1  # the player whose shell or mine this is (-1: an enemy's, or nobody's)
-var spare_players: bool = false  # a mine a player's bomb set off: no player tank takes its blast
+var spare_players: bool = false  # a mine a player's bomb set off: the players' tanks, shells and mines take nothing
 ## The top-left tile of its 8x8.
 var origin: Vector2i = Vector2i.ZERO
 
@@ -270,9 +270,10 @@ func _change_walls() -> void:
 				_level_manager.blast_wall(origin + Vector2i(x, y), 0b1100 if y < x else 0b1010)
 
 
-## True if the blast's side spares [param tank]'s: a normal blast never hurts
-## its own side; a landing's hurts everyone; a mine a player's bomb set off
-## spares the players.
+## True if the blast spares a tank, shell or mine of the players'
+## ([param is_player]) or the enemies': a normal blast never touches its own
+## side's; a landing's touches everyone's; a mine a player's bomb set off
+## spares the players'.
 func _spares(is_player: bool) -> bool:
 	if is_player and spare_players:
 		return true
@@ -310,7 +311,7 @@ func _hurt_shells() -> void:
 		var shell := node as Bullet
 		if shell == null or shell._destroyed or shell.is_queued_for_deletion() or shell.blast_immunity > 0.0:
 			continue
-		if not neutral and shell.is_player_bullet == from_player:
+		if _spares(shell.is_player_bullet):
 			continue
 		var heat: int = heat_on(shell.global_position, SHELL_REACH)[0]
 		if heat > 0:
@@ -323,14 +324,15 @@ func _hurt_shells() -> void:
 ## where the blast's level and its heat there less 2 (less 3 above level 0)
 ## come to its level. So the same level chains to the next tile only, and a
 ## stronger blast reaches weaker mines further out. Mines of the blast's own
-## side never go; a landing's blast belongs to neither.
+## side never go; a landing's blast belongs to neither; a mine a player's bomb
+## set off leaves the players' be (_spares).
 func _set_off_mines() -> void:
 	if _level_manager == null:
 		return
 	for mine in _level_manager.get_mines():
 		if not mine.is_armed() or mine.level > level:
 			continue
-		if not neutral and mine.from_player == from_player:
+		if _spares(mine.from_player):
 			continue
 		var heat: int = heat_on(mine.global_position, MINE_REACH)[0]
 		if heat > 0 and level + heat - (2 if level <= 0 else 3) >= mine.level:

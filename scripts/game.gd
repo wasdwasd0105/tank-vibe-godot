@@ -559,7 +559,7 @@ func _on_game_over_finished() -> void:
 
 func _on_bomb_all_enemies(player_id: int) -> void:
 	enemy_spawner.destroy_all_enemies(player_id)
-	level_manager.set_off_all_mines()  # every mine too, the players spared
+	level_manager.set_off_enemy_mines()  # their mines too, the players and theirs spared
 
 func _on_freeze_enemies(duration: float) -> void:
 	GameManager.freeze_all_enemies(duration)
