@@ -40,7 +40,7 @@ enum Transport { TCP, UDP }
 
 ## Bump when the messages change, or what either side makes of them: a host
 ## only lets in its own protocol.
-const PROTOCOL := 8
+const PROTOCOL := 9
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3

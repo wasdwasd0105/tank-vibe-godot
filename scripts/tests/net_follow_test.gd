@@ -754,9 +754,9 @@ func _run() -> void:
 		and shells[3].global_position.y <= up_barrel.y and shells[3].global_position.y > up_barrel.y - shells[3].speed / 30.0,
 		"turned and fired at once: the shell goes its new way, out of its barrel that way")
 	var args := shell.net_spawn_args() if shell else []
-	check(args.size() == 12 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed) and args[9] == shell.net_shot
-		and args[10] == shell.damage and args[11] == Array(shell.collision_lane_offsets),
-		"the clients learn whose shell it is, how it flies, its number, its damage and the lanes it hits on: %s" % str(args))
+	check(args.size() == 13 and args[3] == 0 and is_equal_approx(float(args[4]), shell.speed) and args[9] == shell.net_shot
+		and args[10] == shell.damage and args[11] == Array(shell.collision_lane_offsets) and args[12] == [1, -1, -1],
+		"the clients learn whose shell it is, how it flies, its number, its damage, the lanes it hits on, its side and that it drops no fire and sets off no blast: %s" % str(args))
 	for each: Node in _client_shells():
 		each.queue_free()
 	# A shot of a kind with its shells in flight here at their limit waits; then
@@ -783,15 +783,28 @@ func _run() -> void:
 	await _wait_frames(3)
 	check(_client_shells().is_empty() and PlayerInput.remote_pad(0).shots_due.is_empty(),
 		"one that can't go for half a second is let go: its ghost there goes too")
-	# Mines aren't fired there: its press lays one here, as before.
+	# A mine is laid there at once too: here, where it laid it there, numbered as
+	# its shots are; its press alone lays none.
 	_player.secondary_weapon_type = "mine"
 	_player.can_shoot = true
 	var mines_was := _lm.get_mines().size()
 	PlayerInput.set_remote(PEER, 0, -1, [false, false], [1, 1])
 	await _wait_frames(2)
 	await tree.process_frame  # (a mine goes in deferred)
-	check(_lm.get_mines().size() == mines_was + 1, "its press lays a mine here, as mines are left to the host")
+	check(_lm.get_mines().size() == mines_was, "its press alone lays no mine here: its mine comes as one it laid")
+	var copy_at := _player.global_position
+	var laid_from := copy_at + Vector2(32, 0)
+	_client_fires(laid_from - _lm.global_position, Vector2.RIGHT, 1)
+	await _wait_frames(2)
+	await tree.process_frame
+	var laid_mines := _lm.get_mines()
+	var origin := Vector2i(Mine.round_half_even((laid_from - _lm.global_position).x / 32.0 - 1.0),
+			Mine.round_half_even((laid_from - _lm.global_position).y / 32.0 - 1.0))
+	check(laid_mines.size() == mines_was + 1 and laid_mines[-1].cell == origin - Vector2i(2, 0)
+		and laid_mines[-1].net_shot == 256 + _client_shots[1] and laid_mines[-1].net_spawn_args()[3] == laid_mines[-1].net_shot,
+		"its mine shot: laid straight behind where it had the tank there (not its copy here, a tile behind), its number on it for the clients")
 	for mine in _lm.get_mines():
+		_lm.unregister_mine(mine)
 		mine.queue_free()
 	_player.secondary_weapon_type = kind_was
 	_player.secondary_weapon_count = ammo_was
@@ -1352,7 +1365,7 @@ func _run() -> void:
 	var world := NetClientWorld.new()
 	var fx := Node2D.new()
 	_game.add_child(fx)
-	world.setup(_game, _lm, null, {"bullets": bullets}, fx)
+	world.setup(_game, _lm, null, {"bullets": bullets, "terrain": _lm.terrain_node}, fx)
 	_game.add_child(world)
 	check(NetClientWorld.of(tree) == world, "the game's client world")
 	world._shown_time = 5000.0
@@ -1910,13 +1923,21 @@ func _run() -> void:
 		"a client's own shots spend none of the host's numbers")
 	GameManager.player_secondary_weapon_types[0] = "mine"
 	var mines := _lm.get_mines().size()
+	await _wait_frames(2)  # (a press of its own, not in the frame of the last,
+	await tree.process_frame  # and in an idle frame, where it's just pressed at once)
 	Input.action_press("p1_shoot2")
 	_player.can_shoot = true
 	_fire_here()
 	Input.action_release("p1_shoot2")
 	await tree.process_frame  # (a mine goes in deferred)
-	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 3 and _lm.get_mines().size() == mines,
-		"mines are left to the host: none laid here")
+	var laid_here: Mine = world._ghost_mines[-1]["node"] if world._ghost_mines.size() == 1 else null
+	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 4 and SoundManager._predicted[-1][1] == &"lay_mine"
+		and _lm.get_mines().size() == mines and laid_here != null and laid_here.net_shot == 256 + int(Net._shots[0][1])
+		and laid_here.collision_mask == 0,
+		"a mine: laid here at once, heard, numbered for the host (no mine of the host's world laid here)")
+	if laid_here:
+		laid_here.queue_free()
+	world._ghost_mines.clear()
 	# An explosion shell of the gun's top level breaks the iron it hits here at
 	# once, as the host's will (Sean's rule): the two tiles in its way.
 	var level_was: int = GameManager.player_weapon_levels[0]

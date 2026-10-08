@@ -192,17 +192,10 @@ var _screen_grace_frame := 0
 var _screen_grace_run := -1
 var _hit_grace_only := false
 ## Client: a hit this machine's own tank survives, shown here at once
-## (NetClientWorld._show_own_hits): its red flash till then (msec), and the
-## physics frame its grace began in, as the host judges it (by the frames this
-## machine reports, _judge_reported_hits); and those hits whose flash the
-## host's word is still to bring (msec each, oldest first), which it then
-## doesn't start again (_shown_flash). One owed this long goes unpaid.
-var _flash_guessed_until := 0
+## (NetClientWorld._show_own_hits): the physics frame its grace began in, as
+## the host judges it (by the frames this machine reports,
+## _judge_reported_hits). Its red flash is BaseTank's guess_flash_here.
 var _grace_guessed_frame := -100000
-var _flashes_owed: Array[int] = []
-var _host_flash_was := 0.0
-var _host_flash_left_out := false
-const FLASH_OWED_MS := 1500
 ## Client: this machine drives this tank (its own seat), with local slot
 ## [member net_slot]'s controls. It moves here at once (_predict), ahead of the
 ## host by the trip there, and the host's copy follows it.
@@ -287,10 +280,10 @@ func _physics_process(delta: float) -> void:
 	# (Damage flash is handled centrally in BaseTank._process.)
 
 	if PlayerInput.remote_predicts(player_id):
-		# Its shots are the ones it fired there itself, each fired here once.
+		# The items it took there are taken first, then its shots and mines are
+		# the ones it fired and laid there itself, each once here.
+		_take_items_where_reported()
 		_fire_client_shots()
-		if secondary_weapon_type == "mine" and PlayerInput.is_just_pressed(player_id, 1):
-			shoot_secondary()  # (mines aren't fired there: laid here on its press)
 		return
 	# Held, or a tap between two frames: a client's press and release can come
 	# in one bunch, and its counter still says it pressed.
@@ -441,9 +434,10 @@ func _play_reports() -> Array:
 ## there itself (PlayerInput's shots_due), each fired here once, in order, as it
 ## fired it: the same weapon and row, from where it had the tank, numbered so
 ## its ghost there gives way to this very shell (_shot_origin, _shot_row,
-## _shot_number). It kept to the cooldown on its own clock, so the host's
-## doesn't hold a shot back however the network bunched them; one whose kind
-## still has too many shells flying here waits (CLIENT_SHOT_WAIT_MS at most).
+## _shot_number); a mine likewise, laid where it laid it (_place_mine). It kept
+## to the cooldown on its own clock, so the host's doesn't hold a shot back
+## however the network bunched them; one whose kind still has too many shells
+## flying here waits (CLIENT_SHOT_WAIT_MS at most).
 func _fire_client_shots() -> void:
 	var pad := PlayerInput.remote_pad(player_id)
 	if pad == null:
@@ -452,7 +446,7 @@ func _fire_client_shots() -> void:
 	while not pad.shots_due.is_empty():
 		var shot: Array = pad.shots_due[0]
 		var button := int(shot[0])
-		if now - int(shot[4]) > CLIENT_SHOT_WAIT_MS or (button == 1 and secondary_weapon_type == "mine"):
+		if now - int(shot[4]) > CLIENT_SHOT_WAIT_MS:
 			pad.shots_due.pop_front()
 			continue
 		if not _client_shot_ready(button):
@@ -727,8 +721,8 @@ func _predict() -> void:
 
 ## Client: this tank's shots, fired here at once as the host will fire them when
 ## the keys reach it: each is seen and heard now, a ghost of the host's shell
-## to come (BaseTank._spawn_bullet, NetClientWorld.add_ghost). Mines are left
-## to the host.
+## to come (BaseTank._spawn_bullet, NetClientWorld.add_ghost); and its mines,
+## laid here at once on a press (_place_mine).
 func _predict_fire() -> void:
 	_take_host_weapons()
 	var prefix := PlayerInput.action_prefix(net_slot)
@@ -737,6 +731,9 @@ func _predict_fire() -> void:
 		_firing_button = 0
 		shoot_regular()
 	if secondary_weapon_type == "mine":
+		if Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
+			_firing_button = 1
+			shoot_secondary()
 		return
 	var held := Input.is_action_pressed(prefix + PlayerInput.BUTTONS[1])
 	if (held and secondary_weapon_type in AUTO_SECONDARY) or Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
@@ -1042,6 +1039,42 @@ func break_moon_shield_grace() -> void:
 
 const AP_SHIELD_GRACE: float = 1.125
 
+## Its mine: on a client, its own laid here at once (NetClientWorld.predict_mine);
+## on the host, a client's own laid where that client had it as it pressed,
+## numbered as that client's (_shot_origin, _shot_number).
+func _place_mine(level: int) -> bool:
+	if Net.is_client():
+		var world := NetClientWorld.of(get_tree())
+		return world != null and world.predict_mine(self, level)
+	var lm := _get_level_manager()
+	return lm != null and lm.try_place_mine(self, level, _shot_origin(), _shot_facing(), _shot_number())
+
+## Host: the items the client driving this tank drove onto there, as its
+## reports since the last frame have it (PlayerInput's RemotePad.reach), taken
+## here now, before its copy gets there (Cookie.take_for): its screen took them
+## at once (NetClientWorld.predict_pickups), so what they do is here as soon as
+## its word comes, and the shots it fired after go as they did there. A report
+## further from this copy than the playback ever lags isn't believed.
+func _take_items_where_reported() -> void:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.reach.is_empty():
+		return
+	var spots: Array = pad.reach.duplicate()
+	pad.reach.clear()
+	if _host_drives or is_materializing or is_flying or GameManager.players_frozen:
+		return
+	var reach := Cookie.S * 0.5 + HITBOX_SIZE * 0.5
+	for spot: Array in spots:
+		if int(spot[1]) != net_override or (spot[0] as Vector2).distance_to(global_position) > _report_reach():
+			continue
+		for node in get_tree().get_nodes_in_group("cookies"):
+			var cookie := node as Cookie
+			if cookie == null or not cookie.may_be_taken():
+				continue
+			var off: Vector2 = cookie.global_position - (spot[0] as Vector2)
+			if absf(off.x) < reach and absf(off.y) < reach:
+				cookie.take_for(self)
+
 func _shoot_secondary_mine() -> void:
 	var config: Dictionary = CookieData.get_weapon_fire_config("mine", weapon_level)
 	if config.is_empty():
@@ -1049,7 +1082,7 @@ func _shoot_secondary_mine() -> void:
 	# Lay the mine first; if there's no free spot, spend neither ammo nor cooldown.
 	if not _place_mine(weapon_level):
 		return
-	SoundManager.play(&"lay_mine")
+	_shot_sound(&"lay_mine")
 	can_shoot = false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
 	if shoot_cooldown:
@@ -1275,8 +1308,14 @@ const NET_INVINCIBLE := NET_OWN_FLAGS
 const NET_WREATH := NET_OWN_FLAGS << 1
 const NET_SLOWED := NET_OWN_FLAGS << 2
 const NET_HIT_GRACE := NET_OWN_FLAGS << 3
+## Its count of the hits that cost it a level is odd: the next costs a gun
+## level, not a speed step (_apply_hit_punishment). The client driving it shows
+## that at once (NetClientWorld._guess_hit).
+const NET_HITS_ODD := NET_OWN_FLAGS << 4
 ## Client: the host's invincibility for this tank is only a hit's grace.
 var net_hit_grace_only := false
+## Client: the host's NET_HITS_ODD, or this machine's own guess of it.
+var net_hits_odd := false
 ## Past the base's state: the host's net_override.
 const NET_OVERRIDE_AT := 9
 
@@ -1301,6 +1340,8 @@ func net_state() -> Array:
 		flags |= NET_SLOWED
 	if is_invincible and _hit_grace_only:
 		flags |= NET_HIT_GRACE
+	if _hits_taken % 2 == 1:
+		flags |= NET_HITS_ODD
 	state[3] = flags
 	state.append(net_override)
 	return state
@@ -1310,9 +1351,21 @@ func net_apply(state: Array) -> void:
 	var flags := int(state[3])
 	is_invincible = flags & NET_INVINCIBLE != 0
 	net_hit_grace_only = flags & NET_HIT_GRACE != 0
+	net_hits_odd = flags & NET_HITS_ODD != 0
+	var wreath := flags & NET_WREATH != 0
+	# What this machine's own play did to its own tank (an item's shield, a
+	# hit's count) shows at once, whatever the host's state says till its word.
+	var world := _own_world()
+	if world:
+		var now := Time.get_ticks_msec()
+		if now < int(world.own_value(self, "invincible_until", 0)):
+			is_invincible = true
+			net_hit_grace_only = false
+		wreath = wreath or now < int(world.own_value(self, "wreath_until", 0))
+		net_hits_odd = bool(world.own_value(self, "hits_odd", net_hits_odd))
 	# The wreath shows while more than WREATH_MIN_LEFT is left; the host says
 	# when, so the clock here only has to sit on the right side of it.
-	invincible_timer = WREATH_MIN_LEFT + 1.0 if flags & NET_WREATH != 0 else (1.0 if is_invincible else 0.0)
+	invincible_timer = WREATH_MIN_LEFT + 1.0 if wreath else (1.0 if is_invincible else 0.0)
 	is_mine_slowed = flags & NET_SLOWED != 0
 	# The host's correction: this machine's tank starts again from the host's
 	# position. (While the host drives it, it's already there: NetClientWorld.)
@@ -1324,6 +1377,20 @@ func net_apply(state: Array) -> void:
 			current_direction = FACINGS[clampi(int(state[2]), 0, FACINGS.size() - 1)]
 			_update_sprite_direction()
 			velocity = Vector2.ZERO
+
+## Client: this machine's own tank shows its own play's health and add-ons at
+## once (NetClientWorld.own_value), the host's otherwise.
+func _net_health(host: int) -> int:
+	var world := _own_world()
+	return int(world.own_value(self, "health", host)) if world else host
+
+func _net_addon_bits(host: int) -> int:
+	var world := _own_world()
+	return int(world.own_value(self, "addons", host)) if world else host
+
+## Client: the world showing this tank, if this machine drives it.
+func _own_world() -> NetClientWorld:
+	return NetClientWorld.of(get_tree()) if net_predicted and is_inside_tree() else null
 
 func _net_apply_addons(bits: int) -> void:
 	var wanted := BaseTank.net_addon_names(bits)
@@ -1377,34 +1444,14 @@ func _hit_sound_tank() -> int:
 ## red flash and its sound at once, and the grace after it, as the host's word
 ## will have them. Its damage and the rumble come with that word.
 func guess_hit_here(frame: int) -> void:
-	var now := Time.get_ticks_msec()
-	_flash_guessed_until = now + int(DAMAGE_FLASH_DURATION * 1000.0)
 	_grace_guessed_frame = frame
-	_damage_flash_timer = DAMAGE_FLASH_DURATION
-	_flashes_owed.append(now)
+	guess_flash_here()
 	SoundManager.play_predicted(&"tank_hit", player_id)
 
 ## Client: in its physics frame [param frame], within the grace after a hit
 ## shown here at once (guess_hit_here), counted in frames as the host does.
 func in_guessed_grace(frame: int) -> bool:
 	return frame - _grace_guessed_frame < roundi(HIT_GRACE * Engine.physics_ticks_per_second)
-
-## Client: the host's flash of a hit shown here at once already (the host's
-## state starting a flash with one owed) is left out, and a flash shown here at
-## once runs on whatever the host's state says meanwhile.
-func _shown_flash(host: float) -> float:
-	var now := Time.get_ticks_msec()
-	if host > _host_flash_was + 0.05:
-		while not _flashes_owed.is_empty() and now - _flashes_owed[0] > FLASH_OWED_MS:
-			_flashes_owed.pop_front()
-		_host_flash_left_out = not _flashes_owed.is_empty()
-		if _host_flash_left_out:
-			_flashes_owed.pop_front()
-	elif host <= 0.0:
-		_host_flash_left_out = false
-	_host_flash_was = host
-	var guessed := maxf(float(_flash_guessed_until - now), 0.0) / 1000.0
-	return maxf(0.0 if _host_flash_left_out else host, guessed)
 
 func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
 	if not is_flying:

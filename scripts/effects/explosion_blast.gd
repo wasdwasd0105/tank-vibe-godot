@@ -67,6 +67,9 @@ var owner_id: int = -1  # the player whose shell or mine this is (-1: an enemy's
 var spare_players: bool = false  # a mine a player's bomb set off: the players' tanks, shells and mines take nothing
 ## The top-left tile of its 8x8.
 var origin: Vector2i = Vector2i.ZERO
+## Client: called with this blast on its wall frame, if it's one of this
+## machine's own laid here at once (NetClientWorld.predict_hit).
+var net_walls: Callable = Callable()
 
 var power: int = 250
 var falloff: int = 60
@@ -145,8 +148,13 @@ func _step() -> void:
 			spr.visible = _tile_piece[i] >= 0 and f >= 0 and f < 8 and f < _slices.size()
 			if spr.visible:
 				spr.texture = _slices[f][_tile_piece[i]]
-	if Net.is_client():
-		return  # a client's blast is only its picture: the host's does the rest
+	if Net.is_client() or net_walls.is_valid():
+		# A client's blast is only its picture: the host's does the rest. One of
+		# its own shells' laid there at once (net_walls) breaks its walls there
+		# too, as the host's will: NetClientWorld keeps that as a guess.
+		if _frame == WALL_FRAME and net_walls.is_valid():
+			net_walls.call(self)
+		return
 	if _frame == WALL_FRAME:
 		_change_walls()
 	_hurt_tanks()
@@ -268,6 +276,23 @@ func _change_walls() -> void:
 		for y in TILES:
 			if _tile_heat[x * TILES + y] * power >= WALL_HEAT:
 				_level_manager.blast_wall(origin + Vector2i(x, y), 0b1100 if y < x else 0b1010)
+
+
+## The tiles whose walls it changes (_change_walls).
+func wall_cells() -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	for x in TILES:
+		for y in TILES:
+			if _tile_heat[x * TILES + y] * power >= WALL_HEAT:
+				cells.append(origin + Vector2i(x, y))
+	return cells
+
+
+## Client: its walls changed here at once, a blast of this machine's own laid
+## here before the host's word (NetClientWorld.predict_hit): as the host's
+## changes them.
+func change_walls_here() -> void:
+	_change_walls()
 
 
 ## True if the blast spares a tank, shell or mine of the players'

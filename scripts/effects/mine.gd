@@ -50,6 +50,10 @@ var level: int = 0                     # 0-3, the layer's gun level
 var from_player: bool = true           # side: true = laid by a player (hurts enemies)
 var owner_id: int = -1                 # the player who laid it (-1: an enemy)
 var cell: Vector2i = Vector2i.ZERO     # top-left tile of the 2x2 block it sits on
+## Online: the number a client gave the mine its own tank laid there at once
+## (Net.note_shot), on that client's mine and on the host's for it, so the one
+## takes over from the other; -1 for any other.
+var net_shot := -1
 
 var _level_manager: LevelManager = null
 var _age: float = 0.0
@@ -100,10 +104,13 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_age += delta
 	if Net.is_client():
-		# Only its frames run here: when it shows, and how clearly, is the host's.
+		# Only its frames run here, and a player's mine shows once it surfaces:
+		# when an enemy's shows, and how clearly, is the host's.
 		if _age > ARM_TIME:
 			_armed = true
 			_show_frame()
+			if from_player:
+				visible = true
 		return
 	if _age <= ARM_TIME:
 		return  # still deploying: hidden, and nothing can touch it
@@ -133,13 +140,14 @@ func is_armed() -> bool:
 
 
 # --- Online (NetWorld): a mine is its level and side, how long it has lain
-# (its frames go by that), and whether and how clearly it shows. ---
+# (its frames go by that), the number of the client's own it is (net_shot), and
+# whether and how clearly it shows. ---
 
 func net_type() -> int:
 	return NetWorld.T_MINE
 
 func net_spawn_args() -> Array:
-	return [level, 1 if from_player else 0, _age]
+	return [level, 1 if from_player else 0, _age, net_shot]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y, 1 if visible else 0,
@@ -149,11 +157,21 @@ func net_setup(args: Array) -> void:
 	level = clampi(int(args[0]), 0, 3)
 	from_player = int(args[1]) != 0
 	_age = float(args[2])
+	if args.size() >= 4:
+		net_shot = int(args[3])
 
 func net_apply(state: Array) -> void:
-	visible = int(state[2]) != 0
+	if not from_player:
+		visible = int(state[2]) != 0  # (a player's shows by its own clock)
 	if _sprite:
 		_sprite.modulate.a = float(state[3])
+
+## Client: the host's mine for one laid here at once ([param laid],
+## NetClientWorld.predict_mine) lies on from it, as long laid already.
+func take_over_from(laid: Mine) -> void:
+	_age = maxf(_age, laid._age)
+	if from_player:
+		visible = laid.visible
 
 
 ## Go off with no one on it: the blast alone. Used when an explosion reaches it,

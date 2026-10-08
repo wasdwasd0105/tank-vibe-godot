@@ -801,7 +801,7 @@ func _take_points(points: int, bullet_direction: Vector2) -> void:
 		killed_by = attacker
 		destroy()
 	else:
-		SoundManager.play(&"tank_hit")
+		SoundManager.play(&"tank_hit", SoundManager.SHOT_TAG + attacker if attacker >= 0 else -1)
 
 func destroy() -> void:
 	if is_queued_for_deletion():

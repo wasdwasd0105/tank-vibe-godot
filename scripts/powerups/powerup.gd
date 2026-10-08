@@ -67,8 +67,9 @@ func _ready() -> void:
 			var tex_size := tex.get_size()
 			$Sprite2D.scale = Vector2(S / tex_size.x, S / tex_size.y)
 		$Sprite2D.modulate = Color.WHITE
-	# Start spray animation if origin was set
-	if _spray_origin != Vector2.ZERO:
+	# Start spray animation if origin was set (one sprayed out by the host's word
+	# of it is set already: net_setup)
+	if _spray_origin != Vector2.ZERO and not net_sprayed_here:
 		_spray_target = global_position
 		global_position = _spray_origin
 		var dist := _spray_origin.distance_to(_spray_target)
@@ -82,28 +83,13 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if Net.is_client():
-		return  # the host sprays, times and hands out every item; this one only shows it
-	# Spray animation: arc from origin to target
+		# The host times and hands out every item; this one only shows it,
+		# sprayed out here as the host's word says (net_setup).
+		if _is_spraying:
+			_spray_step(delta)
+		return
 	if _is_spraying:
-		_spray_timer += delta
-		var t: float = clampf(_spray_timer / _spray_duration, 0.0, 1.0)
-		# Ease-out for smooth landing
-		var ease_t: float = 1.0 - (1.0 - t) * (1.0 - t)
-		# Horizontal position: lerp from origin to target
-		var pos := _spray_origin.lerp(_spray_target, ease_t)
-		# Vertical arc: parabola peaking at t=0.5
-		var arc: float = -4.0 * SPRAY_ARC_HEIGHT * t * (t - 1.0)
-		pos.y -= arc
-		global_position = pos
-		# Scale: grow from 0.3 to 1.0
-		var s: float = lerpf(0.3, 1.0, ease_t)
-		scale = Vector2(s, s)
-		if t >= 1.0:
-			_is_spraying = false
-			global_position = _spray_target
-			scale = Vector2.ONE
-			# Re-enable collision after landing
-			set_deferred("monitoring", true)
+		_spray_step(delta)
 		return  # Don't tick lifetime or fade during spray
 
 	# Tick pickup delay
@@ -150,26 +136,89 @@ func _process(delta: float) -> void:
 	if _lifetime > _despawn_time:
 		queue_free()
 
-# --- Online (NetWorld): an item is its type, where it is, its size (it grows
-# as it's sprayed out) and how faded it is (it breathes out as it expires).
+## One step of the spray, [param delta] s on: an arc from the origin to where it
+## lands, growing as it goes.
+func _spray_step(delta: float) -> void:
+	_spray_timer += delta
+	var t: float = clampf(_spray_timer / _spray_duration, 0.0, 1.0)
+	global_position = _spray_point()
+	# Scale: grow from 0.3 to 1.0
+	var s: float = lerpf(0.3, 1.0, 1.0 - (1.0 - t) * (1.0 - t))
+	scale = Vector2(s, s)
+	if t >= 1.0:
+		_is_spraying = false
+		global_position = _spray_target
+		scale = Vector2.ONE
+		# Re-enable collision after landing
+		if not Net.is_client():
+			set_deferred("monitoring", true)
+
+## Where the spray has it now: an arc from the origin to where it lands,
+## easing out, peaking halfway.
+func _spray_point() -> Vector2:
+	var t: float = clampf(_spray_timer / _spray_duration, 0.0, 1.0)
+	var pos := _spray_origin.lerp(_spray_target, 1.0 - (1.0 - t) * (1.0 - t))
+	pos.y -= -4.0 * SPRAY_ARC_HEIGHT * t * (t - 1.0)
+	return pos
+
+## True while it's sprayed out, not yet down.
+func is_spraying() -> bool:
+	return _is_spraying
+
+## Host: a player's tank may take it now (take_for): down, and its pickup delay over.
+func may_be_taken() -> bool:
+	return not _is_spraying and _pickup_delay <= 0.0 and not is_queued_for_deletion()
+
+## Host: [param player]'s tank takes it where the client driving that tank had
+## it (PlayerTank._take_items_where_reported), as if it had driven onto it here.
+func take_for(player: PlayerTank) -> void:
+	_on_body_entered(player)
+
+# --- Online (NetWorld): an item is its type and, while it's sprayed out of a
+# tank, where from and where to (a client sprays it out itself, from when the
+# host's word comes: no stale arc after it's down); where it is, its size (it
+# grows as it's sprayed out) and how faded it is (it breathes out as it
+# expires).
 
 const NET_GLIDES: Array[int] = [2, 3]
+## Client: sprayed out here by the host's word of it (net_setup): its place and
+## size are its own, not the host's states'.
+var net_sprayed_here := false
 
 func net_type() -> int:
 	return NetWorld.T_COOKIE
 
 func net_spawn_args() -> Array:
-	return [cookie_type]
+	if not _is_spraying:
+		return [cookie_type]
+	return [cookie_type, _spray_origin.x, _spray_origin.y, _spray_target.x, _spray_target.y,
+			_spray_duration, _spray_timer]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y, scale.x, modulate.a]
 
 func net_setup(args: Array) -> void:
 	cookie_type = int(args[0])
+	if args.size() >= 7:
+		_spray_origin = Vector2(args[1], args[2])
+		_spray_target = Vector2(args[3], args[4])
+		_spray_duration = maxf(float(args[5]), SPRAY_MIN_DURATION)
+		_spray_timer = float(args[6])
+		_is_spraying = true
+		net_sprayed_here = true
+		scale = Vector2.ONE * 0.3
 
 func net_apply(state: Array) -> void:
-	scale = Vector2.ONE * float(state[2])
+	if not net_sprayed_here:
+		scale = Vector2.ONE * float(state[2])
 	modulate.a = float(state[3])
+
+## Client: where it shows, for the host's [param at] (NetClientWorld._place):
+## one sprayed out here goes by its own spray, then lies where it landed.
+func net_place(at: Vector2) -> Vector2:
+	if not net_sprayed_here:
+		return at
+	return _spray_point() if _is_spraying else _spray_target
 
 func _on_body_entered(body: Node2D) -> void:
 	if Net.is_client():

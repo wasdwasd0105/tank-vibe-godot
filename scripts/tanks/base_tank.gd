@@ -839,11 +839,42 @@ func take_hit(points: int) -> void:
 func _hit_sound_tank() -> int:
 	return -1
 
+## Client: a hit on this tank shown here at once (a client's own tank hit,
+## NetClientWorld._show_own_hits; an enemy its own shot hit and didn't finish,
+## NetClientWorld.guess_kill): its red flash till then (msec); and those hits
+## whose flash the host's word is still to bring (msec each, oldest first),
+## which it then doesn't start again (_shown_flash). One owed this long goes
+## unpaid.
+var _flash_guessed_until := 0
+var _flashes_owed: Array[int] = []
+var _host_flash_was := 0.0
+var _host_flash_left_out := false
+const FLASH_OWED_MS := 1500
+
+## Client: a hit on this tank, shown here at once: its red flash.
+func guess_flash_here() -> void:
+	var now := Time.get_ticks_msec()
+	_flash_guessed_until = now + int(DAMAGE_FLASH_DURATION * 1000.0)
+	_damage_flash_timer = DAMAGE_FLASH_DURATION
+	_flashes_owed.append(now)
+
 ## Online, on a client: how long the tank flashes red, from the host's state
-## of it, [param host] (PlayerTank keeps a hit it showed at once, and leaves out
-## the host's flash of that same hit).
+## of it, [param host]. The host's flash of a hit shown here at once already
+## (the host's state starting a flash with one owed) is left out, and a flash
+## shown here at once runs on whatever the host's state says meanwhile.
 func _shown_flash(host: float) -> float:
-	return host
+	var now := Time.get_ticks_msec()
+	if host > _host_flash_was + 0.05:
+		while not _flashes_owed.is_empty() and now - _flashes_owed[0] > FLASH_OWED_MS:
+			_flashes_owed.pop_front()
+		_host_flash_left_out = not _flashes_owed.is_empty()
+		if _host_flash_left_out:
+			_flashes_owed.pop_front()
+	elif host <= 0.0:
+		_host_flash_left_out = false
+	_host_flash_was = host
+	var guessed := maxf(float(_flash_guessed_until - now), 0.0) / 1000.0
+	return maxf(0.0 if _host_flash_left_out else host, guessed)
 
 func destroy() -> void:
 	_spawn_explosion()
@@ -940,12 +971,21 @@ func net_apply(state: Array) -> void:
 	if flash <= 0.0 and _damage_flash_timer > 0.0 and sprite:
 		sprite.modulate = Color.WHITE
 	_damage_flash_timer = flash
-	health = int(state[7])
-	_net_apply_addons(int(state[8]))
+	health = _net_health(int(state[7]))
+	_net_apply_addons(_net_addon_bits(int(state[8])))
 
 ## The add-ons named by [param bits] (NET_ADDON_BITS), put on and taken off.
 func _net_apply_addons(_bits: int) -> void:
 	pass
+
+## Client: the health shown for the host's [param host] (PlayerTank: what this
+## machine's own play did to its own tank, shown before the host's word).
+func _net_health(host: int) -> int:
+	return host
+
+## Client: the add-ons shown for the host's [param host] bits (as _net_health).
+func _net_addon_bits(host: int) -> int:
+	return host
 
 ## On a client: shown dead already, its death guessed from this machine's own
 ## shot before the host's word of it (NetClientWorld.guess_kill): hidden, and

@@ -194,6 +194,18 @@ func net_setup(args: Array) -> void:
 func net_apply(_state: Array) -> void:
 	pass
 
+## Client: the host's fire for a tile whose fire was laid here at once
+## ([param guess], NetClientWorld.predict_hit) shows on from it: as far into
+## showing, and into its flames' loop.
+func take_over_from(guess: GroundFire) -> void:
+	_show = minf(_show, guess._show)
+	_frame = guess._frame
+	_anim_timer = guess._anim_timer
+	visible = _show <= 0.0
+	if _sprite and not _frames.is_empty():
+		_frame %= _frames.size()
+		_sprite.texture = _frames[_frame] as Texture2D
+
 
 static func _load_textures(row: int) -> Array:
 	if _row_textures.has(row):

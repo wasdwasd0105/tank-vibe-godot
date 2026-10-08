@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cnetpredict01"]
+
+[ext_resource type="Script" path="res://scripts/tests/net_predict_test.gd" id="1_netpredict"]
+
+[node name="NetPredictTest" type="Node"]
+script = ExtResource("1_netpredict")

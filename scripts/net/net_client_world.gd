@@ -65,6 +65,14 @@ const HIT_WORD_MS := 150.0
 ## smoothing), the host may not judge its hits by this screen (it looks back
 ## NetHostWorld.SEEN_KEEP_MS, less 100 ms): none shown at once.
 const HIT_GUESS_MAX_LAG_MS := NetHostWorld.SEEN_KEEP_MS - 300.0
+## A blast laid here at once has its walls settled by the host's word once its
+## own picture has been shown this long (ms, the host's clock): its walls
+## change on its WALL_FRAME, a snapshot or two later at most.
+const BLAST_WALLS_MS := ExplosionBlast.WALL_FRAME * ExplosionBlast.FRAME_TIME * 1000.0 + 70.0
+## An item sprayed out of an enemy one of this machine's own shots finished, or
+## out of its own tank (the add-on a hit cost it), from this near where that
+## tank was shown, is shown as the host's word of it comes (_show_own_drops).
+const DROP_NEAR := 96.0
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -135,6 +143,28 @@ var _guessed_pickups: Dictionary = {}
 ## where, "way" it went, "lanes" it hits on, "style" its look, "until" the
 ## host's clock by which that word comes, "msec"}.
 var _guessed_hits: Dictionary = {}
+## Patches of fire laid here at once where a fire shell ended (predict_hit),
+## till the host's fires for them come: {"fires" cell -> GroundFire, "msec",
+## "came" once one of the host's has}, oldest first.
+var _guessed_fires: Array = []
+## Blasts laid here at once where an explosion shell ended (predict_hit), till
+## the host's picture of each comes and its walls are settled: {"origin",
+## "level", "msec", "t0" the host's clock as its picture came (-1 not yet),
+## "walls" [[cell, its state before]...] it broke here, "heard" cells the host
+## spoke of since}, oldest first.
+var _predicted_blasts: Array = []
+## Mines this machine's own tanks laid here at once (predict_mine), till the
+## host's with their numbers come: {"node": Mine, "born": msec}, oldest first.
+var _ghost_mines: Array = []
+## What this machine's own play did to its own tanks and its players' numbers,
+## shown here at once (a hit guessed, an item taken) till the host's word of it
+## shows: {"tank", "player", "values" name -> value (own_value), "msec", and
+## "hit" (the guessed hit's shell instance id, "expect" the host's health once
+## its word has come) or "pickup" (the item's instance id)}, oldest first.
+var _own_effects: Array = []
+## Enemies this machine's own shells hit here and didn't finish, their flash
+## and sound shown at once (_show_enemy_hit): "shot:enemy" -> msec.
+var _hits_shown: Dictionary = {}
 
 
 func _init() -> void:
@@ -223,6 +253,7 @@ func _on_packet(body: PackedByteArray) -> void:
 	if _started and not full:
 		_show_own_kills(decoded)
 		_show_own_pickups(decoded)
+		_show_own_drops(decoded)
 		_settle_guesses(decoded)
 	_buffer.append(decoded)
 	# The host's clock is at least this far ahead of ours: the fastest packet
@@ -242,6 +273,8 @@ func _on_packet(body: PackedByteArray) -> void:
 
 func _process(delta: float) -> void:
 	_expire_ghosts()
+	_settle_fires()
+	_expire_guesses()
 	if not _have_clock:
 		return
 	_clock_offset -= CLOCK_SETTLE_MS * delta
@@ -341,6 +374,8 @@ func _apply(snapshot: Dictionary) -> void:
 	_apply_game(snapshot["game"])
 	for event: Array in snapshot["events"]:
 		_play(event)
+	_settle_blast_walls(snapshot)
+	_settle_own_effects(snapshot)
 
 
 func _spawn(nid: int, type: int, args: Array, state: Array) -> void:
@@ -373,6 +408,10 @@ func _spawn(nid: int, type: int, args: Array, state: Array) -> void:
 		var glides: Variant = node.get(&"NET_GLIDES")
 		_glides[type] = glides if glides is Array else []
 	node.net_apply(shown)
+	if node is GroundFire:
+		_fire_came(node as GroundFire)
+	elif node is Mine and (node as Mine).net_shot >= 0:
+		_mine_came(node as Mine)
 
 
 func _despawn(nid: int) -> void:
@@ -392,6 +431,16 @@ func _clear() -> void:
 		if is_instance_valid(ghost["node"]):
 			ghost["node"].queue_free()
 	_ghosts.clear()
+	for guess: Dictionary in _guessed_fires:
+		for fire: Variant in guess["fires"].values():
+			if is_instance_valid(fire):
+				fire.queue_free()
+	_guessed_fires.clear()
+	for laid: Dictionary in _ghost_mines:
+		if is_instance_valid(laid["node"]):
+			laid["node"].queue_free()
+	_ghost_mines.clear()
+	_predicted_blasts.clear()
 	_predicted_hits.clear()
 	_own_hits.clear()
 	_guessed_kills.clear()
@@ -399,17 +448,22 @@ func _clear() -> void:
 	_guessed_walls.clear()
 	_guessed_pickups.clear()
 	_guessed_hits.clear()
+	_own_effects.clear()
+	_hits_shown.clear()
 	_game.clear()
 
 
 ## Puts [param node], showing [param nid], at [param at]: where the host had it
-## at the time shown. This machine's own tanks drive themselves, though, and
-## its own shells are drawn ahead (_lead_shell).
+## at the time shown. This machine's own tanks drive themselves, though, its
+## own shells are drawn ahead (_lead_shell), and an item sprayed out goes by
+## its own spray (Cookie.net_place).
 func _place(nid: int, node: Node2D, at: Vector2) -> void:
 	if node is PlayerTank and (node as PlayerTank).is_net_driving():
 		return
 	if _own_shells.has(nid):
 		at = _lead_shell(nid, node, at)
+	elif node is Cookie:
+		at = (node as Cookie).net_place(at)
 	node.global_position = at
 
 
@@ -471,7 +525,8 @@ func add_ghost(shell: Bullet) -> void:
 
 
 ## Ghosts the host's shells never took over in time: shots the host didn't fire
-## (its cooldown came out a frame different, say).
+## (its cooldown came out a frame different, say); and mines laid here it
+## didn't lay (predict_mine).
 func _expire_ghosts() -> void:
 	var limit := Net.ping_ms + _delay_ms + GHOST_GRACE_MS
 	var now := Time.get_ticks_msec()
@@ -479,6 +534,10 @@ func _expire_ghosts() -> void:
 		var ghost: Variant = _ghosts.pop_front()["node"]
 		if is_instance_valid(ghost):
 			ghost.queue_free()
+	while not _ghost_mines.is_empty() and now - int(_ghost_mines[0]["born"]) > limit:
+		var laid: Variant = _ghost_mines.pop_front()["node"]
+		if is_instance_valid(laid):
+			laid.queue_free()
 
 
 ## The host's [param shell] for a shot of this machine's has come: the ghost
@@ -906,6 +965,108 @@ func predict_pickups(tank: PlayerTank) -> void:
 		SoundManager.play_from_host(&"powerup_pickup")
 		_guessed_pickups[cookie.get_instance_id()] = {"nid": nid, "type": cookie.cookie_type,
 				"at": cookie.global_position, "msec": Time.get_ticks_msec()}
+		_guess_pickup_effect(tank, cookie)
+
+
+## What item [param cookie], taken here at once by own [param tank]
+## (predict_pickups), does to it and its player's numbers, as the host's
+## Cookie._apply_effect will: shown at once (own_value) till the host's word of
+## the item shows (_settle_own_effects), so its next shots and its driving go
+## as they will there too; the host takes it where this machine had the tank
+## (PlayerTank._take_items_where_reported), before those. A bomb's kills are
+## shown at once (_guess_bomb); Hold Enemy and Flag On Guard are the host's to
+## show.
+func _guess_pickup_effect(tank: PlayerTank, cookie: Cookie) -> void:
+	var p := tank.player_id
+	var gm := GameManager
+	var speed := int(gm.player_speed_levels[p])
+	var weapon := int(gm.player_weapon_levels[p])
+	var weapon2 := str(gm.player_secondary_weapon_types[p])
+	var ammo := int(gm.player_secondary_weapon_counts[p])
+	var health := tank.health
+	var bits := _addon_bits_of(tank)
+	var now := Time.get_ticks_msec()
+	var values := {"invincible_until": now + int(PlayerTank.COOKIE_PICKUP_INVINCIBILITY * 1000.0)}
+	var held: Dictionary = CookieData.WEAPON_DATA.get(weapon2, {})
+	var types := CookieData.CookieType
+	match cookie.cookie_type:
+		types.SPEED_UP:
+			values["speed"] = mini(speed + 1, 3)
+		types.HP_UP:
+			values["health"] = mini(health + 1, PlayerTank.MAX_HP)
+		types.WEAPONS_UP:
+			values["weapon"] = mini(weapon + 1, 3)
+		types.STAR_UP:
+			values["speed"] = mini(speed + 1, 3)
+			values["health"] = mini(health + 1, PlayerTank.MAX_HP)
+			values["weapon"] = mini(weapon + 1, 3)
+		types.MAX_UP:
+			values["speed"] = 3
+			values["weapon"] = 3
+			values["health"] = PlayerTank.MAX_HP
+		types.ANTI_WATER_COOKIE, types.ANTI_ICE_COOKIE, types.MEMORY_SAVE_COOKIE:
+			var addon: String = CookieData.ADDON_TO_COOKIE.find_key(cookie.cookie_type)
+			values["addons"] = (bits & int(BaseTank.NET_ADDON_BITS["moon-shield"])) | int(BaseTank.NET_ADDON_BITS[addon])
+		types.MOON_SHIELD_COOKIE:
+			values["addons"] = bits | int(BaseTank.NET_ADDON_BITS["moon-shield"])
+		types.SCORE_200, types.SCORE_500, types.SCORE_1000, types.SCORE_2000:
+			var points: int = {types.SCORE_200: 200, types.SCORE_500: 500, types.SCORE_1000: 1000,
+					types.SCORE_2000: 2000}[cookie.cookie_type]
+			var score := int(gm.player_scores[p])
+			values["score"] = score + points
+			values["lives"] = int(gm.player_lives[p]) + gm.extra_lives_at(score + points) - gm.extra_lives_at(score)
+		types.INVINCIBLE_HELMET:
+			values["invincible_until"] = now + int(Cookie.HELMET_TIME * 1000.0)
+			values["wreath_until"] = now + int((Cookie.HELMET_TIME - PlayerTank.WREATH_MIN_LEFT) * 1000.0)
+		types.TANK_BOMB:
+			_guess_bomb(tank)
+		types.TANK_LIFE:
+			values["lives"] = int(gm.player_lives[p]) + 1
+		types.BULLETS_MAX:
+			if not held.is_empty():
+				values["ammo"] = int(held["max_count"])
+		types.BULLET_REFILL:
+			if not held.is_empty():
+				values["ammo"] = mini(ammo + int(held["reload_count"]), int(held["max_count"]))
+		types.RAPID_COOKIE, types.FIRE_COOKIE, types.AP_COOKIE, types.EXPLOSION_COOKIE, types.MINE_COOKIE:
+			var kind: String = CookieData.WEAPON_TO_COOKIE.find_key(cookie.cookie_type)
+			var data: Dictionary = CookieData.WEAPON_DATA[kind]
+			if kind == weapon2:
+				values["ammo"] = mini(ammo + int(data["reload_count"]), int(data["max_count"]))
+			else:
+				values["weapon2"] = kind
+				values["ammo"] = int(data["reload_count"])
+	_add_own_effect(tank, values, {"pickup": cookie.get_instance_id()})
+
+
+## Own [param tank] took a bomb here at once: every enemy shown goes at once,
+## as the host's EnemySpawner.destroy_all_enemies takes them all, its
+## explosion and sound shown now; the host's word of each settles it as a kill
+## guessed here (_show_own_kills, _settle_guesses), or, none come in
+## GUESS_MAX_MS, it shows again.
+func _guess_bomb(tank: PlayerTank) -> void:
+	if Net.ping_ms + _delay_ms > GUESS_MAX_LAG_MS:
+		return
+	var now := Time.get_ticks_msec()
+	var any := false
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyTank
+		if enemy == null or enemy.net_gone or enemy.is_queued_for_deletion():
+			continue
+		var nid := _nid_of(enemy)
+		if nid == 0:
+			continue
+		enemy.net_gone = true
+		enemy.visible = false
+		var at := enemy.global_position
+		_play([NetWorld.EV_HIT, "tank", at.x, at.y] if not ThemeManager.get_tank_explode_frames().is_empty()
+				else [NetWorld.EV_EXPLOSION, at.x, at.y, 2.0])
+		_guessed_kills[enemy.get_instance_id()] = {"nid": nid, "owner": tank.player_id, "shot": -1,
+				"end": at, "way": Vector2.ZERO, "msec": now}
+		note_own_hit(enemy)
+		any = true
+	if any:
+		SoundManager.play_from_host(&"tank_destroyed")
 
 
 ## A snapshot just come says items have gone. One this machine's own tank took
@@ -924,6 +1085,11 @@ func _show_own_pickups(snapshot: Dictionary) -> void:
 			continue
 		var pickup: Dictionary = _guessed_pickups[cookie.get_instance_id()]
 		_guessed_pickups.erase(cookie.get_instance_id())
+		# What it did, shown here at once, is the host's to show once this
+		# snapshot is (_settle_own_effects).
+		if not snapshot.has("settles"):
+			snapshot["settles"] = []
+		snapshot["settles"].append(cookie.get_instance_id())
 		_despawn(nid)
 		var named := false
 		var heard := false
@@ -996,6 +1162,52 @@ func _guess_hit(tank: PlayerTank, theirs: Bullet) -> void:
 	var damage := theirs.damage if theirs.visual_style == "explosion" else 1
 	if damage < tank.health:
 		tank.guess_hit_here(frame)
+		_guess_hit_costs(tank, damage, theirs)
+
+
+## What a hit shown here at once on own [param tank] costs it (_guess_hit), as
+## the host's PlayerTank.take_hit will take it: [param damage] of its health
+## and, unless it wears memory-save or flies, its moon shield, else its other
+## add-on, else a speed step or a gun level by turns (_apply_hit_punishment;
+## the host says whose turn, NET_HITS_ODD). Shown at once till the host's word
+## of the hit shows (_settle_own_effects). The add-on's item, sprayed out on
+## the host, comes with that word (_show_own_drops).
+func _guess_hit_costs(tank: PlayerTank, damage: int, theirs: Bullet) -> void:
+	var p := tank.player_id
+	var values := {"health": tank.health - damage}
+	if not tank.has_memory_save and not tank.is_flying:
+		var bits := _addon_bits_of(tank)
+		if tank.has_moon_shield:
+			values["addons"] = bits & ~int(BaseTank.NET_ADDON_BITS["moon-shield"])
+		elif not tank._current_utility_addon.is_empty():
+			values["addons"] = bits & ~int(BaseTank.NET_ADDON_BITS.get(tank._current_utility_addon, 0))
+		else:
+			if tank.net_hits_odd:
+				values["weapon"] = maxi(int(GameManager.player_weapon_levels[p]) - 1, 0)
+			else:
+				values["speed"] = maxi(int(GameManager.player_speed_levels[p]) - 1, 0)
+			values["hits_odd"] = not tank.net_hits_odd
+	# The host's word of it has come once its health for this tank is down by
+	# this hit and those still awaited before it.
+	var expect := _host_health(tank) - damage
+	for effect: Dictionary in _own_effects:
+		if effect["tank"] == tank and effect.has("hit"):
+			expect -= int(effect["damage"])
+	_add_own_effect(tank, values, {"hit": theirs.get_instance_id(), "damage": damage, "expect": expect})
+
+
+## The add-on bits of what [param tank] wears as shown (BaseTank.NET_ADDON_BITS).
+static func _addon_bits_of(tank: BaseTank) -> int:
+	var bits := 0
+	for addon_name: String in tank.get_addon_names():
+		bits |= int(BaseTank.NET_ADDON_BITS.get(addon_name, 0))
+	return bits
+
+
+## The health the host's latest word gives own [param tank] (its state shown).
+func _host_health(tank: PlayerTank) -> int:
+	var state: Variant = _states.get(_nid_of(tank))
+	return int(state[7]) if state is Array and (state as Array).size() > 7 else tank.health
 
 
 ## A shell of the enemies' shown ending on this machine's own tank here
@@ -1069,7 +1281,7 @@ func guess_kill(tank: BaseTank, damage: int, shell: Bullet, end: Vector2) -> boo
 			return true
 	if Net.ping_ms + _delay_ms > GUESS_MAX_LAG_MS:
 		return false
-	if enemy.is_invulnerable() or damage < enemy.health or enemy.is_bullet_blocked(shell.direction):
+	if enemy.is_invulnerable() or enemy.is_bullet_blocked(shell.direction):
 		return false
 	# One driving across the shot's way is where the host looks for it to within
 	# a frame's driving; one standing or going along it is just where it's shown.
@@ -1077,6 +1289,9 @@ func guess_kill(tank: BaseTank, damage: int, shell: Bullet, end: Vector2) -> boo
 	var reach := Bullet.box_half(shell.direction, shell.collision_lane_offsets).dot(across) + BaseTank.HITBOX_SIZE * 0.5
 	var sure := SURE_INSIDE if enemy.velocity != Vector2.ZERO and absf(enemy.current_direction.dot(across)) > 0.5 else 0.5
 	if absf((enemy.global_position - end).dot(across)) > reach - sure:
+		return false
+	if damage < enemy.health:
+		_show_enemy_hit(enemy, shell)
 		return false
 	enemy.net_gone = true
 	enemy.visible = false
@@ -1087,6 +1302,24 @@ func guess_kill(tank: BaseTank, damage: int, shell: Bullet, end: Vector2) -> boo
 	_guessed_kills[enemy.get_instance_id()] = guess
 	note_own_hit(enemy)
 	return true
+
+
+## Own [param shell] hit [param enemy] here and it lives on (guess_kill): its
+## red flash and its sound at once, as the host's word will have them, which
+## then aren't shown again (BaseTank._shown_flash; the host marks that sound as
+## the shot's, SoundManager.SHOT_TAG). Once for each shot and enemy.
+func _show_enemy_hit(enemy: EnemyTank, shell: Bullet) -> void:
+	var now := Time.get_ticks_msec()
+	for key: String in _hits_shown.keys():
+		if now - int(_hits_shown[key]) > OWN_HIT_MS:
+			_hits_shown.erase(key)
+	var shot := shell.net_shot if shell.net_shot >= 0 else shell.get_instance_id()
+	var key := "%d:%d" % [shot, enemy.get_instance_id()]
+	if _hits_shown.has(key):
+		return
+	_hits_shown[key] = now
+	enemy.guess_flash_here()
+	SoundManager.play_predicted(&"tank_hit", SoundManager.SHOT_TAG + shell.owner_player)
 
 
 ## The kills by this machine's own shells in the snapshots come but not shown
@@ -1117,6 +1350,7 @@ func _settle_guesses(snapshot: Dictionary) -> void:
 			_guessed_hits.erase(id)
 			shell.visible = true
 			guesses_undone += 1
+			_drop_own_effects(func(effect: Dictionary) -> bool: return effect.get("hit", 0) == id)
 	if not _guessed_walls.is_empty():
 		var heard := {}
 		var tiles: PackedInt32Array = snapshot["tiles"]
@@ -1140,6 +1374,7 @@ func _settle_guesses(snapshot: Dictionary) -> void:
 			_guessed_pickups.erase(id)
 			cookie.visible = true
 			guesses_undone += 1
+			_drop_own_effects(func(effect: Dictionary) -> bool: return effect.get("pickup", 0) == id)
 	if _guessed_kills.is_empty() and _guessed_clashes.is_empty():
 		return
 	for guesses: Dictionary in [_guessed_kills, _guessed_clashes]:
@@ -1215,6 +1450,9 @@ func _show_own_kills(snapshot: Dictionary) -> void:
 		var guessed := _guessed_kills.has(tank.get_instance_id())
 		_guessed_kills.erase(tank.get_instance_id())
 		var at := tank.global_position
+		if not snapshot.has("drop_near"):
+			snapshot["drop_near"] = []
+		snapshot["drop_near"].append(at)  # (what it drops shows now too: _show_own_drops)
 		_despawn(nid)
 		var heard := false
 		var rest: Array = []
@@ -1262,6 +1500,11 @@ func predict_hit(shell: Bullet, at: Vector2) -> void:
 			flash.global_position = at + across * lane
 			effects.add_child(flash)
 	_predicted_hits.append([shell.visual_style, at, Time.get_ticks_msec(), not frames.is_empty()])
+	# What it leaves where it ends, as the host's Bullet._destroy leaves it.
+	if shell.ignites_ground:
+		_predict_fire(shell, at)
+	if shell.explodes:
+		_predict_blast(shell, at)
 
 
 ## True if the host's picture of a shell's end at [param at] (its theme's,
@@ -1278,6 +1521,351 @@ func _seen_here(style: String, at: Vector2) -> bool:
 		if (hit[1] as Vector2).distance_to(at) <= PREDICTED_HIT_NEAR:
 			return true
 	return false
+
+
+# =====================================================================
+# What this machine's own play did to its own tanks, shown at once
+# =====================================================================
+
+## The value [param name] shows for this machine's own [param tank]: what its
+## own play did to it, shown before the host's word of it (_own_effects, the
+## newest that has it), else the host's [param host]. Names: "health",
+## "addons" (BaseTank.NET_ADDON_BITS), "hits_odd" (PlayerTank.NET_HITS_ODD),
+## "invincible_until" and "wreath_until" (msec), and its player's numbers
+## "speed", "weapon", "weapon2", "ammo", "lives", "score" (_keep_own_numbers).
+func own_value(tank: PlayerTank, name: String, host: Variant) -> Variant:
+	for i in range(_own_effects.size() - 1, -1, -1):
+		var effect: Dictionary = _own_effects[i]
+		if effect["tank"] == tank and (effect["values"] as Dictionary).has(name):
+			return effect["values"][name]
+	return host
+
+
+## Own [param tank] shows [param values] at once (own_value), till the host's
+## word of what did it shows ([param keys]: "hit" or "pickup", see
+## _own_effects).
+func _add_own_effect(tank: PlayerTank, values: Dictionary, keys: Dictionary) -> void:
+	var effect := {"tank": tank, "player": tank.player_id, "values": values, "msec": Time.get_ticks_msec()}
+	effect.merge(keys)
+	_own_effects.append(effect)
+	_keep_own_numbers()
+	_show_own_tank(tank)
+
+
+## The effects [param done] says are done with (settled, wrong or too old) go:
+## what they showed gives way to the host's word.
+func _drop_own_effects(done: Callable) -> void:
+	var tanks: Array = []
+	for effect: Dictionary in _own_effects.duplicate():
+		if done.call(effect):
+			_own_effects.erase(effect)
+			if effect["tank"] not in tanks:
+				tanks.append(effect["tank"])
+	if tanks.is_empty():
+		return
+	# The host's numbers as last heard, then what's still shown over them.
+	for key: String in [NetWorld.G_LIVES, NetWorld.G_SCORES, NetWorld.G_SPEED, NetWorld.G_WEAPON,
+			NetWorld.G_WEAPON2, NetWorld.G_AMMO]:
+		if _game.has(key):
+			_apply_game({key: _game[key]})
+	_keep_own_numbers()
+	for tank: Variant in tanks:
+		if is_instance_valid(tank):
+			_show_own_tank(tank)
+
+
+## This machine's own players' numbers (GameManager) as its own play left them,
+## over the host's, till its word comes (_own_effects, the newest last).
+func _keep_own_numbers() -> void:
+	var gm := GameManager
+	for effect: Dictionary in _own_effects:
+		var p: int = effect["player"]
+		var values: Dictionary = effect["values"]
+		for name: String in values:
+			match name:
+				"speed":
+					gm.player_speed_levels[p] = int(values[name])
+				"weapon":
+					gm.player_weapon_levels[p] = int(values[name])
+				"weapon2":
+					gm.player_secondary_weapon_types[p] = str(values[name])
+				"ammo":
+					gm.player_secondary_weapon_counts[p] = int(values[name])
+				"lives":
+					gm.player_lives[p] = int(values[name])
+				"score":
+					gm.player_scores[p] = int(values[name])
+
+
+## Own [param tank] shows the host's latest state of it again, with what its
+## own play did over that (PlayerTank.net_apply asks own_value).
+func _show_own_tank(tank: PlayerTank) -> void:
+	var state: Variant = _states.get(_nid_of(tank))
+	if state is Array:
+		tank.net_apply(state)
+
+
+## The host's word in [param snapshot], just shown: a hit guessed here on an own
+## tank has come once its health for that tank is down to what the hit left it
+## ("expect"); an item taken here once the snapshot that took it is shown
+## ("settles", _show_own_pickups). Then what they did is the host's to show.
+func _settle_own_effects(snapshot: Dictionary) -> void:
+	if _own_effects.is_empty():
+		return
+	var settled: Array = snapshot.get("settles", [])
+	_drop_own_effects(func(effect: Dictionary) -> bool:
+		if not is_instance_valid(effect["tank"]):
+			return true
+		if effect.has("pickup"):
+			return int(effect["pickup"]) in settled
+		return effect.has("hit") and _host_health(effect["tank"]) <= int(effect["expect"]))
+
+
+## Guesses with no word either way for too long go: what they showed gives way
+## to the host's (own effects, blasts' walls, enemy hits' marks).
+func _expire_guesses() -> void:
+	var now := Time.get_ticks_msec()
+	if not _own_effects.is_empty():
+		_drop_own_effects(func(effect: Dictionary) -> bool:
+			return now - int(effect["msec"]) > GUESS_MAX_MS + 500)
+	for record: Dictionary in _predicted_blasts.duplicate():
+		if now - int(record["msec"]) > GUESS_MAX_MS:
+			_put_back_walls(record, record["heard"])
+			_predicted_blasts.erase(record)
+
+
+# =====================================================================
+# The ends of shells shown at once: fire and blasts
+# =====================================================================
+
+## A fire shell's patch, laid here at once where [param shell] ended at
+## [param at] (predict_hit), as the host's LevelManager.ignite_fire_patch will
+## lay it: on each of its tiles that fire can lie on and its side's fire isn't
+## shown on already (the host feeds that one instead), armed as the host's.
+## The host's fire for a tile takes over from it as it comes (_fire_came); the
+## rest of a patch the host's word brought goes then, all of one with no word in
+## GUESS_MAX_MS (_settle_fires).
+func _predict_fire(shell: Bullet, at: Vector2) -> void:
+	var parent: Node = containers.get("terrain")
+	if level_manager == null or parent == null:
+		return
+	var side := 1 if shell.is_player_bullet else 0
+	var row := 3 if side > 0 else 2
+	var burning := {}
+	for node: Node in parent.get_children():
+		var lit := node as GroundFire
+		if lit and not lit.is_queued_for_deletion() and lit._current_row() == row:
+			burning[level_manager.world_to_tile(lit.global_position)] = true
+	var fires := {}
+	for tile: Array in LevelManager.fire_patch_tiles(level_manager.fire_anchor(at)):
+		var cell: Vector2i = tile[0]
+		if burning.has(cell) or not level_manager.fire_can_lie(cell):
+			continue
+		var fire: GroundFire = GroundFire.new()
+		fire.setup(null, cell, side, -1, shell.fire_level, 0.0, float(tile[1]), int(tile[2]))
+		parent.add_child(fire)
+		fire.remove_from_group(NetWorld.GROUP)
+		fire.global_position = level_manager.tile_to_world(cell)
+		fires[cell] = fire
+	if not fires.is_empty():
+		_guessed_fires.append({"fires": fires, "msec": Time.get_ticks_msec()})
+
+
+## The host's [param fire] has come: one laid here at once on its tile
+## (_predict_fire) gives way to it, as far into showing and burning, and the
+## patch it was of is the host's to say now (_settle_fires).
+func _fire_came(fire: GroundFire) -> void:
+	if level_manager == null:
+		return
+	var cell := level_manager.world_to_tile(fire.global_position)
+	for guess: Dictionary in _guessed_fires:
+		var laid: Variant = guess["fires"].get(cell)
+		if laid == null or not is_instance_valid(laid) or (laid as GroundFire)._current_row() != fire._current_row():
+			continue
+		fire.take_over_from(laid)
+		laid.queue_free()
+		guess["fires"].erase(cell)
+		guess["came"] = true
+		return
+
+
+## Patches laid here at once that the host's word has spoken for (its fires
+## lay all of a patch at once: tiles of it it didn't bring weren't), or not in
+## GUESS_MAX_MS, go.
+func _settle_fires() -> void:
+	var now := Time.get_ticks_msec()
+	for guess: Dictionary in _guessed_fires.duplicate():
+		if guess.get("came", false) or now - int(guess["msec"]) > GUESS_MAX_MS:
+			for laid: Variant in guess["fires"].values():
+				if is_instance_valid(laid):
+					laid.queue_free()
+			_guessed_fires.erase(guess)
+
+
+## An explosion shell's blast, laid here at once where [param shell] ended at
+## [param at] (predict_hit), as the host's LevelManager.spawn_explosion_blast
+## lays it: its picture now, and on its wall frame its walls broken here as the
+## host's will break them (_blast_walls). The host's picture of it isn't shown
+## again when it comes (_blast_seen_here).
+func _predict_blast(shell: Bullet, at: Vector2) -> void:
+	if level_manager == null or effects == null:
+		return
+	var blast := ExplosionBlast.new()
+	blast.setup(shell.explosion_level, shell.is_player_bullet, level_manager)
+	blast.origin = ExplosionBlast.grid_origin(at - level_manager.global_position, ExplosionBlast.SHELL_SIZE)
+	var record := {"origin": blast.origin, "level": blast.level, "msec": Time.get_ticks_msec(), "t0": -1.0,
+			"walls": [], "heard": {}}
+	blast.net_walls = func(gone_off: ExplosionBlast) -> void: _blast_walls(gone_off, record)
+	effects.add_child(blast)
+	_predicted_blasts.append(record)
+
+
+## Blast [param blast], laid here at once, breaks its walls here on its wall
+## frame, as the host's will on the same frame: kept in [param record] as they
+## were, for its settling (_settle_blast_walls).
+func _blast_walls(blast: ExplosionBlast, record: Dictionary) -> void:
+	if not _predicted_blasts.has(record):
+		return  # settled already: the host's word of its walls came first
+	var before := blast.wall_cells().map(func(cell: Vector2i) -> Array: return [cell, level_manager.net_cell(cell)])
+	blast.change_walls_here()
+	record["walls"] = before.filter(func(entry: Array) -> bool: return level_manager.net_cell(entry[0]) != entry[1])
+
+
+## True if the host's picture of a blast, [param level] at [param origin], was
+## laid here at once already (_predict_blast): its own blast, off by a tile at
+## most (it went off a little elsewhere on the host). That blast's walls are
+## settled from then on (_settle_blast_walls).
+func _blast_seen_here(origin: Vector2i, level: int) -> bool:
+	for record: Dictionary in _predicted_blasts:
+		if float(record["t0"]) >= 0.0 or int(record["level"]) != level:
+			continue
+		var off: Vector2i = origin - (record["origin"] as Vector2i)
+		if absi(off.x) <= 1 and absi(off.y) <= 1:
+			record["t0"] = _shown_time
+			return true
+	return false
+
+
+## The host's word in [param snapshot], just shown, of the walls of the blasts
+## laid here at once whose pictures it has brought: the cells it spoke of since
+## are as it says; once its own blast has had time to break its walls
+## (BLAST_WALLS_MS), those broken here it didn't speak of are put back.
+func _settle_blast_walls(snapshot: Dictionary) -> void:
+	if _predicted_blasts.is_empty():
+		return
+	var time: float = snapshot["time"]
+	var tiles: PackedInt32Array = snapshot["tiles"]
+	for record: Dictionary in _predicted_blasts.duplicate():
+		var t0: float = record["t0"]
+		if t0 < 0.0 or time < t0:
+			continue
+		for i in range(0, tiles.size() - 4, 5):
+			record["heard"][Vector2i(tiles[i], tiles[i + 1])] = true
+		if time >= t0 + BLAST_WALLS_MS:
+			_put_back_walls(record, record["heard"])
+			_predicted_blasts.erase(record)
+
+
+## The walls blast [param record] broke here that the host didn't speak of
+## ([param heard]: cell -> true) are put back as they were.
+func _put_back_walls(record: Dictionary, heard: Dictionary) -> void:
+	if level_manager == null:
+		return
+	for entry: Array in record["walls"]:
+		if not heard.has(entry[0]):
+			var was: Array = entry[1]
+			level_manager.net_set_cell(entry[0], was[0], was[1], was[2])
+			guesses_undone += 1
+
+
+# =====================================================================
+# Mines laid at once, and items sprayed out shown as the word comes
+# =====================================================================
+
+## This machine's own [param tank] lays a mine of [param level] here at once
+## (PlayerTank._place_mine), where the host's LevelManager.try_place_mine will
+## lay it from where this machine has the tank as it presses: the first free
+## spot of the ring round it, as this machine shows the field. Numbered as a
+## shot (Net.note_shot), the host told with the next input message: its mine
+## with that number takes over from this one (_mine_came), or, none come, this
+## one goes as a ghost shot does (_expire_ghosts). False if no spot is free.
+func predict_mine(tank: PlayerTank, level: int) -> bool:
+	var parent: Node = containers.get("terrain")
+	if level_manager == null or parent == null:
+		return false
+	var taken := {}
+	var points: Array[Vector2] = []
+	for node: Node in parent.get_children():
+		var mine := node as Mine
+		if mine and not mine.is_queued_for_deletion():
+			taken[level_manager.world_to_tile(mine.global_position) - Vector2i.ONE] = mine
+			if mine.is_armed():
+				points.append(mine.global_position + LevelManager.MINE_POINT_OFFSET)
+	for group: String in ["players", "enemies"]:
+		for node in get_tree().get_nodes_in_group(group):
+			var other := node as BaseTank
+			if other and not other.is_queued_for_deletion() and not other.net_gone and not other.is_materializing:
+				points.append(other.global_position)
+	if game and game.get(&"eagle"):
+		points.append((game.eagle as Node2D).global_position)
+	for key: String in ["powerups", "bullets"]:
+		var holder: Node = containers.get(key)
+		if holder:
+			for child in holder.get_children():
+				if child is Node2D and (child as Node2D).visible:
+					points.append((child as Node2D).global_position)
+	var cell := level_manager.mine_spot_for(tank.global_position, tank.current_direction,
+			"anti-water" in tank.get_addon_names(), taken, points)
+	if cell == LevelManager.NO_MINE_SPOT:
+		return false
+	var laid := Mine.new()
+	laid.setup(cell, level, true, level_manager)
+	laid.owner_id = tank.player_id
+	laid.net_shot = Net.note_shot(tank.net_slot, 1, 1)
+	parent.add_child(laid)
+	laid.remove_from_group(NetWorld.GROUP)
+	_strip_physics(laid)
+	laid.global_position = level_manager.mine_center(cell)
+	_ghost_mines.append({"node": laid, "born": Time.get_ticks_msec()})
+	return true
+
+
+## The host's mine [param mine] has come, numbered as one of this machine's own:
+## the one laid here at once with that number gives way to it (or it lies where
+## the host laid it, if elsewhere).
+func _mine_came(mine: Mine) -> void:
+	for i in _ghost_mines.size():
+		var laid: Variant = _ghost_mines[i]["node"]
+		if not is_instance_valid(laid) or (laid as Mine).net_shot != mine.net_shot:
+			continue
+		mine.take_over_from(laid)
+		laid.queue_free()
+		_ghost_mines.remove_at(i)
+		return
+
+
+## A snapshot just come: the items it brings sprayed out of an enemy one of this
+## machine's own shots finished (_show_own_kills, "drop_near"), or out of its
+## own tanks (the add-on a hit cost it), are shown now, sprayed out from here on
+## (Cookie.net_setup), rather than when the snapshot's time comes, render_delay
+## later: with the kill or the hit shown here already.
+func _show_own_drops(snapshot: Dictionary) -> void:
+	var near: Array = snapshot.get("drop_near", []).duplicate()
+	for node: Variant in _nodes.values():
+		if is_instance_valid(node) and node is PlayerTank and (node as PlayerTank).net_predicted:
+			near.append((node as Node2D).global_position)
+	if near.is_empty():
+		return
+	var rest: Array = []
+	for spawn: Array in snapshot["spawns"]:
+		var args: Array = spawn[2]
+		if int(spawn[1]) == NetWorld.T_COOKIE and args.size() >= 7:
+			var from := Vector2(args[1], args[2])
+			if near.any(func(at: Vector2) -> bool: return at.distance_to(from) <= DROP_NEAR):
+				_spawn(int(spawn[0]), int(spawn[1]), args, spawn[3])
+				continue
+		rest.append(spawn)
+	snapshot["spawns"] = rest
 
 
 ## A shown entity touches nothing: no layers, no masks, no monitoring. It can't
@@ -1364,6 +1952,8 @@ func _apply_game(changed: Dictionary) -> void:
 			NetWorld.G_OVERLAY_T:
 				if overlay:
 					overlay.net_set_time(float(value))
+	if not _own_effects.is_empty():
+		_keep_own_numbers()  # (what its own play did still shows over these)
 
 
 ## Writes the host's pair [param value] into the game's typed pair
@@ -1411,6 +2001,8 @@ func _play(event: Array) -> void:
 				explosion.scale = Vector2.ONE * float(args[2])
 				effects.add_child(explosion)
 		NetWorld.EV_BLAST:
+			if _blast_seen_here(Vector2i(int(args[0]), int(args[1])), int(args[2])):
+				return  # this machine's own shell's blast, laid here as it ended
 			if effects:
 				var blast := ExplosionBlast.new()
 				blast.setup(int(args[2]), true, level_manager)

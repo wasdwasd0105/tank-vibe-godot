@@ -37,6 +37,10 @@ const MIN_REPEAT_INTERVAL: float = 0.03
 ## How long a client waits for the host's sound of a shot it heard already
 ## (play_predicted).
 const PREDICTED_WAIT_MS := 1500
+## A sound of what player p's shot did to an enemy (its "tank_hit") is marked
+## as tank SHOT_TAG + p, not p's tank's own: the client whose shot it was heard
+## it at once (NetClientWorld.guess_kill).
+const SHOT_TAG := 2
 
 ## Logical sound name -> the wave file(s) that can satisfy it, without extension.
 ## Several entries mean "pick one at random" (the original used Random(2) for

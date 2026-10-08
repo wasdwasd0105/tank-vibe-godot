@@ -103,6 +103,10 @@ class RemotePad:
 	## its tank was, its facing, the moment of the host's world its screen
 	## showed (the host's clock, ms)].
 	var judge: Array = []
+	## Its latest frames not yet looked at for the items its tank drove onto
+	## there (PlayerTank._take_items_where_reported): [where, the last
+	## correction it had taken].
+	var reach: Array = []
 
 
 func _ready() -> void:
@@ -295,6 +299,7 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 		pad.report_ahead.clear()
 		pad.report_late.clear()
 		pad.judge.clear()
+		pad.reach.clear()
 		return
 	frame &= 0xff
 	if pad.report_frame < 0:
@@ -325,6 +330,9 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
 	if pad.reports.size() > MAX_QUEUED_REPORTS:
 		pad.reports.pop_front()
+	pad.reach.append([position, override & 0xff])
+	if pad.reach.size() > MAX_QUEUED_REPORTS:
+		pad.reach.pop_front()
 	if view > 0.0:
 		pad.views.append([pad.report_run, frame, view])
 		if pad.views.size() > MAX_VIEWS:

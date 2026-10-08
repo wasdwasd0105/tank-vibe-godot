@@ -1004,34 +1004,61 @@ const MINE_CLEARANCE: float = 48.0
 const MINE_POINT_OFFSET: Vector2 = Vector2(16, 16)
 
 
+## mine_spot_for: no spot free.
+const NO_MINE_SPOT := Vector2i(-1000, -1000)
+
+
 ## Lay a level-[param level] mine for [param tank] on the first free spot of the
-## ring around it. Returns false, spending nothing, when all 12 are blocked.
-func try_place_mine(tank: BaseTank, level: int) -> bool:
-	var turn := 3 * _facing_index(tank.current_direction)
-	var local: Vector2 = tank.global_position - global_position
+## ring around it (mine_spot_for). Returns false, spending nothing, when all 12
+## are blocked. Online, a client's own tank lays it from where that client had
+## it as it pressed, [param at] facing [param facing], numbered [param shot] as
+## the mine that client laid there at once (NetClientWorld.predict_mine).
+func try_place_mine(tank: BaseTank, level: int, at: Vector2 = Vector2.INF, facing: Vector2 = Vector2.ZERO,
+		shot: int = -1) -> bool:
+	var layer_at := at if at.is_finite() else tank.global_position
+	# The layer stands where it lays from, there too.
+	var points := _crowd_points(tank)
+	if tank.collision_layer != 0:
+		points.append(layer_at)
+	var cell := mine_spot_for(layer_at, facing if facing != Vector2.ZERO else tank.current_direction,
+			"anti-water" in tank.get_addon_names(), _mine_tiles, points)
+	if cell == NO_MINE_SPOT:
+		return false
+	_spawn_mine(cell, level, tank.is_in_group("players"), tank.get_player_index()).net_shot = shot
+	return true
+
+
+## The first free spot of the ring round a tank at [param at] facing
+## [param facing] (on water too if it [param floats]), as the original tried
+## them: NO_MINE_SPOT if all 12 are blocked. A spot keyed in [param taken]
+## (cell -> its mine) has a mine; [param points] are what stands about
+## (_crowd_points). A client works out its own tank's that way, from what it
+## shows.
+func mine_spot_for(at: Vector2, facing: Vector2, floats: bool, taken: Dictionary,
+		points: Array[Vector2]) -> Vector2i:
+	var turn := 3 * _facing_index(facing)
+	var local: Vector2 = at - global_position
 	# The tank's own 2x2 block by its top-left tile, rounded as Delphi does.
 	var origin := Vector2i(
 		Mine.round_half_even(local.x / TILE_SIZE - 1.0),
 		Mine.round_half_even(local.y / TILE_SIZE - 1.0))
-	var floats: bool = "anti-water" in tank.get_addon_names()
 	for step in MINE_RING_ORDER:
 		var cell: Vector2i = origin - MINE_RING[posmod(turn + step, MINE_RING.size())]
-		if _mine_spot_free(cell, floats):
-			_spawn_mine(cell, level, tank.is_in_group("players"), tank.get_player_index())
-			return true
-	return false
+		if _mine_spot_free(cell, floats, taken, points):
+			return cell
+	return NO_MINE_SPOT
 
 
 ## True if a mine may go on the 2x2 block whose top-left tile is [param cell]:
 ## all four tiles on the field and wall-free (grass is fine), no water unless
-## the layer floats (anti-water), no mine already keyed there, and nothing
-## standing close to its centre.
-func _mine_spot_free(cell: Vector2i, floats: bool) -> bool:
+## the layer floats (anti-water), no mine already keyed there ([param taken]),
+## and nothing of [param points] close to its centre.
+func _mine_spot_free(cell: Vector2i, floats: bool, taken: Dictionary, points: Array[Vector2]) -> bool:
 	# The original read off-field tiles as open ground and could drop a mine
 	# where no tank ever reaches; the remake keeps every mine on the field.
 	if cell.x < 0 or cell.y < 0 or cell.x > GRID_WIDTH - 2 or cell.y > GRID_HEIGHT - 2:
 		return false
-	if _mine_tiles.has(cell):
+	if taken.has(cell):
 		return false
 	for dy in range(2):
 		for dx in range(2):
@@ -1040,19 +1067,20 @@ func _mine_spot_free(cell: Vector2i, floats: bool) -> bool:
 				return false
 			if not floats and _is_water_tile(tile):
 				return false
-	return not _mine_spot_crowded(mine_center(cell))
+	return not mine_spot_crowded(mine_center(cell), points)
 
 
-## The original refused a spot when any collidable sprite's reference point (its
-## top-left corner + 16 px: the centre of a tank, the base or a bonus) fell in a
-## box around the mine centre. That includes the layer itself, which can block
-## its own side spots while it sits between tiles, and armed mines, whose point
-## lies off-centre (their image is half a tank wide).
-func _mine_spot_crowded(center: Vector2) -> bool:
+## What stands about, for a mine's spot: the original refused a spot when any
+## collidable sprite's reference point (its top-left corner + 16 px: the centre
+## of a tank, the base or a bonus) fell in a box around the mine centre. That
+## includes the layer itself, which can block its own side spots while it sits
+## between tiles, and armed mines, whose point lies off-centre (their image is
+## half a tank wide). [param skip], the layer, is left to the caller.
+func _crowd_points(skip: Node = null) -> Array[Vector2]:
 	var points: Array[Vector2] = []
 	for node in get_tree().get_nodes_in_group("tanks"):
 		var tank := node as BaseTank
-		if tank and is_instance_valid(tank) and tank.collision_layer != 0:
+		if tank and is_instance_valid(tank) and tank.collision_layer != 0 and tank != skip:
 			points.append(tank.global_position)
 	var eagle := get_tree().get_first_node_in_group("eagle") as Node2D
 	if eagle:
@@ -1066,6 +1094,12 @@ func _mine_spot_crowded(center: Vector2) -> bool:
 	for mine in get_mines():
 		if mine.is_armed():
 			points.append(mine.global_position + MINE_POINT_OFFSET)
+	return points
+
+
+## True if any of [param points] is in the box round a mine centred at
+## [param center] (_crowd_points).
+static func mine_spot_crowded(center: Vector2, points: Array[Vector2]) -> bool:
 	for p in points:
 		var d: Vector2 = p - center
 		if d.x >= -MINE_CLEARANCE and d.x < MINE_CLEARANCE \
@@ -1255,23 +1289,33 @@ func fire_anchor(at: Vector2) -> Vector2i:
 ## feeds that fire instead (GroundFire.restack).
 func ignite_fire_patch(anchor: Vector2i, from_player: bool, owner_id: int = -1, strength: int = 0) -> void:
 	var side := 1 if from_player else 0
+	for tile: Array in fire_patch_tiles(anchor):
+		var cell: Vector2i = tile[0]
+		if not fire_can_lie(cell):
+			continue
+		var there := _registered_fire(side, cell)
+		if there:
+			there.restack(strength, owner_id)
+			continue
+		var fire := _new_fire(cell, side, owner_id, strength, float(fresh_fire_fuel(strength)), tile[1], tile[2])
+		if fire:
+			fire.registered = true
+			_fire_grid[side][cell] = fire
+
+
+## The tiles of a fire shell's patch round [param anchor] (ignite_fire_patch):
+## [cell, how long its fire takes to arm (the inner 2x2's sooner), the frame
+## its flames start at] each. A client lays its own the same way at once
+## (NetClientWorld.predict_hit).
+static func fire_patch_tiles(anchor: Vector2i) -> Array:
+	var tiles: Array = []
 	for dy in range(-1, 3):
 		for dx in range(-1, 3):
 			if dx + dy < -1 or dx + dy > 3 or dy - dx < -2 or dy - dx > 2:
 				continue  # the 4 corners
-			var cell := anchor + Vector2i(dx, dy)
-			if not fire_can_lie(cell):
-				continue
-			var there := _registered_fire(side, cell)
-			if there:
-				there.restack(strength, owner_id)
-				continue
 			var inner := dx >= 0 and dx <= 1 and dy >= 0 and dy <= 1
-			var fire := _new_fire(cell, side, owner_id, strength, float(fresh_fire_fuel(strength)),
-					GroundFire.ARM_INNER if inner else GroundFire.ARM, dx + dy + 2)
-			if fire:
-				fire.registered = true
-				_fire_grid[side][cell] = fire
+			tiles.append([anchor + Vector2i(dx, dy), GroundFire.ARM_INNER if inner else GroundFire.ARM, dx + dy + 2])
+	return tiles
 
 
 ## Ground a fire shell's patch can lie on (0x00493bb8): open ground, grass,

@@ -889,7 +889,8 @@ func net_type() -> int:
 
 func net_spawn_args() -> Array:
 	return [maxi(BaseTank.FACINGS.find(direction), 0), visual_style, Array(visual_lane_offsets),
-			owner_player, speed, max_range, pierces, accel, max_speed, net_shot, damage, Array(collision_lane_offsets)]
+			owner_player, speed, max_range, pierces, accel, max_speed, net_shot, damage, Array(collision_lane_offsets),
+			[1 if is_player_bullet else 0, fire_level if ignites_ground else -1, explosion_level if explodes else -1]]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
@@ -901,7 +902,9 @@ func net_state() -> Array:
 ## (NetClientWorld), the number of the client's own shot it is (net_shot), its
 ## damage as it left (what it takes off a shell it meets), and the lanes it
 ## meets things on (a shot drawn as one shell can hit on two), the walls across
-## the shooter's body if more than one, as _spawn_bullet has them.
+## the shooter's body if more than one, as _spawn_bullet has them; and its side,
+## and the level of the fire it drops or of the blast it sets off (-1: none),
+## for showing its end at once (NetClientWorld.predict_hit).
 func net_setup(args: Array) -> void:
 	direction = BaseTank.FACINGS[clampi(int(args[0]), 0, 3)]
 	visual_style = str(args[1])
@@ -928,6 +931,13 @@ func net_setup(args: Array) -> void:
 		collision_lane_offsets = hit_lanes
 		if hit_lanes.size() > 1:
 			tile_lane_offsets = BaseTank.BODY_LANE_OFFSETS
+	if args.size() >= 13:
+		var kind: Array = args[12]
+		is_player_bullet = int(kind[0]) != 0
+		ignites_ground = int(kind[1]) >= 0
+		fire_level = maxi(int(kind[1]), 0)
+		explodes = int(kind[2]) >= 0
+		explosion_level = maxi(int(kind[2]), 0)
 
 func net_apply(_state: Array) -> void:
 	pass
