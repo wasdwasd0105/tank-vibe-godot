@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cvaluetest01"]
+
+[ext_resource type="Script" path="res://scripts/tests/value_test.gd" id="1_value"]
+
+[node name="ValueTest" type="Node"]
+script = ExtResource("1_value")

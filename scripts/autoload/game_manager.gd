@@ -55,7 +55,12 @@ var enemies_remaining: int = 20
 var freeze_timer: float = 0.0
 var _stage_start_snapshot: Dictionary = {}
 
-const EXTRA_LIFE_SCORE: int = 20000
+## Extra lives by score (Sean, 2026-10-08): one at each of these, then one more
+## every EXTRA_LIFE_STEP past the last. The original's (0x004d2920) began the
+## same, then went 200,000, 500,000, every 500,000 to 5,000,000 and every
+## 1,000,000 to 10,000,000.
+const EXTRA_LIFE_SCORES: Array[int] = [10000, 30000, 60000, 100000]
+const EXTRA_LIFE_STEP: int = 100000
 
 func _ready() -> void:
 	pass
@@ -144,10 +149,7 @@ func add_score(player_id: int, points: int, enemy_type: int) -> void:
 	if not player_kills[player_id].has(enemy_type):
 		player_kills[player_id][enemy_type] = 0
 	player_kills[player_id][enemy_type] += 1
-	# Extra life every 20000 points
-	if old_score / EXTRA_LIFE_SCORE < player_scores[player_id] / EXTRA_LIFE_SCORE:
-		player_lives[player_id] += 1
-		SoundManager.play(&"extra_life")
+	_give_extra_lives(player_id, old_score)
 
 func lose_life(player_id: int) -> void:
 	player_lives[player_id] -= 1
@@ -162,9 +164,26 @@ func lose_life(player_id: int) -> void:
 func add_score_direct(player_id: int, points: int) -> void:
 	var old_score := player_scores[player_id]
 	player_scores[player_id] += points
-	if old_score / EXTRA_LIFE_SCORE < player_scores[player_id] / EXTRA_LIFE_SCORE:
-		player_lives[player_id] += 1
+	_give_extra_lives(player_id, old_score)
+
+## The lives [param player_id]'s score earned on its way up from [param old_score].
+func _give_extra_lives(player_id: int, old_score: int) -> void:
+	var earned := extra_lives_at(player_scores[player_id]) - extra_lives_at(old_score)
+	if earned > 0:
+		player_lives[player_id] += earned
 		SoundManager.play(&"extra_life")
+
+## How many extra lives a score of [param score] has earned.
+func extra_lives_at(score: int) -> int:
+	var earned := 0
+	for threshold in EXTRA_LIFE_SCORES:
+		if score >= threshold:
+			earned += 1
+	var last: int = EXTRA_LIFE_SCORES[-1]
+	if score > last:
+		@warning_ignore("integer_division")
+		earned += (score - last) / EXTRA_LIFE_STEP
+	return earned
 
 func add_life(player_id: int) -> void:
 	player_lives[player_id] += 1

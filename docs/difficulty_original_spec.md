@@ -23,6 +23,8 @@ When the stages run out, the map wraps to its first record and difficulty goes u
 
 **Stage order.** Record 0 of Stage.dat is the title demo's "Splash Stage" (24 enemies, one of each type, 18 at once). A new game starts at record 1 (0x4ca4b8), so the demo map is only played on a loop, just before record 1. The remake skips record 0 (`LevelData.load_stages_from_dat`), so its stage 1 is record 1, "Tourist", as in the original; its loops go straight back to stage 1.
 
+**Stages kept for some difficulties.** A record's word at offset 210 skips that stage at every difficulty whose bit is set (0x4caa4a). The 52-record set the v1.2.2 readme describes (a copy is in `Tank V1.22/Wave/Stage.dat`) used it to deal its stages out by difficulty: its "(Starting Easy)" stage plays only at 1, "(Starting Normal)" only at 2, and so on. The v1.22 Stage.dat, the remake's bundled set, sets no bits. The remake doesn't read the word, so an imported set plays every stage at every difficulty.
+
 ## The record, field by field
 
 | Field | Use | 0 | 1 | 2 | 3 | 4 | 5 |

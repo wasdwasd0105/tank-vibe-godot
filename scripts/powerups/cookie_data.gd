@@ -81,6 +81,14 @@ const POOL_WEAPON: Array = [
 	CookieType.RAPID_COOKIE, CookieType.FIRE_COOKIE, CookieType.AP_COOKIE,
 	CookieType.EXPLOSION_COOKIE, CookieType.MINE_COOKIE,
 ]
+## Armor Up, MAX, MAX Caisson Armor, Hold Enemy and Bomb drop half as often as
+## the other items of their pools (Sean, 2026-10-08): the other half of the
+## rolls that land on one drop nothing, so every other item keeps its odds.
+const RARER_DROPS: Array = [
+	CookieType.HP_UP, CookieType.MAX_UP, CookieType.BULLETS_MAX,
+	CookieType.TANK_WEB, CookieType.TANK_BOMB,
+]
+const RARER_DROP_SHARE: float = 0.5
 
 ## Maps addon name string to corresponding addon cookie type
 const ADDON_TO_COOKIE: Dictionary = {
@@ -275,7 +283,8 @@ static func original_enemy_gun_level(tank_type_id: int, difficulty: int) -> int:
 	return clampi(base + bonus, 0, 3)
 
 ## Roll a death-drop cookie type for a dying enemy tank.
-## Returns -1 if no drop (40% chance), otherwise a CookieType value.
+## Returns -1 if no drop (40% chance, and half the rolls of a RARER_DROPS
+## item), otherwise a CookieType value.
 static func roll_death_drop(tank_type_id: int) -> int:
 	# 60% chance to drop
 	if randf() > 0.60:
@@ -304,10 +313,12 @@ static func roll_death_drop(tank_type_id: int) -> int:
 		else:
 			category = 2
 
+	var cookie_type := -1
 	match category:
-		0: return POOL_UTILITY_POWER_UP[randi() % POOL_UTILITY_POWER_UP.size()]
-		1: return POOL_UTILITY_SCORE_UP[randi() % POOL_UTILITY_SCORE_UP.size()]
-		2: return POOL_UTILITY_SPECIAL[randi() % POOL_UTILITY_SPECIAL.size()]
-		3: return WEAPON_TO_COOKIE[weapon_type]
-
-	return -1
+		0: cookie_type = POOL_UTILITY_POWER_UP[randi() % POOL_UTILITY_POWER_UP.size()]
+		1: cookie_type = POOL_UTILITY_SCORE_UP[randi() % POOL_UTILITY_SCORE_UP.size()]
+		2: cookie_type = POOL_UTILITY_SPECIAL[randi() % POOL_UTILITY_SPECIAL.size()]
+		3: cookie_type = WEAPON_TO_COOKIE[weapon_type]
+	if cookie_type in RARER_DROPS and randf() >= RARER_DROP_SHARE:
+		return -1
+	return cookie_type

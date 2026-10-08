@@ -101,6 +101,14 @@ The remake checks overlap every frame, as the original did. An enemy parked on a
 - The original's death drop. Every odd-type tank, whether that is its own type or one a MAX gave it, always drops one item on death, drawn from Random(140) (0x491e2c). Even types drop nothing.
 - The remake keeps its 60% death drop from its cookie table.
 
+**MAX and MAX Caisson Armor:**
+- **The original never dropped them.** Bits 0 and 1 of a stage record's byte 212 (read at 0x4cab63) hid a MAX and a MAX Caisson Armor in that stage:
+  - At stage start, each went under a random wall (0x4c9b5a). It picked a map cell at x 2–39, y 2–29 holding a wall id 24–59, but not at x 18–23 with y 27–30, by the base. These are map cells counted with the steel border, so stage tile + 1, and the field's outer ring is never picked. It allowed 12000 tries.
+  - Breaking that wall gave the item up (0x4ca7a8).
+  - The random stage the game builds when Stage.dat gives it none (0x4cad6c) hid both.
+- **Which stages hide them.** The v1.22 Stage.dat flags no stage, and the remake's bundled set is that file. The 52-record set the v1.2.2 readme describes (a copy is in `Tank V1.22/Wave/Stage.dat`) flagged about half of its 51 stages.
+- **The remake** keeps them in its drop pools. Since Sean's call of 2026-10-08, they drop half as often as before (`CookieData.RARER_DROPS`), as do Armor Up, Hold Enemy and Bomb. The other half of those rolls drop nothing, so every other item keeps its odds.
+
 ## 5. Hold Enemy on the players (0x49495a–0x4949e0)
 
 - Every player's update checks one global timer (0x4949fd). A held player can't drive or fire; a player who spawns during the hold is held too.

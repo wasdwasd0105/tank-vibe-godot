@@ -126,6 +126,8 @@ The three fonts: **Text3** (gold, 18×36 cells, `tank_font`), **Text** (white, 1
   - Anything else gets nothing.
 - **Amount:** the difficulty factor (table 0x4d2860: 33/66/100/150/200/250 for difficulty 0–5) times the multiplier. At the default difficulty 2 that is 1000 or 3000.
 - **Scoring:** AddScore runs at once, and an extra life comes if the new score crosses a threshold.
+  - **The original's thresholds** (AddScore 0x498c94, table 0x4d2920 × 10000): 10,000, 30,000, 60,000, 100,000, 200,000, 500,000, then every 500,000 to 5,000,000 and every 1,000,000 to 10,000,000. That's twenty at most, one per AddScore call; the player record's +0x48 counts the lives given so far.
+  - **The remake's** (Sean, 2026-10-08; `GameManager.EXTRA_LIFE_SCORES`): 10,000, 30,000, 60,000 and 100,000, then every 100,000, with no end. Every threshold a gain passes gives a life.
 - **"Reward +N" copies** (Text3 at 1×, alpha always on, children of the panel, draw order 25 − k). For copy k:
   - **Start:** `Random(2)` picks one of two places:
     - top: x = Random(640) − 16, y −216;
