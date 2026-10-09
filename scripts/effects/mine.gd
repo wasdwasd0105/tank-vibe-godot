@@ -127,7 +127,9 @@ func _process(delta: float) -> void:
 	if _triggered:
 		return
 	for body in get_overlapping_bodies():
-		if body is BaseTank and _on_tank_contact(body as BaseTank):
+		# (A tank whose client decides what happens to it sets mines off there:
+		# its word sets this one off here, set_off.)
+		if body is BaseTank and not (body as BaseTank).processed_there() and _on_tank_contact(body as BaseTank):
 			return
 	if _fuse >= 0.0:
 		_fuse -= delta
@@ -137,6 +139,35 @@ func _process(delta: float) -> void:
 
 func is_armed() -> bool:
 	return _armed and not _triggered
+
+
+## Client: this machine's own tank set it off here at once
+## (NetClientWorld.own_tank_step): gone from sight, its blast laid here, the
+## host's word to come.
+func set_off_here() -> void:
+	_triggered = true
+	visible = false
+
+
+# --- What a tank touching an armed mine does, and what it does to the tank
+# (_on_tank_contact; a client works out its own tank's the same way) ---
+
+## A tank wearing anti-ice ([param anti_ice]) skates over a mine of
+## [param p_level] below 3; any other sets it off.
+static func set_off_by(p_level: int, anti_ice: bool) -> bool:
+	return not anti_ice or p_level >= 3
+
+
+## A mine of [param p_level] going off under a tank slows it to a quarter
+## speed from level 1: not one that blinks ([param invulnerable]), wears
+## anti-ice, or memory-save ([param memory]) below level 3.
+static func slows(p_level: int, invulnerable: bool, anti_ice: bool, memory: bool) -> bool:
+	return not invulnerable and p_level >= 1 and not anti_ice and not (memory and p_level < 3)
+
+
+## And throws it from level 2, whatever it carries and invincible or not.
+static func throws(p_level: int) -> bool:
+	return p_level >= 2
 
 
 # --- Online (NetWorld): a mine is its level and side, how long it has lain
@@ -176,14 +207,15 @@ func take_over_from(laid: Mine) -> void:
 
 ## Go off with no one on it: the blast alone. Used when an explosion reaches it,
 ## and for a player's bomb ([param spare_players]: the players' tanks, shells
-## and mines take nothing from the blast).
-func set_off(spare_players: bool = false) -> void:
+## and mines take nothing from the blast). Online, a client's tank that set it
+## off there ([param sound_tank], its player) heard it there already.
+func set_off(spare_players: bool = false, sound_tank: int = -1) -> void:
 	if _triggered:
 		return
 	_triggered = true
 	# The original only sounded mines from level 2 up.
 	if level >= 2:
-		SoundManager.play(&"mine_explode")
+		SoundManager.play(&"mine_explode", sound_tank)
 	if _level_manager:
 		_level_manager.spawn_explosion_blast(global_position, level, from_player, false, owner_id, spare_players,
 				ExplosionBlast.MINE_SIZE)
@@ -203,7 +235,7 @@ func set_off_after(delay: float) -> void:
 func _on_tank_contact(tank: BaseTank) -> bool:
 	var addons: Array = tank.get_addon_names()
 	var anti_ice: bool = "anti-ice" in addons
-	if anti_ice and level < 3:
+	if not set_off_by(level, anti_ice):
 		return false  # skates over it; the mine stays for the next tank
 	if from_player == tank.is_in_group("players"):
 		return false  # never the layer's own side
@@ -211,16 +243,13 @@ func _on_tank_contact(tank: BaseTank) -> bool:
 	if not is_instance_valid(tank) or tank.health <= 0 or tank.is_flying:
 		return true
 
-	var invulnerable: bool = tank.is_invulnerable()
-	var memory: bool = "memory-save" in addons
 	# L1+ slows to a quarter speed. Anti-ice is immune; memory-save only below L3.
-	if not invulnerable and level >= 1 and not anti_ice and not (memory and level < 3):
+	if slows(level, tank.is_invulnerable(), anti_ice, "memory-save" in addons):
 		tank.apply_mine_slow()
 	# L2+ throws the tank, whatever it carries and invincible or not; its hit
 	# comes when it lands (BaseTank._take_mine_landing_hit): 1 HP from L2, 2 from L3.
-	if level < 2:
-		return true
-	tank.launch_mine_fly(level, global_position, level - 1, owner_id)
+	if throws(level):
+		tank.launch_mine_fly(level, global_position, level - 1, owner_id)
 	return true
 
 

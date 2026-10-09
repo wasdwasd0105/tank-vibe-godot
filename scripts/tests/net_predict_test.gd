@@ -113,6 +113,36 @@ func _host_says(removed: Array, spawns: Array = []) -> Dictionary:
 	return kept
 
 
+## As _host_says, the snapshot saying [param removed] have gone, with
+## [param events].
+func _host_says_with(removed: Array, events: Array) -> Dictionary:
+	var packet := []
+	packet.resize(NetWorld.SNAP_SIZE)
+	packet[NetWorld.SNAP_SEQ] = 1
+	packet[NetWorld.SNAP_EPOCH] = 1
+	packet[NetWorld.SNAP_TIME] = Time.get_ticks_msec() + 100000
+	packet[NetWorld.SNAP_FLAGS] = 0
+	packet[NetWorld.SNAP_MAP] = []
+	packet[NetWorld.SNAP_SPAWNS] = []
+	packet[NetWorld.SNAP_UPDATES] = PackedByteArray()
+	packet[NetWorld.SNAP_REMOVED] = PackedInt32Array(removed)
+	packet[NetWorld.SNAP_TILES] = PackedInt32Array()
+	packet[NetWorld.SNAP_GAME] = {}
+	packet[NetWorld.SNAP_EVENTS] = events
+	var was := [_world._started, _world._epoch, _world._clock_offset, _world._have_clock, _world._late.duplicate()]
+	_world._started = true
+	_world._epoch = 1
+	_world._on_packet(var_to_bytes(packet))
+	var kept: Dictionary = _world._buffer[-1] if not _world._buffer.is_empty() else {}
+	_world._buffer.clear()
+	_world._started = was[0]
+	_world._epoch = was[1]
+	_world._clock_offset = was[2]
+	_world._have_clock = was[3]
+	_world._late = was[4]
+	return kept
+
+
 ## The host's snapshot saying [param cells] ([x, y, bg, fg, standing quarters]
 ## each) changed, and [param spawns] have come, of host time [param time] (far
 ## off if not given), comes to the client world and waits there to be shown in
@@ -205,6 +235,72 @@ func _host_tank_state(health: int, bits: int) -> Array:
 ## How many quarters of the brick on [param cell] stand here (0: none).
 func _standing_here(cell: Vector2i) -> int:
 	return NetClientWorld._standing(_lm.net_cell(cell))
+
+
+## What this machine has noted for the host about its own tank since record
+## [param from] (Net.note_own_event): [kind, points or level, flags, mine id]
+## each.
+func _noted(from: int = 0) -> Array:
+	var out: Array = []
+	var bytes: PackedByteArray = Net._own_events
+	for at in range(from * Net.OWN_SIZE, bytes.size(), Net.OWN_SIZE):
+		out.append([int(bytes[at + 1]), int(bytes[at + 3]), int(bytes[at + 4]), int(bytes.decode_u32(at + 8))])
+	return out
+
+
+## Its own tank as the host has it, [param health] and add-ons [param bits],
+## with nothing of its own play shown over it, nothing noted for the host.
+func _own_tank_afresh(health: int, bits: int = 0) -> void:
+	_world._own_effects.clear()
+	_world._guessed_deaths.clear()
+	_world._predicted_blasts.clear()
+	_player.net_gone = false
+	_player.visible = true
+	_player.is_invincible = false
+	_player.net_hit_grace_only = false
+	_player.is_mine_slowed = false
+	_world._states[5] = _host_tank_state(health, bits)
+	_player.net_apply(_world._states[5])
+	_player.fire_immunity_timer = 0.0
+	_player.blast_immunity = 0.0
+	_player._grace_guessed_frame = -100000
+	_player._flash_guessed_until = 0
+	Net._own_events = PackedByteArray()
+	SoundManager._predicted.clear()
+
+
+## A fire of [param side] (1 the players', 0 the enemies', -1 burning grass)
+## shown on [param cell] as the host's entity [param nid]: armed, unless
+## [param arm] is still to go.
+func _shown_fire(nid: int, cell: Vector2i, side: int, arm: float = 0.0) -> GroundFire:
+	var at := _lm.tile_to_world(cell)
+	_world._spawn(nid, NetWorld.T_FIRE, [{1: 3, 0: 2, -1: 1}[side], 0.0, 0, 0.0, arm, nid], [at.x, at.y])
+	return _world.node_for(nid) as GroundFire
+
+
+## A mine of the enemies' of [param level], long laid, shown centred at
+## [param local] as the host's entity [param nid] (armed by its first frame).
+func _shown_mine(nid: int, local: Vector2, level: int) -> Mine:
+	_world._spawn(nid, NetWorld.T_MINE, [level, 0, 1.0, -1], [_at(local).x, _at(local).y, 1, 1.0])
+	return _world.node_for(nid) as Mine
+
+
+## The host's picture of a blast of [param level] and [param kind]
+## (NetWorld.blast_kind) that went off at [param local], held at its frame
+## [param frame].
+func _shown_blast(local: Vector2, level: int, kind: int, frame: int) -> ExplosionBlast:
+	var origin := ExplosionBlast.grid_origin(_at(local) - _lm.global_position, ExplosionBlast.SHELL_SIZE)
+	_world._play([NetWorld.EV_BLAST, origin.x, origin.y, level, kind])
+	var blast := _fx.get_children()[-1] as ExplosionBlast
+	blast.set_process(false)
+	blast._frame = frame
+	return blast
+
+
+func _clear_blasts() -> void:
+	for node in _fx.get_children():
+		if node is ExplosionBlast:
+			node.queue_free()
 
 
 func _bricks(row: int) -> Array[Vector2i]:
@@ -863,6 +959,148 @@ func _run() -> void:
 			"its shell gone, the other brick not: that guess undone, the brick the snapshot said gone stays gone, the other back")
 		_world._despawn(140)
 	_clear_bricks(row)
+
+	print("\n[I] What the world does to its own tank: decided here at once, the host told (Sean, 2026-10-09: \"let guest process all the thing locally\")")
+	_clear_ghosts()
+	_player.global_position = _at(_home)
+	_player.current_direction = Vector2.UP
+	gm.player_weapon_levels[0] = 0
+	var cell_here := _lm.world_to_tile(_at(_home))
+	_own_tank_afresh(4)
+	var fire_here := _shown_fire(400, cell_here, 0)
+	_world.own_tank_step(_player)
+	check(fire_here.is_armed() and _player.health == 3 and _player._flash_guessed_until > Time.get_ticks_msec()
+		and _noted() == [[Net.OWN_HIT, 1, Net.OWN_FIRE, 0]] and _player.fire_immunity_timer > 0.5,
+		"the enemies' fire under it: burned here at once, a point and its flash; the host told (%s)" % str(_noted()))
+	_world.own_tank_step(_player)
+	check(_noted().size() == 1 and _player.health == 3, "within its fire window: not again")
+	_world._despawn(400)
+	_own_tank_afresh(4)
+	_shown_fire(401, cell_here, 1)
+	_shown_fire(402, cell_here + Vector2i.RIGHT, 0, 0.5)
+	_world.own_tank_step(_player)
+	check(_noted().is_empty() and _player.health == 4, "its own side's fire, and one not armed yet: nothing")
+	_world._despawn(401)
+	_world._despawn(402)
+	_shown_fire(403, cell_here, -1)
+	_player._grace_guessed_frame = Engine.get_physics_frames()
+	_world.own_tank_step(_player)
+	check(_noted().is_empty() and _player.health == 4 and _player.fire_immunity_timer > 1.0,
+		"burning grass while it blinks (a hit's grace here): nothing, its window all the same (grass's longer)")
+	_world._despawn(403)
+	# Blasts: the enemies' and a landing's hurt it by their heat; the players' spare it.
+	_own_tank_afresh(4)
+	var theirs_blast := _shown_blast(_home, 1, 0, 6)
+	var heat := int(theirs_blast.heat_on(_player.global_position, ExplosionBlast.TANK_REACH)[0])
+	_world.own_tank_step(_player)
+	check(heat > 0 and _player.health == 4 - heat and _noted() == [[Net.OWN_HIT, heat, 0, 0]]
+		and _player.blast_immunity > 0.0, "the enemies' blast on it: its heat, %d, here at once; the host told" % heat)
+	_clear_blasts()
+	_own_tank_afresh(4)
+	_shown_blast(_home, 1, NetWorld.BLAST_PLAYERS, 6)
+	_world.own_tank_step(_player)
+	check(_noted().is_empty() and _player.health == 4, "the players' blast: it spares it")
+	_clear_blasts()
+	_own_tank_afresh(4)
+	_shown_blast(_home, 1, NetWorld.blast_kind(true, true, false), 6)
+	_world.own_tank_step(_player)
+	check(_noted().size() == 1 and _player.health < 4, "a landing's blast, everyone's: it hurts it")
+	_clear_blasts()
+	# Mines: an armed one of the enemies' under it goes off here at once.
+	_own_tank_afresh(4)
+	var slow_mine := _shown_mine(410, _home, 1)
+	await tree.process_frame
+	_world.own_tank_step(_player)
+	check(slow_mine.is_armed() == false and not slow_mine.visible and _world._predicted_blasts.size() == 1
+		and _player.is_mine_slowed and _noted() == [[Net.OWN_MINE, 1, Net.OWN_SLOWED, 410]],
+		"an enemies' mine under it: off here at once, its blast laid here, the tank slowed; the host told (%s)" % str(_noted()))
+	_world._despawn(410)
+	_clear_blasts()
+	_own_tank_afresh(4, int(BaseTank.NET_ADDON_BITS["anti-ice"]))
+	var skated := _shown_mine(411, _home, 1)
+	await tree.process_frame
+	_world.own_tank_step(_player)
+	check(skated.is_armed() and _noted().is_empty() and not _player.is_mine_slowed, "with anti-ice: it skates over one below level 3")
+	_world._despawn(411)
+	# A level-2 mine throws it: it flies here itself, as the host's copy will.
+	_own_tank_afresh(4)
+	var throw_mine := _shown_mine(412, _home + Vector2(-20, 0), 2)
+	await tree.process_frame
+	_world.own_tank_step(_player)
+	var thrown: Array = _noted()
+	check(_player.is_flying and _player._flying_here and _player.is_net_driving() and thrown.size() == 1
+		and int(thrown[0][2]) & Net.OWN_THROWN != 0 and (int(thrown[0][2]) & Net.OWN_SPIN_BACK != 0) == (_player.fly_way < 0),
+		"a level-2 mine throws it: it flies here itself, the host told which way it tumbles (%s)" % str(thrown))
+	var flying_state := _host_tank_state(4, 0)
+	flying_state[3] = int(flying_state[3]) | BaseTank.NET_FLYING | PlayerTank.NET_FLIGHT_THERE
+	_player.net_apply(flying_state)
+	var on_ground_state := _host_tank_state(4, 0)
+	_player.net_apply(on_ground_state)
+	check(_player.is_flying and _player._flying_here, "the host's state, flying with it or not yet: its own flight flies on")
+	var flew_from := _player.global_position
+	Net.role = Net.Role.CLIENT
+	for i in 240:
+		if not _player.is_flying:
+			break
+		_player._update_flying(1.0 / 60.0)
+	Net.role = Net.Role.OFFLINE
+	var landed: Array = _noted(1)
+	check(not _player.is_flying and _player.global_position.x > flew_from.x + 100.0 and landed == [[Net.OWN_HIT, 1, Net.OWN_LANDING, 0]]
+		and _player.health == 3 and _world._predicted_blasts.size() == 2,
+		"it lands here: the landing's point at once, its blast laid here; the host told (%s)" % str(landed))
+	var landing_blast := _fx.get_children()[-1] as ExplosionBlast
+	landing_blast.set_process(false)
+	landing_blast._frame = 6
+	_world.own_tank_step(_player)
+	check(_noted(2).size() == 1 and int(_noted(2)[0][0]) == Net.OWN_HIT and _player.health < 3,
+		"its landing's blast, on it: its heat too (%s)" % str(_noted(2)))
+	_world._despawn(412)
+	_clear_blasts()
+	_player.global_position = _at(_home)
+	# Its end: shown here at once; no word of it, it lives again.
+	_own_tank_afresh(1)
+	_shown_fire(420, cell_here, 0)
+	_world.own_tank_step(_player)
+	check(_world._guessed_deaths.has(_player.get_instance_id()) and _player.net_gone and not _player.visible
+		and not _player.is_net_driving() and SoundManager._predicted.any(func(e: Array) -> bool: return e[1] == &"tank_destroyed")
+		and _noted() == [[Net.OWN_HIT, 1, Net.OWN_FIRE, 0]],
+		"its last point burns here: its end at once, explosion and sound; the host told")
+	_world._guessed_deaths[_player.get_instance_id()]["msec"] -= int(NetClientWorld.GUESS_MAX_MS) + 1
+	var undone_before := _world.guesses_undone
+	_world._expire_guesses()
+	check(not _player.net_gone and _player.visible and _world.guesses_undone == undone_before + 1,
+		"no word of it from the host: it shows again")
+	_world._despawn(420)
+	# Its tank's reports say when it's in the air.
+	Net.report_tank(0, _at(_home), 0, true, 0, true)
+	var message := Net._input_message()
+	check(int(message[Net.REPORT_AT]) & Net.REPORT_FLYING != 0, "its report says it flies")
+	Net._tank_reports = [{}, {}]
+	# The host's fire tells how long till it burns tanks, and the order it was lit in.
+	_own_tank_afresh(4)
+	_lm.ignite_fire_patch(_lm.fire_anchor(_at(_home + Vector2(400, 0))), false)
+	await tree.process_frame
+	var lit_fire: GroundFire = null
+	for node in _lm.terrain_node.get_children():
+		if node is GroundFire and node.is_in_group(NetWorld.GROUP) and node._level_manager != null:
+			lit_fire = node
+	var lit_spec: Array = lit_fire.net_spawn_args() if lit_fire else []
+	var copy_fire := GroundFire.new()
+	copy_fire.net_setup(lit_spec)
+	check(lit_spec.size() == 6 and copy_fire.serial == lit_fire.serial and not copy_fire.is_armed() and copy_fire._arm > 0.0,
+		"a fire's spawn data: how long till it burns tanks, and its order (%s)" % str(lit_spec))
+	copy_fire.free()
+	_lm._clear_fire()
+	# Its end, and the host's word of it: gone, its explosion there not shown again.
+	_own_tank_afresh(1)
+	_shown_fire(421, cell_here, 0)
+	_world.own_tank_step(_player)
+	var end_at := _player.global_position
+	var end_word := _host_says_with([5], [[NetWorld.EV_EXPLOSION, end_at.x + 10.0, end_at.y, 2.0],
+			[NetWorld.EV_EXPLOSION, end_at.x + 300.0, end_at.y, 2.0]])
+	check(_world._guessed_deaths.is_empty() and (end_word.get("events", []) as Array).size() == 1
+		and not (end_word.get("removed", PackedInt32Array([5])) as PackedInt32Array).has(5),
+		"the host's word of its end: it goes, that explosion not shown again (another still is)")
 
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)

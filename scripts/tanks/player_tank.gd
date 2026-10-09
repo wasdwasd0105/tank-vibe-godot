@@ -202,6 +202,15 @@ var _grace_guessed_frame := -100000
 var net_predicted := false
 var net_slot := 0
 var _override_seen := 0
+## Client: this machine flies this tank itself just now: a mine its screen had
+## it drive onto threw it (NetClientWorld.own_tank_step). Host: this copy's
+## flight is the client's, from its word (_take_reported_events), not one the
+## host drives; its state says so (NET_FLIGHT_THERE).
+var _flying_here := false
+var _flight_there := false
+## Host: doing what the client driving this tank said happened to it there
+## (_take_reported_events): its screen rumbled it already.
+var _quiet_rumble := false
 
 func _ready() -> void:
 	super._ready()
@@ -252,13 +261,16 @@ func _physics_process(delta: float) -> void:
 			_predict()
 		return  # the host drives every other tank; this one only shows it
 	_judge_reported_hits()
+	_take_reported_events()
 	if is_materializing:
 		velocity = Vector2.ZERO
 		_take_over()
 		return
 	if is_flying:
+		var its_clients := _flight_there  # (its landing ends that)
 		_update_flying(delta)
-		_take_over()
+		if not its_clients:
+			_take_over()  # (one its client flies there itself it flies here alike)
 		return
 	if is_invincible:
 		invincible_timer -= delta
@@ -266,8 +278,12 @@ func _physics_process(delta: float) -> void:
 			is_invincible = false
 			_sync_wreath()
 	if GameManager.players_frozen:
-		glide_while_held("enemies")  # an enemy took "Hold Enemy"
-		_take_over()
+		if processed_there():
+			_follow_client(delta)  # it glides on there itself: this copy follows
+			_fire_client_shots()  # (those it fired there before it knew of the hold)
+		else:
+			glide_while_held("enemies")  # an enemy took "Hold Enemy"
+			_take_over()
 		return
 
 	if not PlayerInput.is_remote_seat(player_id):
@@ -544,6 +560,91 @@ func hits_judged_there() -> bool:
 		return false
 	return Time.get_ticks_msec() - float(pad.views[-1][2]) < NetHostWorld.SEEN_KEEP_MS - 100.0
 
+## Host: the client driving this tank decides what happens to it there: the
+## fire, the blasts and the mines as its screen shows them, and its flights
+## and a hold's glide (Sean, 2026-10-09: "let guest process all the thing
+## locally"). Its word of each (_take_reported_events) does it here, and this
+## machine's fire, blasts and mines leave this copy be. As hits_judged_there,
+## its flights too.
+func processed_there() -> bool:
+	if Net.is_client() or NetHostWorld.active == null or not PlayerInput.remote_predicts(player_id):
+		return false
+	if is_materializing or is_queued_for_deletion() or (is_flying and not _flight_there):
+		return false
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.report_frame < 0 or pad.views.is_empty():
+		return false
+	return Time.get_ticks_msec() - float(pad.views[-1][2]) < NetHostWorld.SEEN_KEEP_MS - 100.0
+
+## Host: what the client driving this tank said happened to it there
+## (Net.note_own_event), done here: each hit, at once and whatever this copy's
+## own grace says (that client judges its grace by its own frames); a mine its
+## tank set off there goes off here, and slows or throws this copy from where
+## its screen had the tank, the throw's tumble its. Its screen rumbled it all.
+func _take_reported_events() -> void:
+	var pad := PlayerInput.remote_pad(player_id)
+	if pad == null or pad.events.is_empty():
+		return
+	var processing := processed_there()
+	_quiet_rumble = true
+	while not pad.events.is_empty():
+		var event: Array = pad.events.pop_front()
+		if not processing or health <= 0 or is_queued_for_deletion():
+			continue
+		if int(event[0]) == Net.OWN_HIT:
+			_take_reported_hit(event, pad.report_run)
+		elif int(event[0]) == Net.OWN_MINE:
+			_take_reported_mine(event)
+	_quiet_rumble = false
+
+## Host: a hit the client driving this tank had it take there ([param event],
+## PlayerInput's events entry; [param run] its reports' run): a fatal one goes
+## up where its screen had the tank.
+func _take_reported_hit(event: Array, run: int) -> void:
+	var points := int(event[2])
+	var flags := int(event[3])
+	var at: Vector2 = event[6]
+	lift_hit_grace()  # (over on its screen, if it's still running here)
+	if points >= health and not is_invincible:
+		global_position = at
+	if flags & Net.OWN_LANDING:
+		take_landing_hit(points, int(event[4]))
+		return
+	if flags & Net.OWN_FIRE:
+		fire_immunity_timer = LevelManager.FIRE_WINDOW
+	else:
+		blast_immunity = ExplosionBlast.BLAST_IMMUNITY
+	var was := health
+	hit_by = int(event[4])
+	take_hit(points)
+	if is_instance_valid(self) and health > 0 and health < was:
+		_screen_grace_frame = int(event[1])  # its grace, as its screen has it
+		_screen_grace_run = run
+
+## Host: the mine ([param event]'s id) the client driving this tank set off
+## there goes off here, if it's still here, sounding for that tank (heard
+## there); and this copy, where that screen had the tank on it, is slowed or
+## thrown as the client said (its tumble the client's), whatever this one's
+## state.
+func _take_reported_mine(event: Array) -> void:
+	var level := int(event[2])
+	var flags := int(event[3])
+	var nid := int(event[5])
+	var lm := _level()
+	if lm:
+		for mine: Mine in lm.get_mines():
+			if int(mine.get_meta(&"nid", 0)) == nid:
+				mine.set_off(false, player_id)
+				break
+	if flags & (Net.OWN_SLOWED | Net.OWN_THROWN) == 0 or is_flying:
+		return
+	global_position = event[6]
+	if flags & Net.OWN_SLOWED:
+		apply_mine_slow()
+	if flags & Net.OWN_THROWN:
+		launch_mine_fly(level, event[7], level - 1, -1, -1 if flags & Net.OWN_SPIN_BACK else 1)
+		_flight_there = true
+
 ## Host: the client driving this tank, its frames as they come: the enemies'
 ## shells its screen had on its tank in each (where it said its tank was, at the
 ## moment of this world it said its screen showed: NetHostWorld.seen_at) hit
@@ -568,6 +669,8 @@ func _judge_reported_hits() -> void:
 		if not judging or health <= 0 or is_queued_for_deletion():
 			continue
 		var at: Vector2 = said[1]
+		if said.size() > 4 and bool(said[4]):
+			continue  # in the air there: nothing meets it
 		if at.distance_to(global_position) > _report_reach():
 			continue  # nowhere this copy could be following
 		var met: Array = []
@@ -677,9 +780,11 @@ func _correct_client() -> void:
 	_apart_time = 0.0
 
 ## Client: this machine drives this tank here (see net_predicted), unless the
-## host moves it itself just now: materializing, a mine's flight, a hold.
+## host moves it itself just now (materializing, a flight the host's mine
+## threw it in), or its death is shown here already. Its own flights and a
+## hold's glide it runs here itself (_predict).
 func is_net_driving() -> bool:
-	return net_predicted and not is_materializing and not is_flying and not GameManager.players_frozen
+	return net_predicted and not is_materializing and not net_gone and (_flying_here or not is_flying)
 
 func _net_drives_itself() -> bool:
 	return is_net_driving()
@@ -710,13 +815,22 @@ func _predict() -> void:
 	speed_level = int(GameManager.player_speed_levels[player_id])
 	_apply_speed_upgrade()
 	var blocked := Net.input_blocked or Net.map_prompt_open
-	_drive(Vector2.ZERO if blocked else PlayerInput.local_direction(net_slot))
+	if is_flying:
+		_update_flying(get_physics_process_delta_time())  # thrown here: its flight, its landing
+		if net_gone or not is_inside_tree():
+			return  # (that landing finished it)
+	elif GameManager.players_frozen:
+		glide_while_held("enemies")  # held: it glides on as it went
+	else:
+		_drive(Vector2.ZERO if blocked else PlayerInput.local_direction(net_slot))
 	Net.report_tank(net_slot, global_position, maxi(FACINGS.find(current_direction), 0),
-			velocity != Vector2.ZERO, _override_seen)
+			velocity != Vector2.ZERO, _override_seen, is_flying)
 	var world := NetClientWorld.of(get_tree())
 	if world:
-		world.predict_pickups(self)  # the items it drives onto, taken here at once
-	if not blocked:
+		if not is_flying:
+			world.predict_pickups(self)  # the items it drives onto, taken here at once
+		world.own_tank_step(self)  # what fire, blasts and mines do to it, here at once
+	if not blocked and not is_flying and not GameManager.players_frozen and not net_gone:
 		_predict_fire()
 
 ## Client: this tank's shots, fired here at once as the host will fire them when
@@ -1065,7 +1179,8 @@ func _take_items_where_reported() -> void:
 		return
 	var reach := Cookie.S * 0.5 + HITBOX_SIZE * 0.5
 	for spot: Array in spots:
-		if int(spot[1]) != net_override or (spot[0] as Vector2).distance_to(global_position) > _report_reach():
+		if int(spot[1]) != net_override or (spot[0] as Vector2).distance_to(global_position) > _report_reach() \
+				or (spot.size() > 2 and bool(spot[2])):
 			continue
 		for node in get_tree().get_nodes_in_group("cookies"):
 			var cookie := node as Cookie
@@ -1296,6 +1411,8 @@ func _read_move_direction() -> Vector2:
 	return PlayerInput.move_direction(player_id)
 
 func _rumble(pattern: Array[float]) -> void:
+	if _quiet_rumble:
+		return  # its client's screen rumbled it already (_take_reported_events)
 	rumble_player(player_id, pattern)
 
 # --- Online (see BaseTank's net_state) ---
@@ -1312,6 +1429,9 @@ const NET_HIT_GRACE := NET_OWN_FLAGS << 3
 ## level, not a speed step (_apply_hit_punishment). The client driving it shows
 ## that at once (NetClientWorld._guess_hit).
 const NET_HITS_ODD := NET_OWN_FLAGS << 4
+## Its flight is the one its client flies itself (_flight_there): that client
+## doesn't show the host's.
+const NET_FLIGHT_THERE := NET_OWN_FLAGS << 5
 ## Client: the host's invincibility for this tank is only a hit's grace.
 var net_hit_grace_only := false
 ## Client: the host's NET_HITS_ODD, or this machine's own guess of it.
@@ -1342,6 +1462,8 @@ func net_state() -> Array:
 		flags |= NET_HIT_GRACE
 	if _hits_taken % 2 == 1:
 		flags |= NET_HITS_ODD
+	if is_flying and _flight_there:
+		flags |= NET_FLIGHT_THERE
 	state[3] = flags
 	state.append(net_override)
 	return state
@@ -1367,6 +1489,8 @@ func net_apply(state: Array) -> void:
 	# when, so the clock here only has to sit on the right side of it.
 	invincible_timer = WREATH_MIN_LEFT + 1.0 if wreath else (1.0 if is_invincible else 0.0)
 	is_mine_slowed = flags & NET_SLOWED != 0
+	if world:
+		is_mine_slowed = bool(world.own_value(self, "slowed", is_mine_slowed))  # (a mine set off here)
 	# The host's correction: this machine's tank starts again from the host's
 	# position. (While the host drives it, it's already there: NetClientWorld.)
 	var override := int(state[NET_OVERRIDE_AT]) if state.size() > NET_OVERRIDE_AT else 0
@@ -1453,10 +1577,48 @@ func guess_hit_here(frame: int) -> void:
 func in_guessed_grace(frame: int) -> bool:
 	return frame - _grace_guessed_frame < roundi(HIT_GRACE * Engine.physics_ticks_per_second)
 
-func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
+func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1,
+		spin: int = 0) -> void:
 	if not is_flying:
 		_rumble(MINE_THROW_RUMBLE)
-	super.launch_mine_fly(mine_level, mine_center, landing_hit, owner_id)
+	super.launch_mine_fly(mine_level, mine_center, landing_hit, owner_id, spin)
+
+## Client: thrown here by a mine its screen had it drive onto
+## (NetClientWorld.own_tank_step): it flies here itself, the host's copy alike.
+func fly_here(mine_level: int, mine_center: Vector2, owner_id: int) -> void:
+	launch_mine_fly(mine_level, mine_center, mine_level - 1, owner_id)
+	_flying_here = is_flying
+
+## Its own flight's landing, here (the client's, NetClientWorld.own_landing)
+## or as its client's word has it (host: that word brings its hit).
+func _land_from_flight() -> void:
+	if _flying_here:
+		_flying_here = false
+		var world := NetClientWorld.of(get_tree())
+		var points := _fly_landing_hit
+		_fly_landing_hit = 0
+		if world:
+			world.own_landing(self, points, _fly_hit_by)
+	elif _flight_there:
+		_flight_there = false
+		_fly_landing_hit = 0  # its client's word brings that hit (_take_reported_events)
+	super._land_from_flight()
+
+## The landing's blast: a client lays its own here at once
+## (NetClientWorld.lay_blast_here); the host's picture of it isn't shown again.
+func _landing_blast() -> void:
+	var world := NetClientWorld.of(get_tree()) if Net.is_client() and net_predicted else null
+	if world:
+		world.lay_blast_here(global_position, int(GameManager.player_weapon_levels[player_id]), true, true,
+				ExplosionBlast.TANK_SIZE)
+	else:
+		super._landing_blast()
+
+func _flies_here() -> bool:
+	return net_predicted and _flying_here
+
+func _shows_host_flight(flags: int) -> bool:
+	return not (net_predicted and flags & NET_FLIGHT_THERE)
 
 func destroy() -> void:
 	if is_queued_for_deletion():

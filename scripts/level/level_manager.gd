@@ -1226,7 +1226,8 @@ func _clear_mines() -> void:
 ## 0x00491cf0), each off its fire window and not materializing, dying or
 ## thrown: burned by the first armed fire under it that isn't its side's (a
 ## player's fire burns enemies, the enemies' fire players, burning grass
-## everyone).
+## everyone). Online, a client's own tank burns there, as its screen shows the
+## fires, and its word burns it here (BaseTank.processed_there).
 func _burn_tanks() -> void:
 	if _fires_at.is_empty():
 		return
@@ -1234,7 +1235,7 @@ func _burn_tanks() -> void:
 		var tank := node as BaseTank
 		if tank == null or not is_instance_valid(tank) or tank.is_queued_for_deletion() or tank.health <= 0:
 			continue
-		if tank.is_materializing or tank.is_flying or tank.fire_immunity_timer > 0.0:
+		if tank.is_materializing or tank.is_flying or tank.fire_immunity_timer > 0.0 or tank.processed_there():
 			continue
 		var fire := _fire_under(tank)
 		if fire:
@@ -1483,14 +1484,16 @@ func _convert_grass_to_burned(tile: Vector2i) -> void:
 ## [param world_pos], of level [param level], a player's or the enemies'
 ## ([param from_player]), or neither ([param neutral]: a landing), player
 ## [param owner_id]'s; [param spare_players] for a mine a player's bomb set
-## off. Its clients draw it from where its 8x8 goes (NetWorld.EV_BLAST).
+## off. Its clients draw it from where its 8x8 goes, and whose it is
+## (NetWorld.EV_BLAST: a client's own tank takes its heat there).
 ## Deferred add_child: shells go off inside the physics' callbacks.
 func spawn_explosion_blast(world_pos: Vector2, level: int, from_player: bool, neutral: bool = false, owner_id: int = -1,
 		spare_players: bool = false, size: float = ExplosionBlast.SHELL_SIZE) -> void:
 	var blast := ExplosionBlast.new()
 	blast.setup(level, from_player, self, neutral, owner_id, spare_players)
 	blast.origin = ExplosionBlast.grid_origin(world_pos - global_position, size)
-	NetHostWorld.record(NetWorld.EV_BLAST, [blast.origin.x, blast.origin.y, blast.level])
+	NetHostWorld.record(NetWorld.EV_BLAST, [blast.origin.x, blast.origin.y, blast.level,
+			NetWorld.blast_kind(from_player, neutral, spare_players)])
 	var container: Node = get_tree().get_first_node_in_group("effects_container")
 	if container == null:
 		container = terrain_node

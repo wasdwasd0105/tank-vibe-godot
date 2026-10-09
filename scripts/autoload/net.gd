@@ -40,7 +40,7 @@ enum Transport { TCP, UDP }
 
 ## Bump when the messages change, or what either side makes of them: a host
 ## only lets in its own protocol.
-const PROTOCOL := 9
+const PROTOCOL := 10
 const DEFAULT_PORT := 24680
 ## The most remote players a host lets in: four players in all.
 const MAX_CLIENTS := 3
@@ -70,10 +70,32 @@ const SHOTS_AT := 36
 const SHOTS_SIZE := 3
 const VIEW_AT := 42
 ## A report's flags: there is one (the tank drives here just now), it's moving,
-## and this machine runs its own tanks at all (its lag compensation on).
+## this machine runs its own tanks at all (its lag compensation on), and it's
+## in the air (a mine threw it here: nothing meets it).
 const REPORT_HAS := 1
 const REPORT_MOVING := 2
 const REPORT_PREDICTS := 4
+const REPORT_FLYING := 8
+## The client's word of what happened to its own tank there, decided there
+## (lag compensation: PlayerTank, NetClientWorld.own_tank_step), after the
+## input message it goes with: records of OWN_SIZE bytes, each [local slot,
+## OWN_HIT or OWN_MINE, the physics frame of its tank's report then (0-255),
+## the hit's points or the mine's level, OWN_* flags, the player whose fire or
+## blast it was + 1 (0: the enemies' or nobody's), 2 unused, the mine's id
+## (u32), where its tank was (two 32-bit floats), the mine's centre (two)].
+const OWN_SIZE := 28
+const OWN_HIT := 1
+const OWN_MINE := 2
+## A hit by fire; one by a mine-thrown tank's landing (its moon shield or
+## another add-on, and the points, as an airborne tank takes them); a mine that
+## slowed its tank; one that threw it, and tumbling which way.
+const OWN_FIRE := 1
+const OWN_LANDING := 2
+const OWN_SLOWED := 4
+const OWN_THROWN := 8
+const OWN_SPIN_BACK := 16
+## The most of them one message carries.
+const OWN_MAX := 32
 const SILENCE_LIMIT := 10.0
 ## A rejected or kicked client gets this long to read why before it's cut off.
 const PARTING_DELAY := 0.5
@@ -194,6 +216,9 @@ var input_blocked := false
 ## "facing", "moving", "override", "frame"}, or {} for none. They go out with
 ## the inputs, and the host's copies follow them.
 var _tank_reports: Array = [{}, {}]
+## Client: what happened to this machine's own tanks here since the last input
+## message (note_own_event), OWN_SIZE bytes each, to go out after it.
+var _own_events := PackedByteArray()
 ## Client: the moment of the host's world shown here just now, on the host's
 ## clock (ms; NetClientWorld sets it each frame), or 0 while none is.
 var client_view_time := 0.0
@@ -787,6 +812,7 @@ func _end(reason: String) -> void:
 	_joined = false
 	input_blocked = false
 	_tank_reports = [{}, {}]
+	_own_events = PackedByteArray()
 	client_view_time = 0.0
 	ping_ms = 0.0
 	_ping_timer = 0.0
@@ -913,13 +939,42 @@ func _run_lagged() -> void:
 
 ## Client: local slot [param slot]'s tank, as it drives on this machine: at
 ## [param position], facing [param facing] (an index into BaseTank.FACINGS),
-## driving or not, having taken correction [param override]. It goes to the host
-## with the next input message.
-func report_tank(slot: int, position: Vector2, facing: int, moving: bool, override: int) -> void:
+## driving or not, having taken correction [param override], and in the air
+## or not ([param flying]: a mine threw it here). It goes to the host with the
+## next input message.
+func report_tank(slot: int, position: Vector2, facing: int, moving: bool, override: int,
+		flying: bool = false) -> void:
 	if slot < 0 or slot > 1:
 		return
 	_tank_reports[slot] = {"position": position, "facing": facing, "moving": moving, "override": override,
-			"frame": Engine.get_physics_frames()}
+			"flying": flying, "frame": Engine.get_physics_frames()}
+
+
+## Client: something happened to local slot [param slot]'s tank here, decided
+## here (NetClientWorld.own_tank_step): [param kind] OWN_HIT ([param amount]
+## its points, by [param shooter]'s fire or blast, -1 the enemies' or nobody's)
+## or OWN_MINE (the mine [param nid] of level [param amount] centred at
+## [param center] went off under it), [param flags] OWN_*, with its tank at
+## [param at] in its latest report's frame. The host is told after the next
+## input message, and does the same to its copy (PlayerTank._take_reported_events).
+func note_own_event(slot: int, kind: int, amount: int, flags: int, shooter: int, nid: int, at: Vector2,
+		center: Vector2 = Vector2.ZERO) -> void:
+	if slot < 0 or slot > 1 or _own_events.size() >= OWN_SIZE * OWN_MAX:
+		return
+	var record := PackedByteArray()
+	record.resize(OWN_SIZE)
+	record[0] = slot
+	record[1] = kind
+	record[2] = reported_frame(slot) & 0xff
+	record[3] = clampi(amount, 0, 255)
+	record[4] = flags & 0xff
+	record[5] = clampi(shooter + 1, 0, 2)
+	record.encode_u32(8, maxi(nid, 0))
+	record.encode_float(12, at.x)
+	record.encode_float(16, at.y)
+	record.encode_float(20, center.x)
+	record.encode_float(24, center.y)
+	_own_events.append_array(record)
 
 
 ## Client: the physics frame of local slot [param slot]'s tank's latest report
@@ -1303,13 +1358,20 @@ func take_world_packets() -> Array[PackedByteArray]:
 ## whenever either changed (a press always does).
 func _send_input() -> void:
 	var bytes := _input_message()
-	if bytes == _sent_input:
-		return
-	_sent_input = bytes
-	_later(func() -> void:
-		if role == Role.CLIENT and _joined:
-			_c_input.rpc_id(1, bytes))
-	_last_sent = Time.get_ticks_msec()
+	if bytes != _sent_input:
+		_sent_input = bytes
+		_later(func() -> void:
+			if role == Role.CLIENT and _joined:
+				_c_input.rpc_id(1, bytes))
+		_last_sent = Time.get_ticks_msec()
+	# What happened to its own tanks here, after the report of the frame it did.
+	if not _own_events.is_empty():
+		var own := _own_events
+		_own_events = PackedByteArray()
+		_later(func() -> void:
+			if role == Role.CLIENT and _joined:
+				_c_own.rpc_id(1, own))
+		_last_sent = Time.get_ticks_msec()
 
 
 ## The input message (INPUT_SIZE): the newest snapshot, then per local player
@@ -1347,7 +1409,8 @@ func _input_message() -> PackedByteArray:
 		var report: Dictionary = _tank_reports[slot]
 		if report.is_empty() or Engine.get_physics_frames() - int(report["frame"]) > 2:
 			continue  # no tank of its own driving here
-		bytes[where] |= REPORT_HAS | (REPORT_MOVING if report["moving"] else 0)
+		bytes[where] |= REPORT_HAS | (REPORT_MOVING if report["moving"] else 0) \
+				| (REPORT_FLYING if report.get("flying", false) else 0)
 		bytes[where + 1] = int(report["facing"])
 		bytes[where + 2] = int(report["override"]) & 0xff
 		bytes[where + 3] = int(report["frame"]) & 0xff
@@ -1386,10 +1449,38 @@ func _c_input(bytes: PackedByteArray) -> void:
 		var position := Vector2(bytes.decode_float(where + 4), bytes.decode_float(where + 8))
 		var sane := position.is_finite() and Rect2(0, 0, 1600, 1000).has_point(position)
 		PlayerInput.set_remote_report(sender, slot, flags & REPORT_HAS != 0 and sane, flags & REPORT_PREDICTS != 0,
-				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]), view)
+				position, int(bytes[where + 1]), flags & REPORT_MOVING != 0, int(bytes[where + 2]), int(bytes[where + 3]), view,
+				flags & REPORT_FLYING != 0)
 		var shots := SHOTS_AT + slot * SHOTS_SIZE
 		var rows := int(bytes[shots + 2])
 		PlayerInput.set_remote_shots(sender, slot, [int(bytes[shots]), int(bytes[shots + 1])], [rows & 3, (rows >> 2) & 3])
+
+
+## What happened to the client's own tanks there, decided there (note_own_event).
+@rpc("any_peer", "call_remote", "reliable")
+func _c_own(bytes: PackedByteArray) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if role != Role.HOST or not peers.has(sender):
+		return
+	_heard(sender)
+	take_own_events(sender, bytes)
+
+
+## Host: client [param peer]'s word of what happened to its own tanks there,
+## [param bytes] of OWN_SIZE records (note_own_event): each is queued for the
+## host's copy of that tank (PlayerTank._take_reported_events).
+func take_own_events(peer: int, bytes: PackedByteArray) -> void:
+	if bytes.size() % OWN_SIZE != 0 or bytes.size() > OWN_SIZE * OWN_MAX:
+		return
+	for at in range(0, bytes.size(), OWN_SIZE):
+		var slot := int(bytes[at])
+		var kind := int(bytes[at + 1])
+		var tank_at := Vector2(bytes.decode_float(at + 12), bytes.decode_float(at + 16))
+		var center := Vector2(bytes.decode_float(at + 20), bytes.decode_float(at + 24))
+		if slot > 1 or kind not in [OWN_HIT, OWN_MINE] or not tank_at.is_finite() or not center.is_finite():
+			continue
+		PlayerInput.add_remote_event(peer, slot, kind, int(bytes[at + 2]), int(bytes[at + 3]), int(bytes[at + 4]),
+				int(bytes[at + 5]) - 1, int(bytes.decode_u32(at + 8)), tank_at, center)
 
 
 @rpc("any_peer", "call_remote", "reliable")

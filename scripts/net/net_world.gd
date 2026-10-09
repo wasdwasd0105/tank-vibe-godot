@@ -62,9 +62,21 @@ const EV_STOP_MUSIC := 3    # []
 const EV_HIT := 4           # [frames key, x, y]: HitEffect ("tank" or a shot style)
 const EV_SPAWN_BURST := 5   # [x, y]
 const EV_EXPLOSION := 6     # [x, y, scale]: the built-in burst (explosion.tscn)
-const EV_BLAST := 7         # [tile x, tile y, level]: ExplosionBlast's picture, its 8x8 from that tile
+const EV_BLAST := 7         # [tile x, tile y, level, kind (blast_kind)]: ExplosionBlast's picture, its 8x8 from that tile
 const EV_KILL_TEXT := 8     # [points, combo, x, y]
 const EV_PICKUP_TEXT := 9   # [cookie type, x, y]
+## An EV_BLAST's kind: the players' (else the enemies'), a mine-thrown tank's
+## landing (everyone's), a mine a player's bomb set off (sparing the players).
+const BLAST_PLAYERS := 1
+const BLAST_NEUTRAL := 2
+const BLAST_SPARES_PLAYERS := 4
+
+
+## The kind of a blast (EV_BLAST) [param from_player], [param neutral],
+## [param spare_players] (ExplosionBlast.setup).
+static func blast_kind(from_player: bool, neutral: bool, spare_players: bool) -> int:
+	return (BLAST_PLAYERS if from_player else 0) | (BLAST_NEUTRAL if neutral else 0) \
+			| (BLAST_SPARES_PLAYERS if spare_players else 0)
 
 # --- Game-state keys (SNAP_GAME) ---
 const G_STAGE := "stage"

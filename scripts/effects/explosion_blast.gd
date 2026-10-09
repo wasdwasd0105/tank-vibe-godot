@@ -311,8 +311,8 @@ func _hurt_tanks() -> void:
 		var tank := node as BaseTank
 		if tank == null or not is_instance_valid(tank) or tank.is_queued_for_deletion() or tank.health <= 0:
 			continue
-		if tank.is_materializing or tank.is_flying or tank.blast_immunity > 0.0:
-			continue
+		if tank.is_materializing or tank.is_flying or tank.blast_immunity > 0.0 or tank.processed_there():
+			continue  # (a client's own tank takes its heat there, as its screen shows it)
 		if _spares(tank.is_in_group("players")):
 			continue
 		var blinking := tank.is_invulnerable()

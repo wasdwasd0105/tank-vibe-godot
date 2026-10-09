@@ -129,9 +129,15 @@ func _ready() -> void:
 	visible = _show <= 0.0
 
 
-## Its own clock (the host's): spread, terrain step, arming, fuel.
+## Its own clock (the host's): spread, terrain step, arming, fuel. A client's
+## copy only arms by it: its own tank burns on it there once it has.
 func _physics_process(delta: float) -> void:
-	if Net.is_client() or _level_manager == null:
+	if Net.is_client():
+		if not _armed:
+			_arm -= delta
+			_armed = _arm <= 0.0
+		return
+	if _level_manager == null:
 		return
 	var ticks := delta / TICK
 	if side >= 0 and strength >= 1 and fuel >= SPREAD_FUEL:
@@ -173,13 +179,15 @@ func anim_frame() -> int:
 
 
 # --- Online (NetWorld): a burning tile is its row (whose fire), how long until
-# it shows, and where its flames are in their loop. ---
+# it shows, where its flames are in their loop, how long until it burns tanks,
+# and the order it was lit in. ---
 
 func net_type() -> int:
 	return NetWorld.T_FIRE
 
 func net_spawn_args() -> Array:
-	return [_current_row(), maxf(_show, 0.0) if not visible else 0.0, _frame, _anim_timer]
+	return [_current_row(), maxf(_show, 0.0) if not visible else 0.0, _frame, _anim_timer,
+			0.0 if _armed else maxf(_arm, 0.0), serial]
 
 func net_state() -> Array:
 	return [global_position.x, global_position.y]
@@ -190,6 +198,10 @@ func net_setup(args: Array) -> void:
 	_show = float(args[1])
 	_frame = int(args[2])
 	_anim_timer = float(args[3])
+	if args.size() >= 6:
+		_arm = float(args[4])
+		_armed = _arm <= 0.0
+		serial = int(args[5])
 
 func net_apply(_state: Array) -> void:
 	pass

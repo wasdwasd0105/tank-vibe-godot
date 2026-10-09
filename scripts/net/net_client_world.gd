@@ -73,6 +73,10 @@ const BLAST_WALLS_MS := ExplosionBlast.WALL_FRAME * ExplosionBlast.FRAME_TIME * 
 ## out of its own tank (the add-on a hit cost it), from this near where that
 ## tank was shown, is shown as the host's word of it comes (_show_own_drops).
 const DROP_NEAR := 96.0
+## A tank's box and an armed mine's meet this near, on both axes (half each:
+## the mine's 32 px, the tank's HITBOX_SIZE): it sets the mine off
+## (own_tank_step, as the host's Mine meets bodies).
+const MINE_TOUCH := 16.0 + BaseTank.HITBOX_SIZE * 0.5
 ## With this many snapshots waiting, the client has fallen behind (it stalled):
 ## it catches up at once.
 const MAX_BUFFERED := 45
@@ -173,6 +177,12 @@ var _own_effects: Array = []
 ## Enemies this machine's own shells hit here and didn't finish, their flash
 ## and sound shown at once (_show_enemy_hit): "shot:enemy" -> msec.
 var _hits_shown: Dictionary = {}
+## This machine's own tanks' deaths shown here at once (_guess_own_death), till
+## the host's word: tank instance id -> {"nid", "at" where, "msec"}.
+var _guessed_deaths: Dictionary = {}
+## Hits this machine decided its own tanks took (own_tank_step), counted: each
+## is keyed by minus its count in _own_effects (beside shells' instance ids).
+var _own_hits_counted := 0
 
 
 func _init() -> void:
@@ -266,6 +276,7 @@ func _on_packet(body: PackedByteArray) -> void:
 	}
 	if _started and not full:
 		_show_own_kills(decoded)
+		_show_own_deaths(decoded)
 		_show_own_pickups(decoded)
 		_show_own_drops(decoded)
 		_settle_guesses(decoded)
@@ -472,6 +483,7 @@ func _clear() -> void:
 	_guessed_hits.clear()
 	_own_effects.clear()
 	_hits_shown.clear()
+	_guessed_deaths.clear()
 	_game.clear()
 
 
@@ -1026,11 +1038,14 @@ func _guess_pickup_effect(tank: PlayerTank, cookie: Cookie) -> void:
 			values["speed"] = 3
 			values["weapon"] = 3
 			values["health"] = PlayerTank.MAX_HP
+			values["slowed"] = false
 		types.ANTI_WATER_COOKIE, types.ANTI_ICE_COOKIE, types.MEMORY_SAVE_COOKIE:
 			var addon: String = CookieData.ADDON_TO_COOKIE.find_key(cookie.cookie_type)
 			values["addons"] = (bits & int(BaseTank.NET_ADDON_BITS["moon-shield"])) | int(BaseTank.NET_ADDON_BITS[addon])
+			values["slowed"] = false  # (an add-on frees it from a mine's slow: Powerup._clear_mine_slows)
 		types.MOON_SHIELD_COOKIE:
 			values["addons"] = bits | int(BaseTank.NET_ADDON_BITS["moon-shield"])
+			values["slowed"] = false
 		types.SCORE_200, types.SCORE_500, types.SCORE_1000, types.SCORE_2000:
 			var points: int = {types.SCORE_200: 200, types.SCORE_500: 500, types.SCORE_1000: 1000,
 					types.SCORE_2000: 2000}[cookie.cookie_type]
@@ -1152,6 +1167,8 @@ func _show_own_hits() -> void:
 		if not is_instance_valid(node) or not node is PlayerTank or not (node as PlayerTank).is_net_driving():
 			continue
 		var tank := node as PlayerTank
+		if tank.is_flying:
+			continue  # (in the air: nothing meets it)
 		for theirs: Bullet in shells:
 			if not theirs.visible:
 				continue  # ended on the other tank of this machine's
@@ -1168,8 +1185,8 @@ func _show_own_hits() -> void:
 ## the tank survives as shown here, its red flash and sound
 ## (PlayerTank.guess_hit_here): not on a moon shield's front, nor in a blink
 ## (the grace after a hit counted in this machine's frames, as the host counts
-## it), nor a fatal one (the explosion is the host's word to show), nor an AP
-## shell's (its pool left is the host's to know).
+## it), nor an AP shell's (its pool left is the host's to know). A fatal one
+## shows the tank's end at once (_guess_own_death).
 func _guess_hit(tank: PlayerTank, theirs: Bullet) -> void:
 	theirs.visible = false
 	predict_hit(theirs, theirs.global_position)
@@ -1184,20 +1201,31 @@ func _guess_hit(tank: PlayerTank, theirs: Bullet) -> void:
 	var damage := theirs.damage if theirs.visual_style == "explosion" else 1
 	if damage < tank.health:
 		tank.guess_hit_here(frame)
-		_guess_hit_costs(tank, damage, theirs)
+		_guess_hit_costs(tank, damage, theirs.get_instance_id())
+	else:
+		_guess_own_death(tank)
 
 
-## What a hit shown here at once on own [param tank] costs it (_guess_hit), as
-## the host's PlayerTank.take_hit will take it: [param damage] of its health
-## and, unless it wears memory-save or flies, its moon shield, else its other
-## add-on, else a speed step or a gun level by turns (_apply_hit_punishment;
-## the host says whose turn, NET_HITS_ODD). Shown at once till the host's word
-## of the hit shows (_settle_own_effects). The add-on's item, sprayed out on
-## the host, comes with that word (_show_own_drops).
-func _guess_hit_costs(tank: PlayerTank, damage: int, theirs: Bullet) -> void:
+## What a hit shown here at once on own [param tank] costs it (_guess_hit,
+## _own_hit), as the host's PlayerTank.take_hit will take it: [param damage] of
+## its health and, unless it wears memory-save or flies, its moon shield, else
+## its other add-on, else a speed step or a gun level by turns
+## (_apply_hit_punishment; the host says whose turn, NET_HITS_ODD); a landing's
+## ([param landing], BaseTank.take_landing_hit) its moon shield, else another
+## add-on, and no level. Keyed by [param key] (its shell's instance id, or
+## minus the count of a hit decided here). Shown at once till the host's word of
+## the hit shows (_settle_own_effects). The add-on's item, sprayed out on the
+## host, comes with that word (_show_own_drops).
+func _guess_hit_costs(tank: PlayerTank, damage: int, key: int, landing: bool = false) -> void:
 	var p := tank.player_id
 	var values := {"health": tank.health - damage}
-	if not tank.has_memory_save and not tank.is_flying:
+	if landing:
+		var bits := _addon_bits_of(tank)
+		if tank.has_moon_shield:
+			values["addons"] = bits & ~int(BaseTank.NET_ADDON_BITS["moon-shield"])
+		elif not tank._current_utility_addon.is_empty():
+			values["addons"] = bits & ~int(BaseTank.NET_ADDON_BITS.get(tank._current_utility_addon, 0))
+	elif not tank.has_memory_save and not tank.is_flying:
 		var bits := _addon_bits_of(tank)
 		if tank.has_moon_shield:
 			values["addons"] = bits & ~int(BaseTank.NET_ADDON_BITS["moon-shield"])
@@ -1215,7 +1243,7 @@ func _guess_hit_costs(tank: PlayerTank, damage: int, theirs: Bullet) -> void:
 	for effect: Dictionary in _own_effects:
 		if effect["tank"] == tank and effect.has("hit"):
 			expect -= int(effect["damage"])
-	_add_own_effect(tank, values, {"hit": theirs.get_instance_id(), "damage": damage, "expect": expect})
+	_add_own_effect(tank, values, {"hit": key, "damage": damage, "expect": expect})
 
 
 ## The add-on bits of what [param tank] wears as shown (BaseTank.NET_ADDON_BITS).
@@ -1230,6 +1258,12 @@ static func _addon_bits_of(tank: BaseTank) -> int:
 func _host_health(tank: PlayerTank) -> int:
 	var state: Variant = _states.get(_nid_of(tank))
 	return int(state[7]) if state is Array and (state as Array).size() > 7 else tank.health
+
+
+## The flags the host's latest word gives own [param tank] (its state shown).
+func _host_flags(tank: PlayerTank) -> int:
+	var state: Variant = _states.get(_nid_of(tank))
+	return int(state[3]) if state is Array and (state as Array).size() > 3 else 0
 
 
 ## A shell of the enemies' shown ending on this machine's own tank here
@@ -1639,6 +1673,8 @@ func _settle_own_effects(snapshot: Dictionary) -> void:
 			return true
 		if effect.has("pickup"):
 			return int(effect["pickup"]) in settled
+		if effect.has("slowed_by"):
+			return _host_flags(effect["tank"]) & PlayerTank.NET_SLOWED != 0
 		return effect.has("hit") and _host_health(effect["tank"]) <= int(effect["expect"]))
 
 
@@ -1653,6 +1689,235 @@ func _expire_guesses() -> void:
 		if now - int(record["msec"]) > GUESS_MAX_MS:
 			_put_back_walls(record)
 			_predicted_blasts.erase(record)
+	for id: int in _guessed_deaths.keys():
+		if now - int(_guessed_deaths[id]["msec"]) <= GUESS_MAX_MS:
+			continue
+		_guessed_deaths.erase(id)
+		var tank := instance_from_id(id) as PlayerTank
+		if tank and not tank.is_queued_for_deletion():
+			tank.net_gone = false  # the host's word never took it: it lives
+			tank.visible = not tank.is_materializing
+			guesses_undone += 1
+
+
+# =====================================================================
+# What the world does to this machine's own tanks, decided here
+# =====================================================================
+
+## This machine's own [param tank], each frame it drives here
+## (PlayerTank._predict): what the world as this screen shows it does to it is
+## decided here at once and told the host, which does the same to its copy
+## (Net.note_own_event, PlayerTank._take_reported_events), rather than the
+## host's copy meeting it a trip and the smoothing later: the enemies' mines it
+## drives onto, the fire under it, the blasts' heat (Sean, 2026-10-09: "let
+## guest process all the thing locally"). The enemies' shells the host judges
+## by this screen already (_show_own_hits).
+func own_tank_step(tank: PlayerTank) -> void:
+	if tank.net_gone or tank.health <= 0 or tank.is_materializing or tank.is_flying or level_manager == null:
+		return
+	var frame := Net.reported_frame(tank.net_slot)
+	_own_mines(tank, frame)
+	if tank.is_flying or tank.net_gone:
+		return
+	_own_fire(tank, frame)
+	if not tank.net_gone:
+		_own_blasts(tank, frame)
+
+
+## Own [param tank] blinks here in its physics frame [param frame]: the host's
+## invincibility (but for a hit's grace, which this machine counts in its own
+## frames: PlayerTank.in_guessed_grace), an item's shown here at once.
+static func _blinking(tank: PlayerTank, frame: int) -> bool:
+	return (tank.is_invincible and not tank.net_hit_grace_only) or tank.in_guessed_grace(frame)
+
+
+## Fire under own [param tank] as shown (LevelManager._burn_tanks): off its fire
+## window, the first armed fire there that burns it burns it, one point; one
+## that blinks takes nothing, the window all the same.
+func _own_fire(tank: PlayerTank, frame: int) -> void:
+	if tank.fire_immunity_timer > 0.0:
+		return
+	var blinking := _blinking(tank, frame)
+	var fire := _fire_under_here(tank, blinking)
+	if fire == null:
+		return
+	tank.fire_immunity_timer = LevelManager.GRASS_FIRE_WINDOW if fire.is_grass_fire else LevelManager.FIRE_WINDOW
+	if not blinking:
+		_own_hit(tank, 1, frame, Net.OWN_FIRE, -1)
+
+
+## The first armed fire shown under own [param tank] that burns it, as the
+## host's LevelManager._fire_under has them (the enemies', or burning grass),
+## or null.
+func _fire_under_here(tank: PlayerTank, blinking: bool) -> GroundFire:
+	var reach := LevelManager.BLINKING_FIRE_REACH if blinking else LevelManager.FIRE_REACH
+	var at := tank.global_position - level_manager.global_position
+	var size := float(LevelManager.TILE_SIZE)
+	var first: GroundFire = null
+	for node in level_manager.terrain_node.get_children():
+		var fire := node as GroundFire
+		if fire == null or fire.is_queued_for_deletion() or not fire.is_armed() or LevelManager.same_side(1, fire.side):
+			continue
+		var tile := level_manager.world_to_tile(fire.global_position)
+		if tile.x * size >= at.x + reach or (tile.x + 1) * size <= at.x - reach \
+				or tile.y * size >= at.y + reach or (tile.y + 1) * size <= at.y - reach:
+			continue
+		if first == null or fire.serial < first.serial:
+			first = fire
+	return first
+
+
+## The blasts shown on own [param tank] (ExplosionBlast._hurt_tanks): off its
+## blast window, the first whose heat reaches it that doesn't spare the
+## players hits it by that heat, and no blast for BLAST_IMMUNITY; one that
+## blinks takes nothing. A moon shield facing the blast saves it from that
+## side's tiles.
+func _own_blasts(tank: PlayerTank, frame: int) -> void:
+	if tank.blast_immunity > 0.0 or effects == null:
+		return
+	var blinking := _blinking(tank, frame)
+	var reach := ExplosionBlast.BLINKING_TANK_REACH if blinking else ExplosionBlast.TANK_REACH
+	for node in effects.get_children():
+		var blast := node as ExplosionBlast
+		if blast == null or blast.is_queued_for_deletion() or blast._spares(true):
+			continue
+		var found: Array = blast.heat_on(tank.global_position, reach, tank.has_moon_shield, tank.current_direction)
+		if int(found[0]) <= 0:
+			if found[1]:
+				SoundManager.play_from_host(&"shield_absorb")
+			continue
+		tank.blast_immunity = ExplosionBlast.BLAST_IMMUNITY
+		if not blinking:
+			_own_hit(tank, int(found[0]), frame, 0, blast.owner_id)
+		return
+
+
+## The enemies' armed mines shown under own [param tank] (Mine's bodies): one
+## it touches goes off here at once (_set_off_here), but anti-ice skates over
+## those below level 3.
+func _own_mines(tank: PlayerTank, frame: int) -> void:
+	var anti_ice := "anti-ice" in tank.get_addon_names()
+	for node in level_manager.terrain_node.get_children():
+		var mine := node as Mine
+		if mine == null or mine.is_queued_for_deletion() or mine.from_player or not mine.is_armed() \
+				or not Mine.set_off_by(mine.level, anti_ice):
+			continue
+		var off := mine.global_position - tank.global_position
+		if absf(off.x) < MINE_TOUCH and absf(off.y) < MINE_TOUCH:
+			_set_off_here(tank, mine, frame, anti_ice)
+			return
+
+
+## Own [param tank] set [param mine] off here (Mine._on_tank_contact): gone,
+## its blast laid here (its heat on the tank is _own_blasts'), its sound; and,
+## as the mine's level has it, the tank slowed and thrown, its flight flown
+## here (PlayerTank.fly_here) and rumbled. The host sets that mine off and does
+## the same to its copy from where this screen had the tank.
+func _set_off_here(tank: PlayerTank, mine: Mine, frame: int, anti_ice: bool) -> void:
+	var nid := _nid_of(mine)
+	var level := mine.level
+	var center := mine.global_position
+	mine.set_off_here()
+	lay_blast_here(center, level, false, false, ExplosionBlast.MINE_SIZE)
+	if level >= 2:
+		SoundManager.play_predicted(&"mine_explode", tank.player_id)  # (the host's sounds for this tank)
+	var flags := 0
+	if Mine.slows(level, _blinking(tank, frame), anti_ice, tank.has_memory_save):
+		flags |= Net.OWN_SLOWED
+		_add_own_effect(tank, {"slowed": true}, {"slowed_by": nid})
+	var at := tank.global_position
+	if Mine.throws(level):
+		tank.fly_here(level, center, -1)
+		flags |= Net.OWN_THROWN | (Net.OWN_SPIN_BACK if tank.fly_way < 0 else 0)
+		_rumble_here(tank, PlayerTank.MINE_THROW_RUMBLE)
+	Net.note_own_event(tank.net_slot, Net.OWN_MINE, level, flags, -1, nid, at, center)
+
+
+## Own [param tank] takes a hit of [param points] here at once in its physics
+## frame [param frame] (by fire with Net.OWN_FIRE in [param flags], else a
+## blast; [param shooter]'s, -1 the enemies' or nobody's): its flash, sound,
+## costs and grace, or its end (_guess_own_death); and the host is told.
+func _own_hit(tank: PlayerTank, points: int, frame: int, flags: int, shooter: int) -> void:
+	_own_hits_counted += 1
+	if points >= tank.health:
+		_guess_own_death(tank)
+	else:
+		tank.guess_hit_here(frame)
+		_guess_hit_costs(tank, points, -_own_hits_counted)
+		_rumble_here(tank, PlayerTank.HIT_RUMBLE)
+	Net.note_own_event(tank.net_slot, Net.OWN_HIT, points, flags, shooter, 0, tank.global_position)
+
+
+## Own [param tank], thrown here (_set_off_here), lands: the throwing mine's hit
+## of [param points] ([param shooter]'s mine, -1 the enemies'), as
+## BaseTank.take_landing_hit takes it (its moon shield or another add-on, and
+## the points; no level, no grace), shown at once, unless it blinks by now; and
+## the host is told. The landing's blast PlayerTank lays here (lay_blast_here).
+func own_landing(tank: PlayerTank, points: int, shooter: int) -> void:
+	var frame := Net.reported_frame(tank.net_slot)
+	if points <= 0 or _blinking(tank, frame):
+		return
+	_own_hits_counted += 1
+	if points >= tank.health:
+		_guess_own_death(tank)
+	else:
+		tank.guess_flash_here()
+		for i in points:
+			SoundManager.play_predicted(&"tank_hit", tank.player_id)
+		_guess_hit_costs(tank, points, -_own_hits_counted, true)
+		_rumble_here(tank, PlayerTank.HIT_RUMBLE)
+	Net.note_own_event(tank.net_slot, Net.OWN_HIT, points, Net.OWN_LANDING, shooter, 0, tank.global_position)
+
+
+## Own [param tank]'s end, shown here at once: its explosion, its sound, the
+## rumble, the tank gone from sight (BaseTank.net_gone: nothing meets it, it
+## isn't driven). The host's word, its removal, settles it, its explosion not
+## shown again (_show_own_deaths); none in GUESS_MAX_MS, it shows again.
+func _guess_own_death(tank: PlayerTank) -> void:
+	var id := tank.get_instance_id()
+	if _guessed_deaths.has(id):
+		return
+	_guessed_deaths[id] = {"nid": _nid_of(tank), "at": tank.global_position, "msec": Time.get_ticks_msec()}
+	tank._spawn_explosion()
+	SoundManager.play_predicted(&"tank_destroyed", tank.player_id)  # (the host's death sound is that player's)
+	_rumble_here(tank, PlayerTank.DEATH_RUMBLE)
+	tank.net_gone = true
+	tank.visible = false
+	tank.velocity = Vector2.ZERO
+
+
+## A snapshot just come says this machine's own tanks whose deaths were shown
+## here at once have gone: they go now, and the snapshot's explosions of them
+## aren't shown again.
+func _show_own_deaths(snapshot: Dictionary) -> void:
+	if _guessed_deaths.is_empty():
+		return
+	var left := PackedInt32Array()
+	var events: Array = snapshot["events"]
+	for nid: int in snapshot["removed"]:
+		var tank := _nodes.get(nid) as PlayerTank if is_instance_valid(_nodes.get(nid)) else null
+		if tank == null or not _guessed_deaths.has(tank.get_instance_id()):
+			left.append(nid)
+			continue
+		var at: Vector2 = _guessed_deaths[tank.get_instance_id()]["at"]
+		_guessed_deaths.erase(tank.get_instance_id())
+		_despawn(nid)
+		events = events.filter(func(event: Array) -> bool:
+			match int(event[0]):
+				NetWorld.EV_HIT:
+					return not (str(event[1]) == "tank" and Vector2(event[2], event[3]).distance_to(at) <= KILL_NEAR * 2.0)
+				NetWorld.EV_EXPLOSION:
+					return not (float(event[3]) > 1.0 and Vector2(event[1], event[2]).distance_to(at) <= KILL_NEAR * 2.0)
+			return true)
+	snapshot["removed"] = left
+	snapshot["events"] = events
+
+
+## Rumbles the controller driving own [param tank] here with [param pattern]
+## (PlayerTank's): what happens to it rumbles as it shows (the host leaves its
+## own rumble of it out: PlayerTank._quiet_rumble).
+static func _rumble_here(tank: PlayerTank, pattern: Array[float]) -> void:
+	InputSettings.rumble(tank.net_slot, pattern[0], pattern[1], pattern[2])
 
 
 # =====================================================================
@@ -1729,11 +1994,21 @@ func _settle_fires() -> void:
 ## host's will break them (_blast_walls). The host's picture of it isn't shown
 ## again when it comes (_blast_seen_here).
 func _predict_blast(shell: Bullet, at: Vector2) -> void:
+	lay_blast_here(at, shell.explosion_level, shell.is_player_bullet, false, ExplosionBlast.SHELL_SIZE)
+
+
+## A blast of [param level] laid here at once for something of [param size]
+## (the original's px) that went off at [param at]: the players'
+## ([param from_player]) or the enemies', or a landing's ([param neutral]).
+## Only its picture, and its walls broken here on its wall frame
+## (_blast_walls); what it does to this machine's own tank, own_tank_step. The
+## host's picture of it, when it comes, isn't shown again (_blast_seen_here).
+func lay_blast_here(at: Vector2, level: int, from_player: bool, neutral: bool, size: float) -> void:
 	if level_manager == null or effects == null:
 		return
 	var blast := ExplosionBlast.new()
-	blast.setup(shell.explosion_level, shell.is_player_bullet, level_manager)
-	blast.origin = ExplosionBlast.grid_origin(at - level_manager.global_position, ExplosionBlast.SHELL_SIZE)
+	blast.setup(level, from_player, level_manager, neutral)
+	blast.origin = ExplosionBlast.grid_origin(at - level_manager.global_position, size)
 	var record := {"origin": blast.origin, "level": blast.level, "msec": Time.get_ticks_msec(), "t0": -1.0,
 			"walls": []}
 	blast.net_walls = func(gone_off: ExplosionBlast) -> void: _blast_walls(gone_off, record)
@@ -2109,8 +2384,10 @@ func _play(event: Array) -> void:
 			if _blast_seen_here(Vector2i(int(args[0]), int(args[1])), int(args[2])):
 				return  # this machine's own shell's blast, laid here as it ended
 			if effects:
+				var kind := int(args[3]) if args.size() > 3 else NetWorld.BLAST_PLAYERS
 				var blast := ExplosionBlast.new()
-				blast.setup(int(args[2]), true, level_manager)
+				blast.setup(int(args[2]), kind & NetWorld.BLAST_PLAYERS != 0, level_manager,
+						kind & NetWorld.BLAST_NEUTRAL != 0, -1, kind & NetWorld.BLAST_SPARES_PLAYERS != 0)
 				blast.origin = Vector2i(int(args[0]), int(args[1]))
 				effects.add_child(blast)
 		NetWorld.EV_KILL_TEXT:

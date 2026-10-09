@@ -33,6 +33,8 @@ var _client_moving := false
 var _client_override := 0
 ## The moment of the host's world its screen shows, as its reports say (0 none).
 var _client_view := 0.0
+## Its tank in the air there (a mine threw it), as its reports say.
+var _client_flying := false
 ## The client's own shots as it counts them, per fire button, and the row of
 ## the latest of each (_client_fires).
 var _client_shots := [0, 0]
@@ -75,7 +77,7 @@ func _report(local: Vector2, facing: Vector2, moving: bool = true, override: int
 func _send_report(local: Vector2, facing: Vector2, moving: bool, override: int) -> void:
 	_client_frame += 1
 	PlayerInput.set_remote_report(PEER, 0, _client_has, _client_predicts, _at(local), BaseTank.FACINGS.find(facing),
-			moving, override, _client_frame & 0xff, _client_view)
+			moving, override, _client_frame & 0xff, _client_view, _client_flying)
 
 
 ## The client's report each frame, ahead of the tanks' (this node comes first).
@@ -2285,8 +2287,9 @@ func _run() -> void:
 	check(far_behind_hit.visible and world._guessed_hits.is_empty(), "shown further behind the host than it looks back: its word to say")
 	Net.ping_ms = 30.0
 	world._despawn(133)
-	# Ended here, without a flash or sound: on its moon shield's front, or a
-	# fatal hit (the explosion is the host's word to show).
+	# Ended here, without a flash or sound: on its moon shield's front; and a
+	# fatal hit shows the tank's end at once (Sean, 2026-10-09: "let guest
+	# process all the thing locally").
 	_player.has_moon_shield = true
 	var on_shield := _shown_enemy_shell(world, 134, home + Vector2(0, -30), Vector2.DOWN)
 	world._show_own_hits()
@@ -2297,7 +2300,13 @@ func _run() -> void:
 	_player.health = 1
 	var fatal := _shown_enemy_shell(world, 135, home + Vector2(0, -30), Vector2.DOWN)
 	world._show_own_hits()
-	check(not fatal.visible and SoundManager._predicted.is_empty(), "a fatal one: it ends there; its explosion is the host's word")
+	var death_heard: Array = SoundManager._predicted.map(func(entry: Array) -> StringName: return entry[1])
+	check(not fatal.visible and _player.net_gone and not _player.visible and not _player.is_net_driving()
+		and world._guessed_deaths.has(_player.get_instance_id()) and death_heard == [&"tank_destroyed"],
+		"a fatal one: it ends there, and the tank with it at once, its sound heard (%s)" % str(death_heard))
+	world._guessed_deaths.clear()
+	_player.net_gone = false
+	_player.visible = true
 	world._despawn(135)
 	world._guessed_hits.clear()
 	world._predicted_hits.clear()
@@ -2353,6 +2362,175 @@ func _run() -> void:
 	check(menu._player_line(5) == "CLIENTA   ·   DRIVING P2   ·   84 ms", "then the trip there and back: %s" % menu._player_line(5))
 	Net.peers.erase(5)
 	PlayerInput.reset_to_local()
+
+	print("\n[L] What happens to its tank there its client decides: its word does it here (Sean, 2026-10-09: \"let guest process all the thing locally\")")
+	PlayerInput.set_remote(PEER, 0, -1, [false, false], [0, 0])
+	PlayerInput.set_seat(0, PlayerInput.controller_key(PEER, 0))
+	var own_world := NetHostWorld.new()
+	own_world.setup(_game, _lm, null)
+	_game.add_child(own_world)
+	_feeding = false
+	_player.set_physics_process(false)
+	_player._host_drives = false
+	_player.is_invincible = false
+	_player._hit_grace_only = false
+	_player.has_moon_shield = false
+	_player.health = 4
+	_player.clear_mine_slow()
+	_place(home, Vector2.UP)
+	_client_has = true
+	_client_predicts = true
+	_client_view = Time.get_ticks_msec()
+	_send_report(home, Vector2.UP, false, _player.net_override)
+	var own_pad := PlayerInput.remote_pad(0)
+	check(_player.processed_there(), "its client drives it there and says what its screen shows: what happens to it is that client's")
+	# This machine's fire, blasts and mines leave it be.
+	_lm.ignite_fire_patch(_lm.fire_anchor(_at(home)), false)
+	await tree.process_frame
+	for node in _lm.terrain_node.get_children():
+		if node is GroundFire:
+			node._armed = true
+	_lm._burn_tanks()
+	check(_player.health == 4, "the enemies' fire under it here: it burns there, not here")
+	_lm._clear_fire()
+	var their_blast := ExplosionBlast.new()
+	their_blast.setup(2, false, _lm)
+	their_blast.origin = ExplosionBlast.grid_origin(_at(home) - _lm.global_position, ExplosionBlast.SHELL_SIZE)
+	tree.get_first_node_in_group("effects_container").add_child(their_blast)
+	their_blast.set_process(false)
+	their_blast._frame = 6
+	their_blast._hurt_tanks()
+	check(_player.health == 4 and _player.blast_immunity <= 0.0, "an enemies' blast on it here: its heat there, not here")
+	their_blast.queue_free()
+	var mine_under := _lm._spawn_mine(_lm.world_to_tile(_at(home)) - Vector2i.ONE, 2, false)
+	mine_under._age = 1.0
+	for i in 4:
+		await tree.physics_frame
+	check(is_instance_valid(mine_under) and mine_under.is_armed() and not _player.is_mine_slowed and not _player.is_flying,
+		"an armed mine of the enemies' under it here: set off there, not here")
+	if not is_instance_valid(mine_under):
+		mine_under = _lm._spawn_mine(_lm.world_to_tile(_at(home + Vector2(0, -200))) - Vector2i.ONE, 2, false)
+		await tree.process_frame
+	# Its words, done here.
+	_send_report(home, Vector2.UP, false, _player.net_override)
+	PlayerInput.add_remote_event(PEER, 0, Net.OWN_HIT, _client_frame & 0xff, 1, Net.OWN_FIRE, -1, 0, _at(home), Vector2.ZERO)
+	var said_frame := own_pad.report_frame  # (its frame as the reports with it count them)
+	_player._take_reported_events()
+	check(_player.health == 3 and _player._screen_grace_frame == said_frame and own_pad.events.is_empty()
+		and _player.fire_immunity_timer > 0.0, "its word of a burn there: a point off here at once, its grace from that frame")
+	_send_report(home, Vector2.UP, false, _player.net_override)
+	PlayerInput.add_remote_event(PEER, 0, Net.OWN_HIT, _client_frame & 0xff, 2, 0, -1, 0, _at(home), Vector2.ZERO)
+	_player._take_reported_events()
+	check(_player.health == 1, "a blast's word, 2 more, within this copy's grace here: done all the same (its screen's grace was over)")
+	_player.health = 4
+	mine_under.set_meta(&"nid", 4242)
+	var override_was := _player.net_override
+	var on_mine := home + Vector2(8, 0)
+	PlayerInput.add_remote_event(PEER, 0, Net.OWN_MINE, _client_frame & 0xff, 2,
+			Net.OWN_SLOWED | Net.OWN_THROWN | Net.OWN_SPIN_BACK, -1, 4242, _at(on_mine), mine_under.global_position)
+	_player._take_reported_events()
+	check(mine_under._triggered and _player.is_flying and _player._flight_there and _player.fly_way == -1 and _player.is_mine_slowed
+		and _player.global_position.distance_to(_at(on_mine)) < 0.01,
+		"its word of a mine it set off there: off here, this copy slowed and thrown from where its screen had it, its way round")
+	check(int(_player.net_state()[3]) & PlayerTank.NET_FLIGHT_THERE != 0 and _player.processed_there(),
+		"its state says the flight is its client's, as is what happens to it meanwhile")
+	for i in 240:
+		if not _player.is_flying:
+			break
+		_player._physics_process(1.0 / 60.0)
+	check(not _player.is_flying and _player.net_override == override_was and _player.health == 4,
+		"its flight here: no correction, landing included, and down with no hit here (its word brings the landing's)")
+	_player.apply_addon("moon-shield")
+	var levels_were := [GameManager.player_speed_levels[0], GameManager.player_weapon_levels[0]]
+	_send_report(_player.global_position - _lm.global_position, Vector2.UP, false, _player.net_override)
+	PlayerInput.add_remote_event(PEER, 0, Net.OWN_HIT, _client_frame & 0xff, 1, Net.OWN_LANDING, -1, 0,
+			_player.global_position, Vector2.ZERO)
+	_player._take_reported_events()
+	check(not _player.has_moon_shield and _player.health == 3
+		and [GameManager.player_speed_levels[0], GameManager.player_weapon_levels[0]] == levels_were,
+		"its word of the landing's hit: its moon shield, then the point, as an airborne tank takes them (no level)")
+	# With nothing on: still no level, and no grace after (it was in the air).
+	_player.speed_level = 2
+	_player.weapon_level = 2
+	GameManager.set_speed_level(0, 2)
+	GameManager.set_weapon_level(0, 2)
+	PlayerInput.add_remote_event(PEER, 0, Net.OWN_HIT, _client_frame & 0xff, 1, Net.OWN_LANDING, -1, 0,
+			_player.global_position, Vector2.ZERO)
+	_player._take_reported_events()
+	check(_player.health == 2 and _player.speed_level == 2 and _player.weapon_level == 2 and not _player.is_invincible,
+		"another, with nothing on: the point alone, no level lost and no grace after")
+	# Its frames in the air there: no shell of the enemies' its screen had on it
+	# hits it, no air_item it was over is taken.
+	_player.health = 4
+	_player.lift_hit_grace()
+	var t_air := Time.get_ticks_msec() - 100.0
+	var over_it := _enemy_shell(home + Vector2(0, -20), Vector2.DOWN)
+	_keep_at(own_world, t_air)
+	_place(home, Vector2.UP)
+	for i in 40:
+		_send_report(home, Vector2.UP, false, _player.net_override)  # (its grace from the hits above over there)
+	own_pad.judge.clear()  # (this section's earlier frames: judged already)
+	_client_flying = true
+	_judge_report(home, Vector2.UP, t_air)
+	var after_flying := _player.health
+	_client_flying = false
+	_judge_report(home, Vector2.UP, t_air)
+	check(after_flying == 4 and _player.health == 3, "a shell its screen had on it: no hit in a frame it was in the air there, a hit in one it wasn't")
+	over_it.queue_free()
+	var air_item: Cookie = load("res://scenes/powerups/powerup.tscn").instantiate()
+	air_item.setup(CookieData.CookieType.SCORE_500, 0.0)
+	tree.get_first_node_in_group("powerups_container").add_child(air_item)
+	air_item.global_position = _at(home + Vector2(40, 0))
+	_player.global_position = _at(home)
+	own_pad.reach.clear()  # (this section's earlier frames: looked at already)
+	_client_flying = true
+	_send_report(home + Vector2(40, 0), Vector2.RIGHT, false, _player.net_override)
+	_player._take_items_where_reported()
+	var kept_in_air := not air_item.is_queued_for_deletion()
+	_client_flying = false
+	_send_report(home + Vector2(40, 0), Vector2.RIGHT, false, _player.net_override)
+	_player._take_items_where_reported()
+	check(kept_in_air and air_item.is_queued_for_deletion(), "an item it flew over there: not taken; one it drove onto: taken")
+	# The blasts the clients are told of say whose they are.
+	var blast_view := NetHostWorld.ClientView.new()
+	blast_view.full = false
+	own_world._views[PEER] = blast_view
+	_lm.spawn_explosion_blast(_at(home + Vector2(300, 0)), 1, true, true)
+	var blast_told: Array = blast_view.events.filter(func(e: Array) -> bool: return int(e[0]) == NetWorld.EV_BLAST)
+	check(blast_told.size() == 1 and (blast_told[0] as Array).size() == 5 and int(blast_told[0][4]) == NetWorld.blast_kind(true, true, false),
+		"a blast told the clients says whose it is: a landing's, everyone's (%s)" % str(blast_told))
+	own_world._views.erase(PEER)
+	# A record as it comes: its frame counted as its reports are (past 255).
+	for i in 300:
+		_send_report(home, Vector2.UP, false, _player.net_override)
+	var record := PackedByteArray()
+	record.resize(Net.OWN_SIZE)
+	record[0] = 0
+	record[1] = Net.OWN_HIT
+	record[2] = _client_frame & 0xff
+	record[3] = 1
+	record[4] = Net.OWN_FIRE
+	record.encode_float(12, _player.global_position.x)
+	record.encode_float(16, _player.global_position.y)
+	Net.take_own_events(PEER, record)
+	Net.take_own_events(PEER, record.slice(0, Net.OWN_SIZE - 1))
+	var taken: Array = own_pad.events[0] if own_pad.events.size() == 1 else []
+	check(not taken.is_empty() and int(taken[0]) == Net.OWN_HIT and int(taken[1]) == own_pad.report_frame
+		and int(taken[2]) == 1 and int(taken[3]) == Net.OWN_FIRE and int(taken[4]) == -1
+		and (taken[6] as Vector2).distance_to(_player.global_position) < 0.01,
+		"its word as it comes: queued for this copy, its frame counted as its reports are; a broken one not")
+	own_pad.events.clear()
+	_client_has = false
+	_send_report(home, Vector2.UP, false, _player.net_override)
+	check(not _player.processed_there(), "its client not driving it there: what happens to it is this machine's again")
+	_client_has = true
+	_player.clear_mine_slow()
+	_player.health = 4
+	for node in tree.get_first_node_in_group("effects_container").get_children():
+		if node is ExplosionBlast:
+			node.queue_free()
+	own_world.queue_free()
+	await tree.process_frame
 
 	print("\n[K] A hit its screen showed finishing its tank: it goes up where that screen had it")
 	# (Last: the tank is gone after it.)

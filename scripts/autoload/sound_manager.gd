@@ -112,7 +112,8 @@ func _ready() -> void:
 ## matching signal (weapon fire, damage, menu clicks) call play() directly at
 ## their site instead.
 func _connect_events() -> void:
-	Events.player_died.connect(func(_player_id: int) -> void: play(&"tank_destroyed"))
+	# (A player's: online, the client driving that tank heard it there already.)
+	Events.player_died.connect(func(player_id: int) -> void: play(&"tank_destroyed", player_id))
 	Events.enemy_destroyed.connect(func(_enemy: Node2D, _points: int) -> void: play(&"tank_destroyed"))
 	Events.base_destroyed.connect(func() -> void: play(&"base_destroyed"))
 	Events.player_joined.connect(func(_player_id: int) -> void: play(&"player_join"))

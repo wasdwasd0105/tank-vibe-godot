@@ -36,6 +36,8 @@ const CLOCK_SLACK := 1.0
 const CLOCK_FELL := 2.0
 ## The most shots of a client's own kept waiting to be fired here.
 const MAX_DUE_SHOTS := 8
+## The most of a client's own tank's events (add_remote_event) kept waiting.
+const MAX_EVENTS := 32
 ## How many of a client's frames are kept with the moment of the host's world
 ## its screen showed in each (four seconds of them).
 const MAX_VIEWS := 240
@@ -101,12 +103,18 @@ class RemotePad:
 	## Its latest frames not yet looked at for the enemies' shells its screen had
 	## on its tank (PlayerTank._judge_reported_hits), oldest first: [frame, where
 	## its tank was, its facing, the moment of the host's world its screen
-	## showed (the host's clock, ms)].
+	## showed (the host's clock, ms), whether it was in the air].
 	var judge: Array = []
 	## Its latest frames not yet looked at for the items its tank drove onto
 	## there (PlayerTank._take_items_where_reported): [where, the last
-	## correction it had taken].
+	## correction it had taken, whether it was in the air].
 	var reach: Array = []
+	## What happened to its tank there, decided there, not yet done to the
+	## host's copy (PlayerTank._take_reported_events), oldest first: [Net.OWN_HIT
+	## or Net.OWN_MINE, the frame (as reports count them), points or the mine's
+	## level, Net.OWN_* flags, whose fire or blast (-1 none), the mine's id,
+	## where its tank was, the mine's centre].
+	var events: Array = []
 
 
 func _ready() -> void:
@@ -286,9 +294,10 @@ func set_remote(peer: int, slot: int, direction: int, held: Array, presses: Arra
 ## the host's copy ([param has] false: it doesn't drive one there just now); and
 ## whether that client runs its own tank at all ([param predicts]: its lag
 ## compensation is on); and the moment of the host's world its screen showed
-## then, [param view] (the host's clock, ms; 0 none).
+## then, [param view] (the host's clock, ms; 0 none); and whether its tank was
+## in the air there ([param flying]: a mine threw it).
 func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position: Vector2, facing: int,
-		moving: bool, override: int, frame: int, view: float = 0.0) -> void:
+		moving: bool, override: int, frame: int, view: float = 0.0, flying: bool = false) -> void:
 	var pad: RemotePad = _remote.get(controller_key(peer, slot))
 	if pad == null:
 		return
@@ -330,14 +339,14 @@ func set_remote_report(peer: int, slot: int, has: bool, predicts: bool, position
 	pad.reports.append([frame, position, clampi(facing, 0, 3), moving, override & 0xff])
 	if pad.reports.size() > MAX_QUEUED_REPORTS:
 		pad.reports.pop_front()
-	pad.reach.append([position, override & 0xff])
+	pad.reach.append([position, override & 0xff, flying])
 	if pad.reach.size() > MAX_QUEUED_REPORTS:
 		pad.reach.pop_front()
 	if view > 0.0:
 		pad.views.append([pad.report_run, frame, view])
 		if pad.views.size() > MAX_VIEWS:
 			pad.views.pop_front()
-		pad.judge.append([frame, position, clampi(facing, 0, 3), view])
+		pad.judge.append([frame, position, clampi(facing, 0, 3), view, flying])
 		if pad.judge.size() > MAX_VIEWS:
 			pad.judge.pop_front()
 
@@ -368,6 +377,25 @@ func set_remote_shots(peer: int, slot: int, shots: Array, rows: Array) -> void:
 		pad.shots[b] = count
 	while pad.shots_due.size() > MAX_DUE_SHOTS:
 		pad.shots_due.pop_front()
+
+
+## Client [param peer]'s local player [param slot]'s tank: something happened to
+## it there, decided there (Net.note_own_event): [param kind] Net.OWN_HIT or
+## Net.OWN_MINE in its physics frame [param frame] (0-255, as its reports count
+## it), [param amount] (points, or the mine's level), [param flags] Net.OWN_*,
+## by [param shooter]'s fire or blast (-1 none), mine [param nid], its tank at
+## [param at], the mine's centre [param center]. Queued for the host's copy.
+func add_remote_event(peer: int, slot: int, kind: int, frame: int, amount: int, flags: int, shooter: int,
+		nid: int, at: Vector2, center: Vector2) -> void:
+	var pad: RemotePad = _remote.get(controller_key(peer, slot))
+	if pad == null:
+		return
+	frame &= 0xff
+	if pad.report_frame >= 0:
+		frame = pad.report_frame - ((pad.report_frame - frame) & 0xff)  # (its report came just before it)
+	pad.events.append([kind, frame, amount, flags, shooter, nid, at, center])
+	while pad.events.size() > MAX_EVENTS:
+		pad.events.pop_front()
 
 
 ## True when a player on a client drives tank [param tank]: the host's copy of

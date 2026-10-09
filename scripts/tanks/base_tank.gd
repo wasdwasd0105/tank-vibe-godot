@@ -73,6 +73,7 @@ var _fly_climb: float = 0.0             # altitude gained per time unit
 var _fly_angle: float = 0.0             # tumble so far, in 1/256 turns
 var _fly_spin: float = 0.0              # 1/256 turns per time unit
 var _fly_spin_accel: float = 0.0
+var fly_way := 1                        # which way round it tumbles (launch_mine_fly)
 var _fly_base_sprite_scale: Vector2 = Vector2.ONE
 var _fly_base_rotation: float = 0.0
 var _fly_saved_layer: int = 0
@@ -700,6 +701,12 @@ func lose_addon(_addon_name: String) -> void:
 func is_invulnerable() -> bool:
 	return false
 
+## Host: whether the client driving this tank decides what happens to it
+## there, and its word does it here (PlayerTank.processed_there): this
+## machine's fire, blasts and mines leave it be. No other tank's is.
+func processed_there() -> bool:
+	return false
+
 func apply_mine_slow() -> void:
 	is_mine_slowed = true
 
@@ -713,8 +720,10 @@ func clear_mine_slow() -> void:
 ## flight lasts 1.2 s or 1.5 s, until the altitude comes back down to zero.
 ## Thrown by a level-[param mine_level] mine centred at [param mine_center]. The
 ## mine's hit waits for the landing: [param landing_hit] HP, credited to
-## [param owner_id] (see _take_mine_landing_hit).
-func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1) -> void:
+## [param owner_id] (see _take_mine_landing_hit). It tumbles [param spin] (1 or
+## -1) ways round, or a coin flip's (0): fly_way says which.
+func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0, owner_id: int = -1,
+		spin: int = 0) -> void:
 	if is_flying:
 		return
 	is_flying = true
@@ -725,7 +734,8 @@ func launch_mine_fly(mine_level: int, mine_center: Vector2, landing_hit: int = 0
 	_fly_climb = mine_level + 2.0
 	_fly_angle = 0.0
 	# A coin flip picks which way it tumbles.
-	var way := 1.0 if randi() % 2 == 1 else -1.0
+	fly_way = spin if spin != 0 else (1 if randi() % 2 == 1 else -1)
+	var way := float(fly_way)
 	_fly_spin = way * FLY_SPIN_PER_LEVEL * mine_level
 	_fly_spin_accel = -way * FLY_SPIN_SLOWDOWN
 	if sprite:
@@ -775,19 +785,28 @@ func _land_from_flight() -> void:
 	collision_layer = _fly_saved_layer
 	z_index = _fly_saved_z
 	velocity = Vector2.ZERO
-	# Second (neutral) blast at the landing tile — hits the victim AND nearby
-	# tanks. Its strength is the victim's own gun level, not the mine's.
+	_landing_blast()
+
+## Second (neutral) blast at the landing tile — hits the victim AND nearby
+## tanks. Its strength is the victim's own gun level, not the mine's.
+func _landing_blast() -> void:
 	var lm := _get_level_manager()
 	if lm:
 		lm.spawn_explosion_blast(global_position, get_gun_level(), is_in_group("players"), true, -1, false,
 				ExplosionBlast.TANK_SIZE)
 
 ## The throwing mine's hit, on landing (Sean's rule, 2026-09-24; the original hit
-## the tank as it was thrown). Unless the tank is invincible by now, it loses its
-## moon shield, or else another add-on, and the HP.
+## the tank as it was thrown).
 func _take_mine_landing_hit() -> void:
 	var points := _fly_landing_hit
 	_fly_landing_hit = 0
+	take_landing_hit(points, _fly_hit_by)
+
+## A mine-thrown tank's landing hit of [param points], [param owner_id]'s mine:
+## unless the tank is invincible by now, it loses its moon shield, or else
+## another add-on, and the HP, as an airborne tank takes them (no level lost,
+## no grace after).
+func take_landing_hit(points: int, owner_id: int) -> void:
 	if points <= 0 or is_invulnerable():
 		return
 	var addons := get_addon_names()
@@ -795,11 +814,15 @@ func _take_mine_landing_hit() -> void:
 		lose_addon("moon-shield")
 	elif not addons.is_empty():
 		lose_addon(addons[0])
+	var was_flying := is_flying
+	is_flying = true  # (it counts as airborne still)
 	for i in points:
 		if health <= 0:
-			return
-		hit_by = _fly_hit_by
+			break
+		hit_by = owner_id
 		take_damage()
+	if health > 0:
+		is_flying = was_flying
 
 func _get_level_manager() -> LevelManager:
 	var game := get_tree().get_first_node_in_group("game")
@@ -949,7 +972,18 @@ func net_apply(state: Array) -> void:
 		is_materializing = materializing
 		_materialize_timer = INF if materializing else 0.0  # the host says when
 		visible = not materializing
-	var flying := flags & NET_FLYING != 0
+	if not _flies_here():
+		_take_host_flight(state, flags & NET_FLYING != 0 and _shows_host_flight(flags))
+	var flash := _shown_flash(float(state[4]))
+	if flash <= 0.0 and _damage_flash_timer > 0.0 and sprite:
+		sprite.modulate = Color.WHITE
+	_damage_flash_timer = flash
+	health = _net_health(int(state[7]))
+	_net_apply_addons(_net_addon_bits(int(state[8])))
+
+## A client's tank shows the host's flight of it ([param flying], with its
+## size and tumble from [param state]).
+func _take_host_flight(state: Array, flying: bool) -> void:
 	if flying and not is_flying:
 		is_flying = true
 		if sprite:
@@ -967,12 +1001,16 @@ func net_apply(state: Array) -> void:
 	if is_flying and sprite:
 		sprite.scale = _fly_base_sprite_scale * (1.0 + float(state[5]))
 		sprite.rotation = _fly_base_rotation + float(state[6]) * TAU / 256.0
-	var flash := _shown_flash(float(state[4]))
-	if flash <= 0.0 and _damage_flash_timer > 0.0 and sprite:
-		sprite.modulate = Color.WHITE
-	_damage_flash_timer = flash
-	health = _net_health(int(state[7]))
-	_net_apply_addons(_net_addon_bits(int(state[8])))
+
+## Client: this machine flies this tank itself just now (PlayerTank: its own,
+## thrown by a mine it set off here): the host's flight of it isn't shown.
+func _flies_here() -> bool:
+	return false
+
+## Client: whether the host's flight of this tank, its state's [param flags]
+## say, is shown here (PlayerTank: not one its own client flies itself).
+func _shows_host_flight(_flags: int) -> bool:
+	return true
 
 ## The add-ons named by [param bits] (NET_ADDON_BITS), put on and taken off.
 func _net_apply_addons(_bits: int) -> void:
