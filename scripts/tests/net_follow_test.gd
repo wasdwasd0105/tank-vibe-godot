@@ -197,7 +197,8 @@ func _shown_item(world: NetClientWorld, nid: int, local: Vector2) -> Cookie:
 
 
 ## The host's snapshot comes to [param world] with map cells [param cells]
-## changed ([x, y, bg, fg, standing quarters] each), its time far off.
+## changed ([x, y, bg, fg, standing quarters] each), its time far off, and is
+## shown (a guess its word catches up with goes once it is).
 func _host_says_tiles(world: NetClientWorld, cells: PackedInt32Array) -> void:
 	var packet := []
 	packet.resize(NetWorld.SNAP_SIZE)
@@ -212,16 +213,20 @@ func _host_says_tiles(world: NetClientWorld, cells: PackedInt32Array) -> void:
 	packet[NetWorld.SNAP_TILES] = cells
 	packet[NetWorld.SNAP_GAME] = {}
 	packet[NetWorld.SNAP_EVENTS] = []
-	var was := [world._started, world._epoch, world._clock_offset, world._have_clock, world._late.duplicate()]
+	var was := [world._started, world._epoch, world._clock_offset, world._have_clock, world._late.duplicate(),
+			world._shown_time]
 	world._started = true
 	world._epoch = 1
 	world._on_packet(var_to_bytes(packet))
+	if not world._buffer.is_empty():
+		world._apply(world._buffer.pop_back())
 	world._buffer.clear()
 	world._started = was[0]
 	world._epoch = was[1]
 	world._clock_offset = was[2]
 	world._have_clock = was[3]
 	world._late = was[4]
+	world._shown_time = was[5]
 
 
 ## What [param seen] (NetHostWorld.seen_at) keeps of [param node], or [].

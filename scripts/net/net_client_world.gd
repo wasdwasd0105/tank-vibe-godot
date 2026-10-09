@@ -132,8 +132,17 @@ var _guessed_clashes: Dictionary = {}
 var guesses_undone := 0
 ## Walls this machine's own shells broke here at once (predict_wall), till the
 ## host's word of those cells: a key, counting up -> the guess as above with
-## "cells", [[cell, [bg, fg, standing quarters] as it was]...] for "nid".
+## "cells", [[cell, [bg, fg, standing quarters] as it was, as the guess left
+## it, the snapshot shown then (_shown_arrival)]...] for "nid".
 var _guessed_walls: Dictionary = {}
+## The host's latest word of each map cell it has changed in this world, for
+## putting back a wall guessed wrong here (_undo_cell): cell -> [bg, fg,
+## standing quarters, the snapshot that said it (its count as it came)].
+var _host_cells: Dictionary = {}
+## Snapshots counted as they come (_on_packet), and the count of the one shown
+## last (_apply).
+var _arrivals := 0
+var _shown_arrival := 0
 var _walls_guessed := 0
 ## Items this machine's own tanks took here at once (predict_pickups), till the
 ## host's word: cookie instance id -> {"nid", "type", "at" where, "msec"}.
@@ -150,8 +159,7 @@ var _guessed_fires: Array = []
 ## Blasts laid here at once where an explosion shell ended (predict_hit), till
 ## the host's picture of each comes and its walls are settled: {"origin",
 ## "level", "msec", "t0" the host's clock as its picture came (-1 not yet),
-## "walls" [[cell, its state before]...] it broke here, "heard" cells the host
-## spoke of since}, oldest first.
+## "walls" [[cell, its state before, after]...] it broke here}, oldest first.
 var _predicted_blasts: Array = []
 ## Mines this machine's own tanks laid here at once (predict_mine), till the
 ## host's with their numbers come: {"node": Mine, "born": msec}, oldest first.
@@ -236,10 +244,16 @@ func _on_packet(body: PackedByteArray) -> void:
 		_epoch = epoch
 		_buffer.clear()  # what's left of the old world is moot
 		_templates.clear()
+		_host_cells.clear()
 	var spawns: Array = snapshot[NetWorld.SNAP_SPAWNS]
 	for spawn: Array in spawns:
 		_templates[int(spawn[0])] = spawn[3]
+	_arrivals += 1
+	var said: PackedInt32Array = snapshot[NetWorld.SNAP_TILES]
+	for i in range(0, said.size() - 4, 5):
+		_host_cells[Vector2i(said[i], said[i + 1])] = [said[i + 2], said[i + 3], said[i + 4], _arrivals]
 	var decoded := {
+		"arrival": _arrivals,
 		"time": float(snapshot[NetWorld.SNAP_TIME]),
 		"full": full,
 		"map": snapshot[NetWorld.SNAP_MAP],
@@ -371,6 +385,14 @@ func _apply(snapshot: Dictionary) -> void:
 	if level_manager:
 		for i in range(0, tiles.size() - 4, 5):
 			level_manager.net_set_cell(Vector2i(tiles[i], tiles[i + 1]), tiles[i + 2], tiles[i + 3], tiles[i + 4])
+	# Its walls shown, it's the snapshot shown: not before, as a guess made above
+	# (an own shell it brought or moved, drawn on into a wall) was made on the
+	# walls as they were, and its word of them is newer than that guess.
+	_shown_arrival = int(snapshot.get("arrival", _shown_arrival))
+	_keep_guessed_walls(tiles)
+	for key: int in _guessed_walls.keys():
+		if int(_guessed_walls[key].get("caught_up", _shown_arrival + 1)) <= _shown_arrival:
+			_guessed_walls.erase(key)  # its word shown
 	_apply_game(snapshot["game"])
 	for event: Array in snapshot["events"]:
 		_play(event)
@@ -933,7 +955,7 @@ func _drill_here(shell: Bullet, strip: Array[Vector2i], pool: int, end: Vector2)
 ## [param shell], ending at [param end], has just changed here, as a guess
 ## (_guessed_walls).
 func _note_wall(shell: Bullet, before: Array, end: Vector2) -> void:
-	var changed := before.filter(func(entry: Array) -> bool: return level_manager.net_cell(entry[0]) != entry[1])
+	var changed := _changed_cells(before)
 	if changed.is_empty():
 		return
 	_walls_guessed += 1
@@ -1352,19 +1374,18 @@ func _settle_guesses(snapshot: Dictionary) -> void:
 			guesses_undone += 1
 			_drop_own_effects(func(effect: Dictionary) -> bool: return effect.get("hit", 0) == id)
 	if not _guessed_walls.is_empty():
-		var heard := {}
-		var tiles: PackedInt32Array = snapshot["tiles"]
-		for i in range(0, tiles.size() - 4, 5):
-			heard[Vector2i(tiles[i], tiles[i + 1])] = true
 		for key: int in _guessed_walls.keys():
 			var guess: Dictionary = _guessed_walls[key]
-			if guess["cells"].any(func(entry: Array) -> bool: return heard.has(entry[0])):
-				_guessed_walls.erase(key)  # the host's word of those cells: as it says, once shown
+			if guess.has("caught_up"):
+				continue  # (gone once the snapshot that caught up with it is shown: _apply)
+			if guess["cells"].all(func(entry: Array) -> bool: return _host_caught_up(entry)):
+				# The host's word of those cells: as guessed, or further. It stands
+				# over older words till the snapshot bringing it is shown.
+				guess["caught_up"] = int(snapshot["arrival"])
 			elif _guess_wrong(guess, snapshot):
 				_guessed_walls.erase(key)
 				for entry: Array in guess["cells"]:
-					var was: Array = entry[1]
-					level_manager.net_set_cell(entry[0], was[0], was[1], was[2])
+					_undo_cell(entry)
 				guesses_undone += 1
 	for id: int in _guessed_pickups.keys():
 		var cookie := instance_from_id(id) as Node2D
@@ -1630,7 +1651,7 @@ func _expire_guesses() -> void:
 			return now - int(effect["msec"]) > GUESS_MAX_MS + 500)
 	for record: Dictionary in _predicted_blasts.duplicate():
 		if now - int(record["msec"]) > GUESS_MAX_MS:
-			_put_back_walls(record, record["heard"])
+			_put_back_walls(record)
 			_predicted_blasts.erase(record)
 
 
@@ -1714,7 +1735,7 @@ func _predict_blast(shell: Bullet, at: Vector2) -> void:
 	blast.setup(shell.explosion_level, shell.is_player_bullet, level_manager)
 	blast.origin = ExplosionBlast.grid_origin(at - level_manager.global_position, ExplosionBlast.SHELL_SIZE)
 	var record := {"origin": blast.origin, "level": blast.level, "msec": Time.get_ticks_msec(), "t0": -1.0,
-			"walls": [], "heard": {}}
+			"walls": []}
 	blast.net_walls = func(gone_off: ExplosionBlast) -> void: _blast_walls(gone_off, record)
 	effects.add_child(blast)
 	_predicted_blasts.append(record)
@@ -1728,7 +1749,7 @@ func _blast_walls(blast: ExplosionBlast, record: Dictionary) -> void:
 		return  # settled already: the host's word of its walls came first
 	var before := blast.wall_cells().map(func(cell: Vector2i) -> Array: return [cell, level_manager.net_cell(cell)])
 	blast.change_walls_here()
-	record["walls"] = before.filter(func(entry: Array) -> bool: return level_manager.net_cell(entry[0]) != entry[1])
+	record["walls"] = _changed_cells(before)
 
 
 ## True if the host's picture of a blast, [param level] at [param origin], was
@@ -1746,36 +1767,120 @@ func _blast_seen_here(origin: Vector2i, level: int) -> bool:
 	return false
 
 
-## The host's word in [param snapshot], just shown, of the walls of the blasts
-## laid here at once whose pictures it has brought: the cells it spoke of since
-## are as it says; once its own blast has had time to break its walls
-## (BLAST_WALLS_MS), those broken here it didn't speak of are put back.
+## The blasts laid here at once whose pictures the host's word has brought:
+## once [param snapshot], just shown, is of a moment their own blasts on the
+## host have had time to break their walls by (BLAST_WALLS_MS), the walls they
+## broke here are as the host's word says (_put_back_walls).
 func _settle_blast_walls(snapshot: Dictionary) -> void:
 	if _predicted_blasts.is_empty():
 		return
 	var time: float = snapshot["time"]
-	var tiles: PackedInt32Array = snapshot["tiles"]
 	for record: Dictionary in _predicted_blasts.duplicate():
 		var t0: float = record["t0"]
-		if t0 < 0.0 or time < t0:
-			continue
-		for i in range(0, tiles.size() - 4, 5):
-			record["heard"][Vector2i(tiles[i], tiles[i + 1])] = true
-		if time >= t0 + BLAST_WALLS_MS:
-			_put_back_walls(record, record["heard"])
+		if t0 >= 0.0 and time >= t0 + BLAST_WALLS_MS:
+			_put_back_walls(record)
 			_predicted_blasts.erase(record)
 
 
-## The walls blast [param record] broke here that the host didn't speak of
-## ([param heard]: cell -> true) are put back as they were.
-func _put_back_walls(record: Dictionary, heard: Dictionary) -> void:
+## The walls blast [param record] broke here go back as the host's word has
+## them (_undo_cell): those its own blast broke stay broken, the others are
+## as they were.
+func _put_back_walls(record: Dictionary) -> void:
 	if level_manager == null:
 		return
 	for entry: Array in record["walls"]:
-		if not heard.has(entry[0]):
-			var was: Array = entry[1]
-			level_manager.net_set_cell(entry[0], was[0], was[1], was[2])
+		if _undo_cell(entry):
 			guesses_undone += 1
+
+
+## The entries of [param before] ([cell, its state before]) whose cells a guess
+## here has just changed, each as [cell, before, its state now, the snapshot
+## shown now] (_undo_cell).
+func _changed_cells(before: Array) -> Array:
+	var changed: Array = []
+	for entry: Array in before:
+		var after: Array = level_manager.net_cell(entry[0])
+		if after != entry[1]:
+			changed.append([entry[0], entry[1], after, _shown_arrival])
+	return changed
+
+
+## How much wall a cell's [param state] ([bg, fg, standing quarters]) has:
+## none 0, a brick its standing quarters, a hard brick 4 more than its points,
+## iron and super steel more still. A wall only loses it (but the base's ring,
+## built and taken away by the host).
+static func _standing(state: Array) -> int:
+	var code := int(state[1])
+	if code == 0:
+		return 0
+	match LevelData.get_tile_category(code):
+		LevelData.TileCategory.SOFT_BRICK_FULL, LevelData.TileCategory.SOFT_BRICK_PARTIAL:
+			var mask := int(state[2])
+			return (mask & 1) + (mask >> 1 & 1) + (mask >> 2 & 1) + (mask >> 3 & 1)
+		LevelData.TileCategory.HARD_BRICK:
+			return 4 + LevelData.get_hard_brick_hp(code)
+		LevelData.TileCategory.IRON_BLOCK, LevelData.TileCategory.SUPER_BLOCK:
+			return 100
+	return 0
+
+
+## True if the host's word of cell [param entry] ([cell, before, after, the
+## snapshot shown then]: a guess here) has caught up with that guess: a word of
+## it not shown yet as the guess was made that leaves no more wall standing
+## than the guess did. An older word (another shot's, before this one's) isn't.
+func _host_caught_up(entry: Array) -> bool:
+	var said: Variant = _host_cells.get(entry[0])
+	return said != null and int(said[3]) > int(entry[3]) \
+			and _standing([said[0], said[1], said[2]]) <= _standing(entry[2])
+
+
+## The cells of [param tiles] (the host's word just shown) that guesses here
+## still wait on show as the newest of those guessed them, where that leaves
+## less wall standing than the host's word: an older word of the host's (a shot
+## before this one's, the host's own) doesn't put back what this machine's own
+## shot broke since (Sean, 2026-10-09: a block the guest broke came back).
+func _keep_guessed_walls(tiles: PackedInt32Array) -> void:
+	if level_manager == null or tiles.is_empty() or (_guessed_walls.is_empty() and _predicted_blasts.is_empty()):
+		return
+	var pending: Array = []  # [msec, entry], to go through oldest first
+	for key: int in _guessed_walls:
+		for entry: Array in _guessed_walls[key]["cells"]:
+			pending.append([int(_guessed_walls[key]["msec"]), entry])
+	for record: Dictionary in _predicted_blasts:
+		for entry: Array in record["walls"]:
+			pending.append([int(record["msec"]), entry])
+	pending.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	var newest := {}
+	for each: Array in pending:
+		newest[each[1][0]] = each[1][2]
+	for i in range(0, tiles.size() - 4, 5):
+		var cell := Vector2i(tiles[i], tiles[i + 1])
+		if not newest.has(cell):
+			continue
+		var guessed: Array = newest[cell]
+		if _standing(guessed) < _standing(level_manager.net_cell(cell)):
+			level_manager.net_set_cell(cell, int(guessed[0]), int(guessed[1]), int(guessed[2]))
+
+
+## Cell [param entry] ([cell, its state before a guess here, after it, the
+## snapshot shown then]), the guess wrong, goes back: to the host's word of it,
+## if one has come that wasn't shown yet as the guess was made (shown since or
+## still to show); else as it was before the guess. Not if something changed it
+## since (the host's word shown, a later guess): that stays. So a wall the host
+## broke never comes back here (Sean, 2026-10-09: a block the guest broke came
+## back on its screen, gone on the host's). True if it changed.
+func _undo_cell(entry: Array) -> bool:
+	var cell: Vector2i = entry[0]
+	if level_manager == null or level_manager.net_cell(cell) != entry[2]:
+		return false
+	var back: Array = entry[1]
+	var said: Variant = _host_cells.get(cell)
+	if said != null and int(said[3]) > int(entry[3]):
+		back = [said[0], said[1], said[2]]
+	if back == entry[2]:
+		return false
+	level_manager.net_set_cell(cell, int(back[0]), int(back[1]), int(back[2]))
+	return true
 
 
 # =====================================================================

@@ -113,6 +113,37 @@ func _host_says(removed: Array, spawns: Array = []) -> Dictionary:
 	return kept
 
 
+## The host's snapshot saying [param cells] ([x, y, bg, fg, standing quarters]
+## each) changed, and [param spawns] have come, of host time [param time] (far
+## off if not given), comes to the client world and waits there to be shown in
+## its time (returned, for _apply).
+func _host_word_of_cells(cells: PackedInt32Array, spawns: Array = [], time: float = -1.0) -> Dictionary:
+	var packet := []
+	packet.resize(NetWorld.SNAP_SIZE)
+	packet[NetWorld.SNAP_SEQ] = 1
+	packet[NetWorld.SNAP_EPOCH] = 1
+	packet[NetWorld.SNAP_TIME] = time if time >= 0.0 else Time.get_ticks_msec() + 100000.0
+	packet[NetWorld.SNAP_FLAGS] = 0
+	packet[NetWorld.SNAP_MAP] = []
+	packet[NetWorld.SNAP_SPAWNS] = spawns
+	packet[NetWorld.SNAP_UPDATES] = PackedByteArray()
+	packet[NetWorld.SNAP_REMOVED] = PackedInt32Array()
+	packet[NetWorld.SNAP_TILES] = cells
+	packet[NetWorld.SNAP_GAME] = {}
+	packet[NetWorld.SNAP_EVENTS] = []
+	var was := [_world._started, _world._epoch, _world._clock_offset, _world._have_clock, _world._late.duplicate()]
+	_world._started = true
+	_world._epoch = 1
+	_world._on_packet(var_to_bytes(packet))
+	var kept: Dictionary = _world._buffer.pop_back() if not _world._buffer.is_empty() else {}
+	_world._started = was[0]
+	_world._epoch = was[1]
+	_world._clock_offset = was[2]
+	_world._have_clock = was[3]
+	_world._late = was[4]
+	return kept
+
+
 func _spawn_enemy(local: Vector2, type_id: int = 1) -> EnemyTank:
 	var e: EnemyTank = load("res://scenes/tanks/enemy_tank.tscn").instantiate()
 	e.tank_type_id = type_id
@@ -169,6 +200,11 @@ func _host_tank_state(health: int, bits: int) -> Array:
 	state[7] = health
 	state[8] = bits
 	return state
+
+
+## How many quarters of the brick on [param cell] stand here (0: none).
+func _standing_here(cell: Vector2i) -> int:
+	return NetClientWorld._standing(_lm.net_cell(cell))
 
 
 func _bricks(row: int) -> Array[Vector2i]:
@@ -349,8 +385,10 @@ func _run() -> void:
 		var was_other: Array = broke[1][1]
 		var now_heard := _lm.net_cell(heard_cell)
 		var undone := _world.guesses_undone
-		_world._apply(_snap(float(record["t0"]) + 30.0, [], PackedInt32Array([heard_cell.x, heard_cell.y,
-				now_heard[0], now_heard[1], now_heard[2]])))
+		var walls_word := _host_word_of_cells(PackedInt32Array([heard_cell.x, heard_cell.y,
+				now_heard[0], now_heard[1], now_heard[2]]))
+		walls_word["time"] = float(record["t0"]) + 30.0
+		_world._apply(walls_word)
 		check(_world._predicted_blasts.size() == 1, "its walls not settled before the host's blast could break them")
 		_world._apply(_snap(float(record["t0"]) + NetClientWorld.BLAST_WALLS_MS + 1.0))
 		check(_world._predicted_blasts.is_empty() and _lm.net_cell(heard_cell) == now_heard
@@ -683,6 +721,148 @@ func _run() -> void:
 		and host_item.net_spawn_args().size() == 1,
 		"host: an item still sprayed out tells where from and to; one down just what it is")
 	host_item.queue_free()
+
+	print("\n[H] Walls the host's word spoke of: never put back over that word (Sean, 2026-10-09: a block the guest broke came back, gone on the host)")
+	gm.player_secondary_weapon_types[0] = "rapid"
+	gm.player_weapon_levels[0] = 0
+	_player.health = 4
+	_player.global_position = _at(_home)
+	_player.current_direction = Vector2.UP
+	_world._states[5] = _host_tank_state(4, 0)
+	_player.net_apply(_world._states[5])
+	_clear_ghosts()
+	_world._guessed_walls.clear()
+	var row := _bricks(home_cell.y - 3)
+	var front: Vector2i = row[2]
+	# The host's word that the brick in front has gone comes (another shot of
+	# the host's took it), not yet shown; then this machine's shot breaks it here.
+	var gone_word := _host_word_of_cells(PackedInt32Array([front.x, front.y, 0, 0, 0]))
+	check(not gone_word.is_empty() and _lm._fg_tile_data.has(front), "the host's word that the brick has gone: come, not yet shown")
+	await _press_here("p1_shoot")
+	_fly_last_ghost()
+	check(_world._guessed_walls.size() == 1, "its own shot breaks that brick here at once")
+	_world._apply(gone_word)
+	check(not _lm._fg_tile_data.has(front), "the host's word shown: gone")
+	# That shot's guess turns out wrong (no word of it for long): what it broke
+	# is put back, but not over the host's word.
+	for key: int in _world._guessed_walls:
+		_world._guessed_walls[key]["msec"] = int(_world._guessed_walls[key]["msec"]) - NetClientWorld.GUESS_MAX_MS - 1
+	_host_says([])
+	check(_world._guessed_walls.is_empty() and not _lm._fg_tile_data.has(front),
+		"a wall guess undone: the brick the host's word took stays gone, not back as it was here")
+	_clear_ghosts()
+	_clear_bricks(row)
+	# A blast laid here whose picture the host's word never matches: its walls
+	# go back, but not those the host's word broke meanwhile.
+	row = _bricks(home_cell.y - 4)
+	gm.player_secondary_weapon_types[0] = "explosion"
+	gm.player_secondary_weapon_counts[0] = 20
+	await _press_here("p1_shoot2")
+	_fly_last_ghost()
+	await tree.create_timer(0.2).timeout
+	var unmatched: Dictionary = _world._predicted_blasts[0] if _world._predicted_blasts.size() == 1 else {}
+	var its_walls: Array = unmatched.get("walls", [])
+	check(its_walls.size() >= 2, "a blast laid here breaks its walls (%d)" % its_walls.size())
+	if its_walls.size() >= 2:
+		var host_broke: Vector2i = its_walls[0][0]
+		var not_host: Vector2i = its_walls[1][0]
+		var not_host_was: Array = its_walls[1][1]
+		_world._apply(_host_word_of_cells(PackedInt32Array([host_broke.x, host_broke.y, 0, 0, 0])))
+		unmatched["msec"] = int(unmatched["msec"]) - NetClientWorld.GUESS_MAX_MS - 1
+		_world._expire_guesses()
+		check(_world._predicted_blasts.is_empty() and not _lm._fg_tile_data.has(host_broke)
+			and _lm.net_cell(not_host) == not_host_was,
+			"its picture never matched: the walls it broke here go back, but the one the host's word took stays gone")
+	_clear_ghosts()
+	_clear_bricks(row)
+	# Two shots at the same bricks: the host's word of the first, shown after the
+	# second broke them here, doesn't put back what the second broke.
+	gm.player_secondary_weapon_types[0] = "rapid"
+	_world._guessed_walls.clear()
+	row = _bricks(home_cell.y - 3)
+	await _press_here("p1_shoot")
+	_fly_last_ghost()
+	var first_hit: Array = []
+	for key: int in _world._guessed_walls:
+		first_hit = _world._guessed_walls[key]["cells"]
+	var halves: Array = first_hit.map(func(entry: Array) -> Array: return [entry[0], entry[2]])
+	await tree.create_timer(0.75).timeout  # (its gun's cooldown)
+	await _press_here("p1_shoot")
+	_fly_last_ghost()
+	var hit_cells: Array = halves.map(func(each: Array) -> Vector2i: return each[0])
+	var broke_through: bool = _world._guessed_walls.size() == 2 \
+			and hit_cells.all(func(c: Vector2i) -> bool: return _standing_here(c) < 2)
+	check(not halves.is_empty() and broke_through, "two shots at the same bricks: the first breaks their near halves, the second the rest (%d)" % halves.size())
+	var first_word := PackedInt32Array()
+	for each: Array in halves:
+		first_word.append_array([each[0].x, each[0].y, each[1][0], each[1][1], each[1][2]])
+	_world._apply(_host_word_of_cells(first_word))
+	check(hit_cells.all(func(c: Vector2i) -> bool: return _standing_here(c) < 2) and _world._guessed_walls.size() == 1,
+		"the host's word of the first shown after the second broke them here: nothing comes back, the second still waits")
+	var second_word := PackedInt32Array()
+	for c: Vector2i in hit_cells:
+		second_word.append_array([c.x, c.y, 0, 0, 0])
+	_world._apply(_host_word_of_cells(second_word))
+	check(_world._guessed_walls.is_empty() and hit_cells.all(func(c: Vector2i) -> bool: return not _lm._fg_tile_data.has(c)),
+		"its word of the second: settled, the bricks gone")
+	_clear_ghosts()
+	_clear_bricks(row)
+	# A guess undone after a later one changed that cell again: it stays as the later left it.
+	row = _bricks(home_cell.y - 4)
+	var cell := row[0]
+	var whole := _lm.net_cell(cell)
+	_lm.net_set_cell(cell, whole[0], whole[1], 0b1100)
+	var first := [cell, whole, _lm.net_cell(cell), _world._shown_arrival]
+	_lm.net_set_cell(cell, whole[0], whole[1], 0b1000)
+	var later := _lm.net_cell(cell)
+	check(not _world._undo_cell(first) and _lm.net_cell(cell) == later,
+		"a guess undone after a later one changed that cell again: it stays as the later left it")
+	_lm.net_set_cell(cell, whole[0], whole[1], 0b1100)
+	check(_world._undo_cell(first) and _lm.net_cell(cell) == whole, "nothing since: back as it was")
+	_clear_bricks(row)
+	# A snapshot brings its own shell up to bricks it drew broken by half, and
+	# says one of them has gone (the host's own shot took the rest): the shell,
+	# drawn on as that snapshot shows, breaks them here before the snapshot's
+	# walls show. That guess is of the walls as they were; the snapshot's word is
+	# newer, so when the guess turns out wrong that brick stays gone (Sean,
+	# 2026-10-09: it came back on the guest's screen for good, gone on the host's).
+	_clear_ghosts()
+	_world._guessed_walls.clear()
+	row = _bricks(home_cell.y - 3)
+	await tree.create_timer(0.75).timeout  # (its gun's cooldown)
+	await _press_here("p1_shoot")
+	var near_shot := _fly_last_ghost()
+	var shot_args: Array = near_shot.net_spawn_args() if near_shot else []
+	var near_hit: Array = []
+	for key: int in _world._guessed_walls:
+		near_hit = _world._guessed_walls[key]["cells"]
+	var near_word := PackedInt32Array()
+	for entry: Array in near_hit:
+		near_word.append_array([entry[0].x, entry[0].y, entry[2][0], entry[2][1], entry[2][2]])
+	_world._apply(_host_word_of_cells(near_word))
+	_clear_ghosts()
+	check(near_hit.size() == 2 and _world._guessed_walls.is_empty() and shot_args.size() == 13,
+		"its shot breaks two bricks by half, the host's word of it shown (%d)" % near_hit.size())
+	if near_hit.size() == 2 and shot_args.size() == 13:
+		var host_took: Vector2i = near_hit[0][0]
+		var other: Vector2i = near_hit[1][0]
+		var half: Array = near_hit[1][2]
+		shot_args[9] = 990
+		var muzzle := Vector2(_at(_home).x, _lm.tile_to_world(host_took).y + LevelManager.TILE_SIZE / 2.0 + 2.0)
+		var took_word := _host_word_of_cells(PackedInt32Array([host_took.x, host_took.y, 0, 0, 0]),
+				[[140, NetWorld.T_BULLET, shot_args, [muzzle.x, muzzle.y]]], Time.get_ticks_msec() + _world._clock_offset)
+		_world._apply(took_word)
+		var drawn: Array = []
+		for key: int in _world._guessed_walls:
+			drawn = _world._guessed_walls[key]["cells"]
+		var on_took: Array = drawn.filter(func(entry: Array) -> bool: return entry[0] == host_took)
+		check(drawn.size() == 2 and not on_took.is_empty() and on_took[0][2] == [0, 0, 0] and not _lm._fg_tile_data.has(other),
+			"its shell, brought by the snapshot, breaks the rest of both here as that snapshot shows (%d)" % drawn.size())
+		_host_says([140])
+		check(_world._guessed_walls.is_empty() and not _lm._fg_tile_data.has(host_took) and _lm.net_cell(other) == half,
+			"its shell gone, the other brick not: that guess undone, the brick the snapshot said gone stays gone, the other back")
+		_world._despawn(140)
+	_clear_bricks(row)
 
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
 	tree.quit(_fail)
