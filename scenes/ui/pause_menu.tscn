@@ -34,64 +34,107 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 
-[node name="MainPanel" type="PanelContainer" parent="PanelAnchor"]
+[node name="MainPage" type="HBoxContainer" parent="PanelAnchor"]
+unique_name_in_owner = true
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 24
+
+[node name="MainPanel" type="PanelContainer" parent="PanelAnchor/MainPage"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(480, 0)
 layout_mode = 2
 theme_type_variation = &"MenuPanel"
 
-[node name="Items" type="VBoxContainer" parent="PanelAnchor/MainPanel"]
+[node name="Items" type="VBoxContainer" parent="PanelAnchor/MainPage/MainPanel"]
 layout_mode = 2
 theme_override_constants/separation = 12
 
-[node name="Header" type="Label" parent="PanelAnchor/MainPanel/Items"]
+[node name="Header" type="Label" parent="PanelAnchor/MainPage/MainPanel/Items"]
 layout_mode = 2
 theme_type_variation = &"HeaderLabel"
 text = "PAUSED"
 horizontal_alignment = 1
 
-[node name="ResumeButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="ResumeButton" type="Button" parent="PanelAnchor/MainPage/MainPanel/Items"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "RESUME"
 
-[node name="RestartButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="RestartButton" type="Button" parent="PanelAnchor/MainPage/MainPanel/Items"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "RESTART STAGE"
 
-[node name="FullscreenButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="SettingsButton" type="Button" parent="PanelAnchor/MainPage/MainPanel/Items"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
-text = "ENTER FULLSCREEN"
+text = "SETTINGS"
 
-[node name="PlayerTwoButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="MainMenuButton" type="Button" parent="PanelAnchor/MainPage/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "MAIN MENU"
+
+[node name="QuitButton" type="Button" parent="PanelAnchor/MainPage/MainPanel/Items"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MenuItemButton"
+text = "QUIT GAME"
+
+[node name="OptionsPanel" type="PanelContainer" parent="PanelAnchor/MainPage"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(480, 0)
+layout_mode = 2
+theme_type_variation = &"MenuPanel"
+
+[node name="Options" type="VBoxContainer" parent="PanelAnchor/MainPage/OptionsPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Header" type="Label" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
+layout_mode = 2
+theme_type_variation = &"HeaderLabel"
+text = "OPTIONS"
+horizontal_alignment = 1
+
+[node name="PlayerTwoButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
 text = "PLAYER 2: ON"
 
-[node name="SettingsButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="SoundButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
-text = "SETTINGS"
+text = "SOUND: ON"
 
-[node name="MainMenuButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="OnlineButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
-text = "MAIN MENU"
+text = "ONLINE: OFF"
 
-[node name="QuitButton" type="Button" parent="PanelAnchor/MainPanel/Items"]
+[node name="FullscreenButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_type_variation = &"MenuItemButton"
-text = "QUIT GAME"
+text = "FULLSCREEN: OFF"
+
+[node name="OptionsNote" type="Label" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 52)
+layout_mode = 2
+theme_type_variation = &"HintLabel"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 3
 
 [node name="SettingsPanel" type="PanelContainer" parent="PanelAnchor"]
 unique_name_in_owner = true

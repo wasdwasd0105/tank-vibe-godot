@@ -1,7 +1,9 @@
 extends Node
 ## Headless test for the pause menu: Esc or Start opens it over the paused
-## stage; RESUME / RESTART STAGE / ENTER FULLSCREEN (it switches and stays) /
-## SETTINGS / MAIN MENU / QUIT GAME; the settings page changes sound, whether
+## stage; RESUME / RESTART STAGE / SETTINGS / MAIN MENU / QUIT GAME, and beside
+## them OPTIONS (right / left go between the two, fire flips one and stays):
+## SOUND, ONLINE (once on, every stage after opens again, till it's switched
+## off) and FULLSCREEN; the settings page changes sound, whether
 ## the game always opens fullscreen, the game's speed (the stage's clock follows it,
 ## and time runs normally again outside the stage), a key and a player's
 ## vibration without leaving the stage, and opens a player's controls page (the title screen's) on the
@@ -120,7 +122,7 @@ func _run() -> void:
 	check(not _menu.visible and not tree.paused, "the stage starts running")
 	await _key(KEY_ESCAPE)
 	check(_menu.visible and tree.paused and _focus() == _menu._resume_button, "Esc: paused, RESUME focused")
-	check(_menu._main_panel.visible and not _menu._settings_panel.visible and not _menu._controls.visible,
+	check(_menu._main_page.visible and not _menu._settings_panel.visible and not _menu._controls.visible,
 		"the first page shows")
 	check(_menu._resume_button.theme_type_variation == &"MenuItemButton" and _menu.theme != null,
 		"in the title menus' style")
@@ -132,7 +134,7 @@ func _run() -> void:
 	var order: Array = []
 	for button: Button in _menu._page_items(0):
 		order.append(button.text)
-	check(order == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "SETTINGS", "MAIN MENU", "QUIT GAME"],
+	check(order == ["RESUME", "RESTART STAGE", "SETTINGS", "MAIN MENU", "QUIT GAME"],
 		"the order: %s" % str(order))
 	var in_panel: Array = []
 	for child in _menu._resume_button.get_parent().get_children():
@@ -143,7 +145,7 @@ func _run() -> void:
 		await _key(KEY_UP)
 	check(_focus() == _menu._settings_button, "up three times (round past QUIT GAME and MAIN MENU): SETTINGS")
 	await _key(KEY_ENTER)
-	check(_menu._settings_panel.visible and not _menu._main_panel.visible and _focus() == _menu._common.sfx_row,
+	check(_menu._settings_panel.visible and not _menu._main_page.visible and _focus() == _menu._common.sfx_row,
 		"Enter: the settings page, on its GENERAL tab, on SFX VOLUME")
 	await _pad(JOY_BUTTON_RIGHT_SHOULDER)
 	check(_menu._game_rows.visible and not _menu._settings_rows.visible and _focus() == _menu._game.difficulty_row,
@@ -272,7 +274,7 @@ func _run() -> void:
 		"Esc: back to the settings, on P1 CONTROLS")
 	check(MenuRows.value_label(_menu._common.p1_row).text.contains("K"), "whose keys now read %s" % MenuRows.value_label(_menu._common.p1_row).text)
 	await _key(KEY_ESCAPE)
-	check(_menu._main_panel.visible and _focus() == _menu._settings_button, "Esc: back to the first page, on SETTINGS")
+	check(_menu._main_page.visible and _focus() == _menu._settings_button, "Esc: back to the first page, on SETTINGS")
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused, "Esc: resumed")
 	InputSettings.reset_to_defaults("p1")
@@ -280,11 +282,11 @@ func _run() -> void:
 	print("\n[D] With a controller: Start, the D-pad, A and B")
 	await _pad(JOY_BUTTON_START)
 	check(_menu.visible and tree.paused, "Start pauses")
-	for i in 3:
+	for i in 2:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
 	await _pad(JOY_BUTTON_A)
 	check(_menu._settings_panel.visible and _focus() == _menu._common.sfx_row,
-		"down three times, A: the settings, on the GENERAL tab")
+		"down twice, A: the settings, on the GENERAL tab")
 	for i in 5:
 		await _pad(JOY_BUTTON_DPAD_DOWN)
 	check(_focus() == _menu._common.p1_row,
@@ -302,7 +304,7 @@ func _run() -> void:
 	await _pad(JOY_BUTTON_B)
 	check(_menu._settings_panel.visible and _focus() == _menu._common.p1_row, "B: back to the settings")
 	await _pad(JOY_BUTTON_B)
-	check(_menu._main_panel.visible, "B: back to the first page")
+	check(_menu._main_page.visible, "B: back to the first page")
 	await _pad(JOY_BUTTON_START)
 	check(not _menu.visible and not tree.paused, "Start: resumed")
 
@@ -316,22 +318,55 @@ func _run() -> void:
 		check(_requests == [pick[1]] and not _menu.visible and not tree.paused,
 			"%s: unpaused, then %s" % [(pick[0] as Button).text, pick[1]])
 
-	print("\n[E2] ENTER FULLSCREEN switches the window and stays in the menu")
+	print("\n[E2] OPTIONS beside the menu: right to them, fire flips one and stays, left back (Sean, 2026-10-10)")
 	var fullscreen_asks: Array = []
 	WindowManager.fullscreen_changed.connect(func(on: bool) -> void: fullscreen_asks.append(on))
 	await _key(KEY_ESCAPE)
+	await tree.process_frame
+	var options: Array = _menu._option_items().map(func(button: Button) -> String: return button.text)
+	check(_menu._main_page.visible and options == ["SOUND: ON", "ONLINE: OFF", "FULLSCREEN: OFF"]
+		and _menu._options_note.text.is_empty(),
+		"beside the menu, OPTIONS: %s (no PLAYER 2 in a one-player game)" % str(options))
+	check(_menu._option_items()[0].get_global_rect().position.y == _menu._resume_button.get_global_rect().position.y
+		and _menu._options_panel.get_global_rect().position.x > _menu._main_panel.get_global_rect().end.x,
+		"on the right, its first level with RESUME")
+	await _key(KEY_RIGHT)
+	check(_focus() == _menu._sound_button, "right from RESUME: SOUND, level with it")
+	await _key(KEY_RIGHT)
+	check(_focus() == _menu._sound_button, "right again: stays")
 	await _key(KEY_DOWN)
 	await _key(KEY_DOWN)
-	check(_focus() == _menu._fullscreen_button and _menu._fullscreen_button.text == "ENTER FULLSCREEN",
-		"down twice from RESUME: ENTER FULLSCREEN")
+	check(_focus() == _menu._fullscreen_button, "down twice: FULLSCREEN")
 	await _key(KEY_ENTER)
-	check(fullscreen_asks == [true] and _menu._fullscreen_button.text == "EXIT FULLSCREEN"
+	check(fullscreen_asks == [true] and _menu._fullscreen_button.text == "FULLSCREEN: ON"
 		and _menu.visible and tree.paused and _focus() == _menu._fullscreen_button,
-		"Enter: fullscreen, the button now EXIT FULLSCREEN, still paused on it")
-	WindowManager.set_fullscreen(false)  # as EXIT FULLSCREEN, F11 or the settings' row would
-	check(_menu._fullscreen_button.text == "ENTER FULLSCREEN", "back in a window, however switched: ENTER FULLSCREEN")
+		"Enter: fullscreen, FULLSCREEN: ON, still paused on it")
+	WindowManager.set_fullscreen(false)  # as F11 or the settings' row would
+	check(_menu._fullscreen_button.text == "FULLSCREEN: OFF", "back in a window, however switched: FULLSCREEN: OFF")
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._sound_button, "down past the last: round to SOUND")
+	var master := AudioServer.get_bus_index(&"Master")
+	await _key(KEY_ENTER)
+	check(_menu._sound_button.text == "SOUND: OFF" and AudioServer.is_bus_mute(master)
+		and _settings_file().get_value("audio", "sound_on") == false and SoundManager.get_sfx_volume() > 0.0,
+		"SOUND, Enter: all the sound off, kept, the volumes as they were")
+	await _key(KEY_ENTER)
+	check(_menu._sound_button.text == "SOUND: ON" and not AudioServer.is_bus_mute(master)
+		and _settings_file().get_value("audio", "sound_on") == true, "Enter again: on")
+	AudioServer.set_bus_mute(master, true)  # (a test run stays quiet)
+	_menu._fullscreen_button.mouse_entered.emit()
+	check(_focus() == _menu._fullscreen_button, "hovering an option focuses it")
+	await _key(KEY_UP)
+	check(_focus() == _menu._online_button, "up from there: ONLINE (the keys go on in the column the mouse picked)")
+	await _key(KEY_LEFT)
+	check(_focus() == _menu._restart_button, "left: back to the menu, level with it: RESTART STAGE")
+	await _key(KEY_DOWN)
+	check(_focus() == _menu._settings_button, "down: SETTINGS, in the menu again")
+	_menu._quit_button.grab_focus()
+	await _key(KEY_RIGHT)
+	check(_focus() == _menu._fullscreen_button, "right from QUIT GAME, below them all: the nearest, FULLSCREEN")
 	await _key(KEY_ESCAPE)
-	check(not _menu.visible and not tree.paused, "Esc: resumed")
+	check(not _menu.visible and not tree.paused, "Esc from the options: resumed")
 
 	print("\n[F] Mouse, and no pausing during a game over")
 	await _key(KEY_ESCAPE)
@@ -368,6 +403,8 @@ func _run() -> void:
 	tree.root.remove_child(_game)
 	_game.free()
 	InputSettings.save_game_speed(InputSettings.DEFAULT_GAME_SPEED)
+
+	await _test_online_option()
 
 	await tree.create_timer(0.5).timeout  # let the menu sounds finish before quitting
 	print("\n==== %s ====" % ("ALL PASS" if _fail == 0 else "%d FAILURE(S)" % _fail))
@@ -506,14 +543,14 @@ func _test_online_tab() -> void:
 
 	# Someone joins (a stand-in for one: the real thing is online_test's).
 	await _key(KEY_ESCAPE)
-	check(_menu._main_panel.visible and not _menu._host_button.visible, "the first page: no HOST while nobody has joined")
+	check(_menu._main_page.visible and not _menu._host_button.visible, "the first page: no HOST while nobody has joined")
 	Net.peers[7] = {"name": "CLIENTA", "allow": [true, true]}
 	PlayerInput.set_seat(1, PlayerInput.controller_key(7, 0))
 	Net.session_changed.emit()
 	var order: Array = []
 	for button: Button in _menu._page_items(0):
 		order.append(button.text)
-	check(order == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "SETTINGS", "HOST", "MAIN MENU", "QUIT GAME"],
+	check(order == ["RESUME", "RESTART STAGE", "SETTINGS", "HOST", "MAIN MENU", "QUIT GAME"],
 		"someone joined: HOST, under SETTINGS: %s" % str(order))
 	_menu._host_button.grab_focus()
 	await _key(KEY_ENTER)
@@ -577,6 +614,8 @@ func _test_online_tab() -> void:
 
 	_menu.set_online_client(true)
 	await _key(KEY_ESCAPE)
+	check(_menu._option_items() == [_menu._sound_button, _menu._fullscreen_button],
+		"a client's OPTIONS: SOUND and FULLSCREEN, no ONLINE (hosting is the host's)")
 	_menu._settings_button.grab_focus()
 	await _key(KEY_ENTER)
 	var offered: Array = tabs.filter(func(tab: Button) -> bool: return tab.visible).map(
@@ -683,6 +722,78 @@ func _test_hosting_with_both() -> void:
 			came.health if came else "-", GameManager.player_lives[1]])
 	Net.peers.erase(8)
 	Net.leave()
+	Net.keep_hosting = false  # (left here, not switched off: the next section starts it afresh)
 	await tree.process_frame
 	check(not Net.is_online() and PlayerInput.seats == [PlayerInput.LOCAL_P1, PlayerInput.LOCAL_P2],
 		"closed again: offline, the keys driving their own tanks")
+
+
+## A stage of its own, started as the next one would be (game.tscn afresh), its
+## pause menu the one the keys reach.
+func _fresh_stage() -> void:
+	_game = load("res://scenes/game.tscn").instantiate()
+	_game.show_intro = false
+	get_tree().root.add_child(_game)
+	await get_tree().process_frame
+	_menu = _game.get_node("PauseLayer/PauseMenu")
+
+
+func _drop_stage() -> void:
+	get_tree().root.remove_child(_game)
+	_game.free()
+
+
+## ONLINE beside the menu (Sean, 2026-10-10: "if player turned that on, keep it
+## on until user turn off the game"): on, the game opens to remote players as
+## ALLOW REMOTE PLAYERS would, and each stage started after opens again by
+## itself; off, offline again, and so the stages after.
+func _test_online_option() -> void:
+	var tree := get_tree()
+	print("\n[I] ONLINE beside the menu: open to remote players, and every stage after, till switched off")
+	var port := 47000 + randi() % 2000
+	InputSettings.save_host_settings(port, "", 3)
+	InputSettings.save_host_port_type("TCP")
+	Net.keep_hosting = false
+	await _fresh_stage()
+	check(not Net.is_online(), "a stage starts offline, as ever")
+	await _key(KEY_ESCAPE)
+	_menu._online_button.grab_focus()
+	await _key(KEY_ENTER)
+	check(Net.is_host() and Net.port == port and Net.keep_hosting and _menu._online_button.text == "ONLINE: ON"
+		and _menu._options_note.text.is_empty() and _game.has_node("NetHostWorld") and tree.paused,
+		"ONLINE, Enter: the game opens to others, the menu still up")
+	_menu._refresh_online_tab()
+	check(MenuRows.value_label(_menu._allow_row).text == "ON", "the ONLINE tab's ALLOW REMOTE PLAYERS says so too")
+	await _key(KEY_ESCAPE)
+	# Left for the title (MAIN MENU closes the game to others), then the next game.
+	Net.leave()
+	_drop_stage()
+	check(not Net.is_online() and Net.keep_hosting, "the stage left: offline, the switch still on")
+	await _fresh_stage()
+	check(Net.is_host() and Net.port == port and _game.has_node("NetHostWorld") and Net.host_screen == Net.SCREEN_GAME
+		and PlayerInput.seats[0] == PlayerInput.LOCAL_P1,
+		"the next stage opens to others by itself, on the same port, player 1 on this machine's keys")
+	await _key(KEY_ESCAPE)
+	check(_menu._online_button.text == "ONLINE: ON", "its menu: ONLINE: ON")
+	_menu._online_button.grab_focus()
+	await _key(KEY_ENTER)
+	check(not Net.is_online() and not Net.keep_hosting and _menu._online_button.text == "ONLINE: OFF",
+		"Enter: off, offline again (nobody had joined), the switch off")
+	await _key(KEY_ESCAPE)
+	_drop_stage()
+	await _fresh_stage()
+	check(not Net.is_online(), "the stage after starts offline")
+	var blocker := TCPServer.new()
+	if blocker.listen(port) == OK:
+		await _key(KEY_ESCAPE)
+		_menu._online_button.grab_focus()
+		await _key(KEY_ENTER)
+		check(not Net.is_online() and not Net.keep_hosting and _menu._online_button.text == "ONLINE: OFF"
+			and _menu._options_note.text == "That port is in use. Try another.",
+			"a port in use: it says so under the options, and stays OFF")
+		blocker.stop()
+		await _key(KEY_ESCAPE)
+		await _key(KEY_ESCAPE)
+		check(_menu._options_note.text.is_empty(), "opened again: no old word under them")
+		await _key(KEY_ESCAPE)
+	_drop_stage()

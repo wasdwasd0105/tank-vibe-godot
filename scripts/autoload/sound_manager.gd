@@ -276,6 +276,22 @@ func get_music_volume() -> float:
 func apply_saved_volumes() -> void:
 	_set_bus_volume(SFX_BUS, InputSettings.get_saved_sfx_volume())
 	_set_bus_volume(MUSIC_BUS, InputSettings.get_saved_music_volume())
+	_apply_sound_on(InputSettings.get_sound_on())
+
+
+## All the sound, on or off (the pause menu's SOUND), kept for next time; the
+## volumes stay as they are under it.
+func set_sound_on(on: bool) -> void:
+	_apply_sound_on(on)
+	InputSettings.save_sound_on(on)
+
+
+func is_sound_on() -> bool:
+	return InputSettings.get_sound_on()
+
+
+func _apply_sound_on(on: bool) -> void:
+	AudioServer.set_bus_mute(AudioServer.get_bus_index(&"Master"), not on)
 
 
 # =====================================================================

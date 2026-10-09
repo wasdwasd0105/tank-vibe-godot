@@ -1,8 +1,8 @@
 extends Node
 
 ## Global window manager — handles fullscreen toggle and window scaling.
-## Press F11 or F to toggle fullscreen from any screen; the pause menu has an
-## ENTER / EXIT FULLSCREEN button and its settings a FULLSCREEN row.
+## Press F11 or F to toggle fullscreen from any screen; the pause menu has a
+## FULLSCREEN option and its settings a FULLSCREEN row.
 ##
 ## ALWAYS FULLSCREEN is for play only (Sean): the menus stay in the window, a
 ## stage entered from them goes fullscreen, and the menus get the window back.

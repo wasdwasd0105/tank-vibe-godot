@@ -1,5 +1,5 @@
 extends Node
-## Headless test for PLAYER 2 ON / OFF in the pause menu: in a two-player game
+## Headless test for PLAYER 2 ON / OFF in the pause menu's OPTIONS: in a two-player game
 ## one person can sit player 2 out and play on. Player 2's tank leaves the field
 ## with everything kept (lives, score, HP, levels, weapon, add-ons, in the save
 ## too); player 2's fire doesn't bring them back and they don't hold the stage
@@ -54,9 +54,13 @@ func _tank(pid: int) -> PlayerTank:
 
 func _page_texts() -> Array:
 	var texts: Array = []
-	for button: Button in _menu._page_items(0):
+	for button: Button in _menu._menu_items():
 		texts.append(button.text)
 	return texts
+
+
+func _option_texts() -> Array:
+	return _menu._option_items().map(func(button: Button) -> String: return button.text)
 
 
 func _bursts_at(pos: Vector2) -> int:
@@ -115,15 +119,15 @@ func _run() -> void:
 	print("\n[A] The pause menu of a two-player game has PLAYER 2")
 	await _key(KEY_ESCAPE)
 	check(_menu.visible and tree.paused, "Esc: paused")
-	check(_page_texts() == ["RESUME", "RESTART STAGE", "ENTER FULLSCREEN", "PLAYER 2: ON", "SETTINGS", "MAIN MENU", "QUIT GAME"],
-		"under the fullscreen switch: %s" % str(_page_texts()))
+	check(_page_texts() == ["RESUME", "RESTART STAGE", "SETTINGS", "MAIN MENU", "QUIT GAME"]
+		and _option_texts() == ["PLAYER 2: ON", "SOUND: ON", "ONLINE: OFF", "FULLSCREEN: OFF"],
+		"first of the OPTIONS beside the menu: %s" % str(_option_texts()))
 
 	print("\n[B] Switching player 2 off: the tank leaves, everything kept")
 	p2.health = 5  # took a hit this stage
 	var p2_at := p2.global_position
-	for i in 3:
-		await _key(KEY_DOWN)
-	check(_focus() == _menu._p2_button, "down three times reaches PLAYER 2")
+	await _key(KEY_RIGHT)
+	check(_focus() == _menu._p2_button, "right from RESUME reaches PLAYER 2, level with it")
 	await _key(KEY_ENTER)
 	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF"
 		and _menu.visible and _focus() == _menu._p2_button, "Enter: PLAYER 2: OFF, still in the menu")
@@ -166,15 +170,16 @@ func _run() -> void:
 	screen.free()
 	check(line.contains("P2") and line.ends_with("(OFF)"), "Load Game lists it that way: \"%s\"" % line)
 
-	print("\n[D] Left / right on PLAYER 2 flip it too")
+	print("\n[D] A click flips it too; left goes back to the menu")
 	await _key(KEY_ESCAPE)
-	for i in 3:
-		await _key(KEY_DOWN)
-	await _key(KEY_RIGHT)
-	check(not GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: ON" and _tank(1) != null,
-		"Right: back on, a tank beside the base")
+	_menu._p2_button.mouse_entered.emit()
+	_menu._p2_button.pressed.emit()
+	check(not GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: ON" and _tank(1) != null
+		and _focus() == _menu._p2_button, "a click: back on, a tank beside the base")
+	await _key(KEY_ENTER)
+	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF", "Enter: off again")
 	await _key(KEY_LEFT)
-	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF", "Left: off again")
+	check(_focus() == _menu._resume_button and GameManager.player_disabled[1], "left: RESUME, nothing flipped")
 	await _key(KEY_ESCAPE)
 	await _frames()
 	check(_tank(1) == null and GameManager.player_hp[1] == 5 and GameManager.player_addons[1].size() == 2,
@@ -189,15 +194,15 @@ func _run() -> void:
 		"player 1 out of lives: the countdown to Mission Fail starts")
 	await _key(KEY_ESCAPE)
 	check(_menu._p2_button.text == "PLAYER 2: OFF" and not _menu._p2_button.disabled, "PLAYER 2 can still come on")
-	for i in 3:
-		await _key(KEY_DOWN)
+	await _key(KEY_RIGHT)
 	await _key(KEY_ENTER)
 	check(_tank(1) != null and _game.get_game_over_countdown() < 0,
 		"switched on, player 2's tank comes and the countdown stops")
 	check(_menu._p2_button.text == "PLAYER 2: ON" and _menu._p2_button.disabled,
 		"and can't go off again while player 1 is out: nobody would be left")
+	await _key(KEY_ENTER)
 	await _key(KEY_RIGHT)
-	check(not GameManager.player_disabled[1], "(not with left / right either)")
+	check(not GameManager.player_disabled[1], "(not with Enter, nor right, which stays put)")
 	await _key(KEY_ESCAPE)
 	var back := _tank(1)
 	while back.is_materializing:
@@ -258,7 +263,8 @@ func _run() -> void:
 	GameManager.player_active[1] = false
 	GameManager.player_disabled[1] = false
 	await _key(KEY_ESCAPE)
-	check(not _menu._p2_button.visible and not _page_texts().has("PLAYER 2: ON"), "PLAYER 2 is hidden")
+	check(not _menu._p2_button.visible and _option_texts() == ["SOUND: ON", "ONLINE: OFF", "FULLSCREEN: OFF"],
+		"PLAYER 2 is hidden: %s" % str(_option_texts()))
 	await _key(KEY_ESCAPE)
 
 	print("\n[I] A save with player 2 sitting out loads that way")

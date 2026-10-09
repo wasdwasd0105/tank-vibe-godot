@@ -157,6 +157,11 @@ var port := DEFAULT_PORT
 var peers: Dictionary = {}
 ## Host: newcomers are turned away.
 var lock_new := false
+## This machine's player switched the game online (the pause menu's ONLINE, or
+## ALLOW REMOTE PLAYERS): it stays so till they switch it off or close the game
+## (Sean, 2026-10-10), never saved. Each stage started meanwhile that isn't
+## online already opens again (game.gd, host_from_settings).
+var keep_hosting := false
 ## Host: how many remote players it lets in, 1 to MAX_CLIENTS.
 var max_clients := MAX_CLIENTS
 ## Host: the password newcomers must know ("" for none). It never goes over the
@@ -422,6 +427,15 @@ static func _port_in(text: String) -> int:
 # =====================================================================
 # Hosting
 # =====================================================================
+
+## Opens this machine's game to others as its settings say (the pause menu's
+## ONLINE tab: the port and its type, the password, the most players, and the
+## name its player goes by). Returns OK, or an error as host does.
+func host_from_settings() -> Error:
+	return host(InputSettings.get_online_port(), InputSettings.get_online_name(),
+			InputSettings.get_host_password(), InputSettings.get_host_max_players(),
+			TRANSPORT_NAMES.find(InputSettings.get_host_port_type()) as Transport)
+
 
 ## Opens this machine's game to others on [param p_port] as [param p_name]: up
 ## to [param p_max_clients] remote players, with a [param password] only those

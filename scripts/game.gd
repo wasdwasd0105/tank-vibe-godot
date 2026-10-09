@@ -109,6 +109,10 @@ func _ready() -> void:
 		_ready_as_host()
 	Net.hosting_started.connect(_on_hosting_started)
 	Net.session_ended.connect(_on_session_ended)
+	if Net.keep_hosting and not Net.is_online():
+		# Switched online earlier and not off since: this stage is open to remote
+		# players too (Sean, 2026-10-10), seated as when switched on mid-stage.
+		Net.host_from_settings()
 	_start_stage()
 
 

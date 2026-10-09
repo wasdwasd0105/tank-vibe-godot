@@ -59,8 +59,8 @@ How the remake plays over a network. It keeps the original's model (network_orig
   - JOIN keeps the connection at the top of the list (the same address under the same name is kept once) and joins, even if the join then fails, so it can be put right with EDIT.
 
   **Joining.** The hint line says how a join goes and why one failed. Esc stops a join under way. When a session ends under a client (the host ended it, a kick, a lost connection), the client comes back here and the hint says why.
-- **Hosting** (Sean, 2026-10-02, after Counter-Strike 1.6's listen servers) is in a running game: pause → SETTINGS → the **ONLINE** tab, beside GAME and GENERAL. Start a game as ever (NEW GAME or LOAD GAME), then open it to others there. The tab has:
-  - **ALLOW REMOTE PLAYERS**, ON or OFF (not kept: every game starts offline).
+- **Hosting** (Sean, 2026-10-02, after Counter-Strike 1.6's listen servers) is in a running game: the pause menu's **ONLINE** option, beside the menu (Sean, 2026-10-10), or pause → SETTINGS → the **ONLINE** tab, beside GAME and GENERAL. Start a game as ever (NEW GAME or LOAD GAME), then open it to others there. The tab has:
+  - **ALLOW REMOTE PLAYERS**, ON or OFF: the same switch as the ONLINE option. Once switched on it stays on till it's switched off or the game is closed (Sean, 2026-10-10: "keep it on until user turn off the game"): every stage started meanwhile that isn't online already opens again by itself (`Net.keep_hosting`, game.gd), on the port and with the password and the most players kept here. It isn't saved: the game always starts offline.
     - ON opens the game on the port, or lets newcomers in again.
     - OFF turns newcomers away; the players already in stay. With nobody connected it also closes the game to the network, and play goes on offline.
   - **PORT**, typed. It's kept, and fixed while the game is open.
@@ -317,6 +317,8 @@ The client half starts with an empty maps folder of its own while the host plays
 
 `pause_menu_test.tscn` [H2] covers hosting a game with both players in: player 1 keeps tank 1, player 2 waits off the field with their lives, score and HP, and another machine's fire (a stand-in) takes tank 2 with all of it.
 
+`pause_menu_test.tscn` [I] covers the ONLINE option: on, the game opens as ALLOW REMOTE PLAYERS would (the tab says so too); the stage left (offline, the switch still on), the next stage opens by itself on the same port with player 1 on this machine's keys; off, offline, and the stage after starts offline; a port in use said under the options. [E2] covers the OPTIONS column itself, and a client's OPTIONS (no ONLINE) are in [H].
+
 ## 11. Sean's calls (2026-09-29)
 
 - **Controls:** a joining player drives with their own controls (section 4), not the original's "press the tank's own fire key".
@@ -329,6 +331,10 @@ The client half starts with an empty maps folder of its own while the host plays
 
 - **ONLINE BATTLE** replaces ONLINE on the title: a list of saved connections, like the saved games' list, with CREATE, EDIT, DELETE and CONNECT. CREATE's window takes a username, the remote address (ip:port), an optional password, and JOIN (section 3).
 - **No host screen for now:** its design comes later.
+
+## 25. Sean's call (2026-10-10)
+
+- **"Now I want to redesign the pause menu. Now make a sub-menu on the right cover: move the toggle to that sub-menu and add items: 1. player 2 on/off 2. sound on/off 3. online mode on/off 4. full screen on/off. For the online mode, if player turned that on, keep it on until user turn off the game."** The pause menu is now two panels side by side: PAUSED (RESUME, RESTART STAGE, SETTINGS, HOST once someone has joined, MAIN MENU, QUIT GAME) and OPTIONS on its right (PLAYER 2, SOUND, ONLINE, FULLSCREEN, each ON or OFF). Left and right go between the two, up and down within one; fire, Enter or a click flips an option, and the menu stays up. ONLINE is ALLOW REMOTE PLAYERS (section 3): once on, every stage started after opens again by itself, till it's switched off or the game closes, never saved. A client's OPTIONS have no ONLINE, and PLAYER 2 stays offline only.
 
 ## 24. Sean's report and call (2026-10-09, again)
 

@@ -145,8 +145,10 @@ PAUSED,暂停
 RESUME,继续
 PLAYER 2: %s,玩家 2：%s
 RESTART STAGE,重新开始本关
-ENTER FULLSCREEN,进入全屏
-EXIT FULLSCREEN,退出全屏
+OPTIONS,选项
+SOUND: %s,声音：%s
+ONLINE: %s,联网：%s
+FULLSCREEN: %s,全屏：%s
 MAIN MENU,主菜单
 QUIT GAME,退出游戏
 No system file picker while the game runs in the editor's Game tab. Run it in its own window to use the macOS picker.,游戏在编辑器的 Game 标签页中运行时无法使用系统文件选择器。请在独立窗口中运行以使用 macOS 选择器。

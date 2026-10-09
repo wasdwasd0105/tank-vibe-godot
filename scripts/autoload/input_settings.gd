@@ -766,6 +766,15 @@ func save_music_volume(value: float) -> void:
 func get_saved_music_volume() -> float:
 	return _config.get_value("audio", "music_volume", 0.7)
 
+## All the sound on or off (the pause menu's SOUND), whatever the volumes say.
+func save_sound_on(on: bool) -> void:
+	_config.set_value("audio", "sound_on", on)
+	_config.save(_save_path)
+
+func get_sound_on() -> bool:
+	var value: Variant = _config.get_value("audio", "sound_on", true)
+	return value if value is bool else true
+
 # =====================================================================
 # Controller vibration
 # =====================================================================

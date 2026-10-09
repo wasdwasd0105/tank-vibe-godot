@@ -1,9 +1,12 @@
 extends Control
-## The pause screen, in the menus' style: RESUME, RESTART STAGE, ENTER / EXIT
-## FULLSCREEN, SETTINGS, MAIN MENU and QUIT GAME over the dimmed stage. In a
-## two-player game, PLAYER 2 ON / OFF under the fullscreen switch lets one
-## person play on while player 2 sits out, their tank off the field and
-## everything they had kept. SETTINGS has three tabs. GENERAL changes the
+## The pause screen, in the menus' style: RESUME, RESTART STAGE, SETTINGS, MAIN
+## MENU and QUIT GAME over the dimmed stage, and beside them OPTIONS, switches
+## flipped at once (Sean, 2026-10-10): PLAYER 2 (in a two-player game, one
+## person plays on while player 2 sits out, their tank off the field and
+## everything they had kept), SOUND (all of it, kept for next time), ONLINE
+## (the game open to remote players, as ALLOW REMOTE PLAYERS; once on, every
+## stage started after opens again, till it's switched off or the game closes:
+## Net.keep_hosting) and FULLSCREEN. SETTINGS has three tabs. GENERAL changes the
 ## sound, fullscreen, the menus' language and each player's controls and
 ## vibration (the same controls page as the title screen). GAME changes the
 ## difficulty, the game's speed, whether the base can fall and the enemies'
@@ -15,17 +18,19 @@ extends Control
 ## them, and who is connected.
 ##
 ## Esc or Start opens it. Esc, B or Start go back a page, and from the first page
-## resume. Mouse, keys and controller work as in the other menus; on the
-## settings page left / right on the tab strip (or LB / RB) switch tabs, and a
-## field is typed in after a click, or fire or Enter on its row, until Enter or
-## Esc. It runs while the tree is paused (process mode ALWAYS).
+## resume. Mouse, keys and controller work as in the other menus; on the first
+## page left / right go between the menu and the options, and fire flips an
+## option; on the settings page left / right on the tab strip (or LB / RB)
+## switch tabs, and a field is typed in after a click, or fire or Enter on its
+## row, until Enter or Esc. It runs while the tree is paused (process mode
+## ALWAYS).
 ##
 ## Once someone has joined, a host's menu has HOST: which tank each player may
 ## drive, and KICK. A host's menu pauses everyone's game. A client's menu
 ## (set_online_client) pauses nothing and has no GAME tab (the game is the
 ## host's); its ONLINE tab is how the host's game shows there: LAG COMPENSATION,
 ## SMOOTHING and the ping. It holds the client's players still while it's open,
-## and MAIN MENU becomes LEAVE GAME.
+## and MAIN MENU becomes LEAVE GAME, and no ONLINE option (hosting is the host's).
 ## PLAYER 2 is offline only: online, the seats do that.
 
 signal resume_requested
@@ -49,14 +54,20 @@ const ERROR_COLOR := Color(1.0, 0.5, 0.45)
 const DRIVE_CHOICES: Array = [[true, true], [true, false], [false, true], [false, false]]
 const DRIVE_NAMES: Array[String] = ["P1 + P2", "P1 ONLY", "P2 ONLY", "WATCH ONLY"]
 
+@onready var _main_page: Control = %MainPage
 @onready var _main_panel: Control = %MainPanel
 @onready var _resume_button: Button = %ResumeButton
-@onready var _p2_button: Button = %PlayerTwoButton
-@onready var _fullscreen_button: Button = %FullscreenButton
 @onready var _settings_button: Button = %SettingsButton
 @onready var _restart_button: Button = %RestartButton
 @onready var _main_menu_button: Button = %MainMenuButton
 @onready var _quit_button: Button = %QuitButton
+# The OPTIONS beside the menu.
+@onready var _options_panel: Control = %OptionsPanel
+@onready var _p2_button: Button = %PlayerTwoButton
+@onready var _sound_button: Button = %SoundButton
+@onready var _online_button: Button = %OnlineButton
+@onready var _fullscreen_button: Button = %FullscreenButton
+@onready var _options_note: Label = %OptionsNote
 @onready var _settings_panel: Control = %SettingsPanel
 @onready var _settings_rows: VBoxContainer = %SettingsRows
 @onready var _settings_back_button: Button = %SettingsBackButton
@@ -110,12 +121,14 @@ func _ready() -> void:
 	_nav = MenuFocus.new(get_viewport())
 	_common = CommonSettings.new(_settings_rows, true)
 	_common.controls_requested.connect(_open_controls)
-	for button: Button in [_resume_button, _fullscreen_button, _p2_button, _settings_button,
-			_restart_button, _main_menu_button, _quit_button]:
+	for button: Button in [_resume_button, _settings_button, _restart_button, _main_menu_button, _quit_button,
+			_p2_button, _sound_button, _online_button, _fullscreen_button]:
 		button.mouse_entered.connect(button.grab_focus)   # hover focuses, as in every menu
 	_focus_on_hover(_settings_back_button)
 	_resume_button.pressed.connect(_resume)
 	_p2_button.pressed.connect(_toggle_p2)
+	_sound_button.pressed.connect(_toggle_sound)
+	_online_button.pressed.connect(_toggle_online)
 	_fullscreen_button.pressed.connect(_toggle_fullscreen)
 	WindowManager.fullscreen_changed.connect(_refresh_fullscreen)
 	_settings_button.pressed.connect(_open_settings)
@@ -137,12 +150,12 @@ func set_can_open(value: bool) -> void:
 	_can_open = value
 
 
-## The menus' language changed (its settings page): PLAYER 2's line, the
+## The menus' language changed (its settings page): the options' lines, the
 ## difficulty's name and the ONLINE tab's are built from parts, so they are
 ## rebuilt; the rest translate themselves.
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
-		_refresh_p2()
+		_refresh_options()
 		_game.refresh()
 		_common.refresh()
 		_refresh_online_tab()
@@ -168,6 +181,8 @@ func _input(event: InputEvent) -> void:
 		return
 	# Leaving can change scene and take this node out of the tree; keep the viewport.
 	var viewport := get_viewport()
+	if _page == Page.MAIN:
+		_nav.items = _page_items(Page.MAIN)  # (the column the focus is in: the mouse may have moved it)
 	if _page == Page.SETTINGS and _tabs.handle_shortcut(event):
 		pass   # LB / RB: another tab
 	elif MenuFocus.is_pressed(event, MenuFocus.UP_ACTIONS):
@@ -199,6 +214,7 @@ func _focus_on_hover(control: Control) -> void:
 func set_online_client(on: bool) -> void:
 	_online_client = on
 	_restart_button.visible = not on
+	_online_button.visible = not on
 	_main_menu_button.text = "LEAVE GAME" if on else "MAIN MENU"
 	(_main_panel.get_node("Items/Header") as Label).text = "MENU" if on else "PAUSED"
 	# The game's rules are the host's own machine's, and so is hosting: a
@@ -220,9 +236,22 @@ func _open() -> void:
 	_refresh_host_button()
 	_game.refresh()
 	_common.refresh()
-	_refresh_fullscreen(WindowManager.is_fullscreen())
-	_refresh_p2()
+	_options_note.text = ""
+	_refresh_options()
 	_show_page(Page.MAIN, _resume_button)
+
+
+## The OPTIONS as things are.
+func _refresh_options() -> void:
+	_refresh_p2()
+	_refresh_sound()
+	_refresh_online_option()
+	_refresh_fullscreen(WindowManager.is_fullscreen())
+
+
+## "NAME: ON" or "NAME: OFF".
+static func _switch_text(name_template: String, on: bool) -> String:
+	return TranslationServer.translate(name_template) % TranslationServer.translate("ON" if on else "OFF")
 
 
 ## PLAYER 2 shows only when the game has both players, and says whether player 2
@@ -236,15 +265,42 @@ func _refresh_p2() -> void:
 	_p2_button.disabled = not off and GameManager.player_lives[0] < 0
 
 
-## ENTER FULLSCREEN or EXIT FULLSCREEN, for the window as it is ([param on]:
-## fullscreen), however it was switched (here, the settings' row, F11).
+## FULLSCREEN, for the window as it is ([param on]: fullscreen), however it
+## was switched (here, the settings' row, F11).
 func _refresh_fullscreen(on: bool) -> void:
-	_fullscreen_button.text = "EXIT FULLSCREEN" if on else "ENTER FULLSCREEN"
+	_fullscreen_button.text = _switch_text("FULLSCREEN: %s", on)
 
 
 ## Switches fullscreen and stays on the page, the stage still paused.
 func _toggle_fullscreen() -> void:
 	WindowManager.set_fullscreen(not WindowManager.is_fullscreen())
+
+
+func _refresh_sound() -> void:
+	_sound_button.text = _switch_text("SOUND: %s", SoundManager.is_sound_on())
+
+
+## All the sound on or off, kept for next time (SoundManager.set_sound_on).
+func _toggle_sound() -> void:
+	SoundManager.set_sound_on(not SoundManager.is_sound_on())
+	_refresh_sound()
+
+
+## ONLINE: the game open to remote players, as the ONLINE tab's ALLOW REMOTE
+## PLAYERS says (a client's menu has none).
+func _refresh_online_option() -> void:
+	_online_button.text = _switch_text("ONLINE: %s", _hosting_open())
+
+
+## Opens the game to remote players, or closes it to newcomers, as ALLOW
+## REMOTE PLAYERS does; a reason it couldn't open shows under the options.
+func _toggle_online() -> void:
+	_options_note.text = _switch_hosting()
+	_refresh_online_option()
+
+
+func _hosting_open() -> bool:
+	return Net.is_host() and not Net.lock_new
 
 
 ## Takes player 2 out of the stage, or brings them back, and stays on the page.
@@ -287,26 +343,25 @@ func _go_back() -> void:
 
 func _show_page(page: Page, focus_target: Control) -> void:
 	_page = page
-	_main_panel.visible = page == Page.MAIN
+	_main_page.visible = page == Page.MAIN
 	_settings_panel.visible = page == Page.SETTINGS
 	_controls.visible = page == Page.CONTROLS
 	_host_panel.visible = page == Page.HOST
+	if focus_target:
+		focus_target.grab_focus()  # (first: the first page's column goes by it)
 	_nav.items = _page_items(page)
-	var shown: Control = [_main_panel, _settings_panel, _controls, _host_panel][page]
+	var shown: Control = [_main_page, _settings_panel, _controls, _host_panel][page]
 	shown.modulate.a = 0.0
 	create_tween().tween_property(shown, "modulate:a", 1.0, PAGE_FADE_TIME)
-	if focus_target:
-		focus_target.grab_focus()
 
 
 func _page_items(page: Page) -> Array[Control]:
 	var items: Array[Control] = []
 	match page:
 		Page.MAIN:
-			for button: Button in [_resume_button, _restart_button, _fullscreen_button, _p2_button,
-					_settings_button, _host_button, _main_menu_button, _quit_button]:
-				if button.visible:
-					items.append(button)  # PLAYER 2 under the fullscreen switch
+			# The column the focus is in: the menu, or the options beside it.
+			var options := _option_items()
+			return options if options.has(_nav.focus_owner()) else _menu_items()
 		Page.SETTINGS:
 			if _tabs.strip.visible:
 				items.append(_tabs.strip)
@@ -331,6 +386,41 @@ func _page_items(page: Page) -> Array[Control]:
 	return items
 
 
+## The first page's menu, top to bottom.
+func _menu_items() -> Array[Control]:
+	var items: Array[Control] = []
+	for button: Button in [_resume_button, _restart_button, _settings_button, _host_button,
+			_main_menu_button, _quit_button]:
+		if button.visible:
+			items.append(button)
+	return items
+
+
+## The OPTIONS beside it, top to bottom.
+func _option_items() -> Array[Control]:
+	var items: Array[Control] = []
+	for button: Button in [_p2_button, _sound_button, _online_button, _fullscreen_button]:
+		if button.visible:
+			items.append(button)
+	return items
+
+
+## Left / right on the first page: from the menu over to the options
+## ([param direction] 1), or back (-1), to the one level with the one focused.
+func _switch_column(direction: int) -> void:
+	var focused := _nav.focus_owner()
+	var to := _option_items() if direction > 0 else _menu_items()
+	if to.is_empty() or to.has(focused):
+		return
+	var level := focused.get_global_rect().get_center().y if focused else 0.0
+	var nearest: Control = to[0]
+	for item: Control in to:
+		if absf(item.get_global_rect().get_center().y - level) < absf(nearest.get_global_rect().get_center().y - level):
+			nearest = item
+	nearest.grab_focus()
+	_nav.items = to
+
+
 func _adjust(direction: int) -> void:
 	var focused := _nav.focus_owner()
 	match _page:
@@ -352,8 +442,7 @@ func _adjust(direction: int) -> void:
 			elif not _game.adjust(focused, direction):
 				_common.adjust(focused, direction)
 		Page.MAIN:
-			if focused == _p2_button:
-				_toggle_p2()   # left / right flip it, as on the settings rows
+			_switch_column(direction)
 
 
 ## The settings open on their first tab, GENERAL (a client's menu has only
@@ -678,28 +767,38 @@ func _process(delta: float) -> void:
 		_refresh_client_tab()
 
 
-## ALLOW REMOTE PLAYERS. On opens the game to others (on the port, with the
-## password and the most players set here), or lets newcomers in again. Off
-## turns newcomers away; with nobody connected, it also closes the game to the
-## network and play goes on offline.
+## ALLOW REMOTE PLAYERS (and the ONLINE option, _toggle_online).
 func _toggle_hosting(_direction: int = 1) -> void:
+	var why_not := _switch_hosting()
+	_set_online_note(why_not, not why_not.is_empty())
+
+
+## On opens the game to others (on the port, with the password and the most
+## players set on the ONLINE tab), or lets newcomers in again; and every stage
+## started after opens again, till it's switched off or the game closes (Sean,
+## 2026-10-10: "keep it on until user turn off the game"; Net.keep_hosting).
+## Off turns newcomers away; with nobody connected, it also closes the game to
+## the network and play goes on offline. Returns why it couldn't open, or "".
+func _switch_hosting() -> String:
 	if Net.is_host():
 		if Net.lock_new:
 			Net.set_lock_new(false)
-		elif Net.client_ids().is_empty():
-			Net.leave()
+			Net.keep_hosting = true
 		else:
-			Net.set_lock_new(true)
-		_set_online_note("")
-	elif Net.host(InputSettings.get_online_port(), InputSettings.get_online_name(),
-			InputSettings.get_host_password(), InputSettings.get_host_max_players(),
-			Net.TRANSPORT_NAMES.find(InputSettings.get_host_port_type()) as Net.Transport) != OK:
+			Net.keep_hosting = false
+			if Net.client_ids().is_empty():
+				Net.leave()
+			else:
+				Net.set_lock_new(true)
+	elif Net.host_from_settings() != OK:
 		_refresh_online_tab()
-		_set_online_note(Net.end_text(Net.END_PORT), true)
-		return
+		_refresh_online_option()
+		return Net.end_text(Net.END_PORT)
 	else:
-		_set_online_note("")
+		Net.keep_hosting = true
 	_refresh_online_tab()
+	_refresh_online_option()
+	return ""
 
 
 ## PORT TYPE: TCP or UDP, kept for next time. Players joining find out which by
@@ -832,6 +931,7 @@ func _close_host() -> void:
 func _on_session_changed() -> void:
 	var host_was_shown := _host_button.visible
 	_refresh_host_button()
+	_refresh_online_option()
 	if not visible:
 		return
 	match _page:
