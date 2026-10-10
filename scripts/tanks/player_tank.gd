@@ -113,6 +113,9 @@ const SHOT_ROWS: Array[float] = [FIRE_ROW_LEFT, FIRE_ROW_MID, FIRE_ROW_RIGHT]
 const CLIENT_SHOT_WAIT_MS := 500
 
 var _regular_fire_step: int = 0
+## The reload running is the regular gun's: the special weapon fires through
+## it (shoot_secondary). A special shot's own reload holds both guns.
+var _regular_reloading := false
 var _rapid_special_fire_step: int = 0
 var _rapid_special_ammo_progress: int = 0
 
@@ -302,12 +305,15 @@ func _physics_process(delta: float) -> void:
 		_fire_client_shots()
 		return
 	# Held, or a tap between two frames: a client's press and release can come
-	# in one bunch, and its counter still says it pressed.
-	if PlayerInput.is_held(player_id, 0) or PlayerInput.is_just_pressed(player_id, 0):
-		shoot_regular()
+	# in one bunch, and its counter still says it pressed. The special weapon
+	# first: fire 2 fires it whatever fire 1 is doing (Sean, 2026-10-11: "when
+	# hold the regular weapon, plz do not block the special weapon's fire"),
+	# and fire 1 fires the regular gun when it doesn't.
 	var auto_secondary_held := secondary_weapon_type in AUTO_SECONDARY and PlayerInput.is_held(player_id, 1)
 	if auto_secondary_held or PlayerInput.is_just_pressed(player_id, 1):
 		shoot_secondary()
+	if PlayerInput.is_held(player_id, 0) or PlayerInput.is_just_pressed(player_id, 0):
+		shoot_regular()
 
 ## One step of driving with [param input_dir] pushed: the turn, ice, an enemy
 ## in the way, the walls. The host's own players drive this way, and so does
@@ -840,19 +846,16 @@ func _predict() -> void:
 func _predict_fire() -> void:
 	_take_host_weapons()
 	var prefix := PlayerInput.action_prefix(net_slot)
+	# The special weapon first, as the host's own players fire (_physics_process).
+	var special := prefix + PlayerInput.BUTTONS[1]
+	if (Input.is_action_pressed(special) and secondary_weapon_type in AUTO_SECONDARY) \
+			or Input.is_action_just_pressed(special):
+		_firing_button = 1
+		shoot_secondary()
 	var fire := prefix + PlayerInput.BUTTONS[0]
 	if Input.is_action_pressed(fire) or Input.is_action_just_pressed(fire):
 		_firing_button = 0
 		shoot_regular()
-	if secondary_weapon_type == "mine":
-		if Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
-			_firing_button = 1
-			shoot_secondary()
-		return
-	var held := Input.is_action_pressed(prefix + PlayerInput.BUTTONS[1])
-	if (held and secondary_weapon_type in AUTO_SECONDARY) or Input.is_action_just_pressed(prefix + PlayerInput.BUTTONS[1]):
-		_firing_button = 1
-		shoot_secondary()
 
 ## Client: [param shell], a shot of this tank's, flies here at once as a ghost:
 ## the host is told which button fired it and from which row, and fires that
@@ -934,6 +937,7 @@ func shoot_regular() -> void:
 
 	_set_shoot_cooldown_wait_time(REGULAR_WEAPON_COOLDOWN_MAP.get(weapon_level, 0.4))
 	_begin_shot()
+	_regular_reloading = true
 	_shot_sound(&"fire_primary")
 	_spawn_single_row_bullet(row_offset)
 
@@ -1108,42 +1112,40 @@ func apply_cookie_bullet_refill() -> void:
 	)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
 
+## The special weapon's shot, or mine. Only its own reload holds it: the
+## regular gun's never does, nor the regular gun's shells in flight (Sean,
+## 2026-10-11), and its shot begins a reload of its own, which holds both guns.
+## Its ammo and the shells of its kind it may have in flight still count.
 func shoot_secondary() -> void:
-	if secondary_weapon_count <= 0 or not can_shoot or active_bullets >= max_bullets:
+	if secondary_weapon_count <= 0 or not (can_shoot or _regular_reloading):
 		return
-	if secondary_weapon_type == "rapid":
-		_shoot_secondary_rapid()
-		return
-	if secondary_weapon_type == "fire":
-		_shoot_secondary_fire()
-		return
-	if secondary_weapon_type == "explosion":
-		_shoot_secondary_explosion()
-		return
-	if secondary_weapon_type == "mine":
-		_shoot_secondary_mine()
-		return
-	if secondary_weapon_type == "ap":
-		_shoot_secondary_ap()
-		return
-	secondary_weapon_count -= 1
-	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
-	super.shoot()
+	var fired := false
+	match secondary_weapon_type:
+		"rapid":
+			fired = _shoot_secondary_rapid()
+		"fire":
+			fired = _shoot_secondary_fire()
+		"explosion":
+			fired = _shoot_secondary_explosion()
+		"mine":
+			fired = _shoot_secondary_mine()
+		"ap":
+			fired = _shoot_secondary_ap()
+	if fired:
+		_regular_reloading = false
 
-func _shoot_secondary_ap() -> void:
+func _shoot_secondary_ap() -> bool:
 	var config: Dictionary = CookieData.get_weapon_fire_config("ap", weapon_level)
-	if config.is_empty():
-		return
+	if config.is_empty() or active_ap_bullets >= int(config.get("max_in_flight", 2)):
+		return false
 	_shot_sound(&"fire_ap")
-	if active_ap_bullets >= int(config.get("max_in_flight", 2)):
-		return
-
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
 	_begin_shot()
 	_spawn_ap_bullet(config)
 
 	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	return true
 
 ## AP shell stripped this player's moon shield: remove it and grant a brief grace.
 func break_moon_shield_grace() -> void:
@@ -1190,13 +1192,13 @@ func _take_items_where_reported() -> void:
 			if absf(off.x) < reach and absf(off.y) < reach:
 				cookie.take_for(self)
 
-func _shoot_secondary_mine() -> void:
+func _shoot_secondary_mine() -> bool:
 	var config: Dictionary = CookieData.get_weapon_fire_config("mine", weapon_level)
 	if config.is_empty():
-		return
+		return false
 	# Lay the mine first; if there's no free spot, spend neither ammo nor cooldown.
 	if not _place_mine(weapon_level):
-		return
+		return false
 	_shot_sound(&"lay_mine")
 	can_shoot = false
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.6))
@@ -1204,11 +1206,12 @@ func _shoot_secondary_mine() -> void:
 		shoot_cooldown.start()
 	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	return true
 
-func _shoot_secondary_rapid() -> void:
+func _shoot_secondary_rapid() -> bool:
 	var config: Dictionary = CookieData.get_weapon_fire_config("rapid", weapon_level)
 	if config.is_empty():
-		return
+		return false
 	_shot_sound(&"fire_rapid")
 
 	var fire_rows: Array = config.get("rows", [FIRE_ROW_MID])
@@ -1226,36 +1229,33 @@ func _shoot_secondary_rapid() -> void:
 		_rapid_special_ammo_progress = 0
 		secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 		GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	return true
 
-func _shoot_secondary_fire() -> void:
+func _shoot_secondary_fire() -> bool:
 	var config: Dictionary = CookieData.get_weapon_fire_config("fire", weapon_level)
-	if config.is_empty():
-		return
+	if config.is_empty() or active_fire_bullets >= int(config.get("max_in_flight", 3)):
+		return false
 	_shot_sound(&"fire_fire")
-	if active_fire_bullets >= int(config.get("max_in_flight", 3)):
-		return
-
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.27))
 	_begin_shot()
 	_spawn_fire_bullet(config)
 
 	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	return true
 
-func _shoot_secondary_explosion() -> void:
+func _shoot_secondary_explosion() -> bool:
 	var config: Dictionary = CookieData.get_weapon_fire_config("explosion", weapon_level)
-	if config.is_empty():
-		return
+	if config.is_empty() or active_explosion_bullets >= int(config.get("max_in_flight", 2)):
+		return false
 	_shot_sound(&"fire_explosion")
-	if active_explosion_bullets >= int(config.get("max_in_flight", 2)):
-		return
-
 	_set_shoot_cooldown_wait_time(config.get("cooldown", 0.45))
 	_begin_shot()
 	_spawn_explosion_bullet(config)
 
 	secondary_weapon_count = maxi(secondary_weapon_count - 1, 0)
 	GameManager.set_secondary_weapon(player_id, secondary_weapon_type, secondary_weapon_count)
+	return true
 
 ## If this tank is sitting on water without a boat, it sinks. Called when the
 ## anti-water addon is lost (e.g. shot off) while afloat.

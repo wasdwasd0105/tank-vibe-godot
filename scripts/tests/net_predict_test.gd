@@ -960,6 +960,51 @@ func _run() -> void:
 		_world._despawn(140)
 	_clear_bricks(row)
 
+	print("\n[H2] Its special weapon with fire 1 held: fired here at once, the regular gun's reload never holding it (Sean, 2026-10-11)")
+	_clear_ghosts()
+	var armed_as: Array = [gm.player_weapon_levels[0], gm.player_secondary_weapon_types[0], gm.player_secondary_weapon_counts[0]]
+	gm.player_weapon_levels[0] = 1
+	gm.player_secondary_weapon_types[0] = "rapid"
+	gm.player_secondary_weapon_counts[0] = 30
+	_player.global_position = _at(_home)
+	_player.current_direction = Vector2.UP
+	await _wait_frames(2)
+	await tree.process_frame
+	_player.can_shoot = true
+	Input.action_press("p1_shoot")
+	Net.role = Net.Role.CLIENT
+	_player._predict_fire()   # fire 1: a regular shot, the regular gun's reload begun
+	Net.role = Net.Role.OFFLINE
+	var regular_ghost: Bullet = _world._ghosts[-1]["node"] if _world._ghosts.size() == 1 else null
+	await tree.process_frame
+	Input.action_press("p1_shoot2")
+	Net.role = Net.Role.CLIENT
+	_player._predict_fire()   # fire 2 pressed, fire 1 still held, the regular gun reloading
+	Net.role = Net.Role.OFFLINE
+	var special_ghost: Bullet = _world._ghosts[-1]["node"] if _world._ghosts.size() == 2 else null
+	Input.action_release("p1_shoot2")
+	Input.action_release("p1_shoot")
+	check(regular_ghost != null and regular_ghost.visual_style == "regular" and regular_ghost.net_shot >> 8 == 0
+		and special_ghost != null and special_ghost.visual_style == "rapid" and special_ghost.net_shot >> 8 == 1,
+		"fire 2 pressed with fire 1 held, the regular gun reloading: its special shot fired here at once, the host told it's fire 2's")
+	_clear_ghosts()
+	await _wait_frames(2)
+	await tree.process_frame
+	_player.can_shoot = true
+	Input.action_press("p1_shoot")
+	Input.action_press("p1_shoot2")
+	Net.role = Net.Role.CLIENT
+	_player._predict_fire()   # both held, its gun ready
+	Net.role = Net.Role.OFFLINE
+	Input.action_release("p1_shoot2")
+	Input.action_release("p1_shoot")
+	var styles: Array = _world._ghosts.map(func(entry: Dictionary) -> String: return (entry["node"] as Bullet).visual_style)
+	check(styles == ["rapid"], "both held, its gun ready: the special weapon's shot alone %s" % str(styles))
+	_clear_ghosts()
+	gm.player_weapon_levels[0] = armed_as[0]
+	gm.player_secondary_weapon_types[0] = armed_as[1]
+	gm.player_secondary_weapon_counts[0] = armed_as[2]
+
 	print("\n[I] What the world does to its own tank: decided here at once, the host told (Sean, 2026-10-09: \"let guest process all the thing locally\")")
 	_clear_ghosts()
 	_player.global_position = _at(_home)

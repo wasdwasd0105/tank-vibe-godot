@@ -490,7 +490,7 @@ The same -1 error was in `docs/ice_original_spec.md` ("A player's fire melts it"
 **What it replaced:** a field of 12 tiles that grew a ring with each shell up to 8x8, burning 5 s a ring and then shrinking a ring at a time; one point a second from any fire; fire shells of 2 at gun levels 3 and 4; only the players' fire melting ice; burning grass started from the field's edge, burning 3 s and spreading every 0.5 s.
 
 **Kept the remake's:**
-- **The fire rate:** the remake's cooldowns by gun level (0.27–0.135 s). The original's go by the speed level, 0.54 / 0.45 / 0.36 / 0.27 s, as its plain gun's.
+- **The fire rate:** the remake's cooldowns by gun level (0.27–0.135 s). The original's go by the speed level, 0.54 / 0.45 / 0.36 / 0.27 s, as its plain gun's. Since 2026-10-11 the plain gun's cooldown never holds a special weapon back (Sean: "when hold the regular weapon, plz do not block the special weapon's fire"): fire 2 fires through it, and held with fire 1, fires in the plain gun's place; a special shot's own cooldown holds both (`PlayerTank.shoot_secondary`).
 - **What a joining player sees:** every burning tile is sent to it. The original sent only the grids' tiles, so its spread and burning grass didn't show online.
 - **A safety cap** of 2000 burning tiles; the original had none, fuel being what stops a fire.
 

@@ -64,7 +64,7 @@ Ported as above: `ExplosionBlast` (the grid, its frames, picture, walls, damage,
 
 **The original's quirks, kept as it played:** a half brick's left and right halves shadow the wrong side (its wall mask, 0x00496859, swaps ids 30/31 and 34/35), the shadow's march towards the left and top tests its line mirrored, and a whole brick keeps only its top or left half (rule 12).
 
-**Not changed:** the cooldown still goes by the gun level (the original's by the speed level, 0.45 s to 0.225 s, shared with the plain gun; the remake has its own cooldowns for every special weapon); the plain gun's and the explosion gun's shells don't share one heat budget; the enemies' explosion tanks keep level 0 (the original gave them `TYPE_GUN` 0-3 plus the difficulty's bonus: a decision Sean hasn't made).
+**Not changed:** the cooldown still goes by the gun level (the original's by the speed level, 0.45 s to 0.225 s, shared with the plain gun; the remake has its own cooldowns for every special weapon, and since 2026-10-11 the plain gun's never holds the special weapon back, Sean's call: fire 2 fires through it, and held with fire 1, fires in the plain gun's place, a special shot's own cooldown holding both); the plain gun's and the explosion gun's shells don't share one heat budget; the enemies' explosion tanks keep level 0 (the original gave them `TYPE_GUN` 0-3 plus the difficulty's bonus: a decision Sean hasn't made).
 
 ## Part C — Found on the way (not changed)
 

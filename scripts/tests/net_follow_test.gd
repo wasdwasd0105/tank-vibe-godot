@@ -1710,7 +1710,8 @@ func _run() -> void:
 	var ap_ghosts := world._ghosts.filter(func(entry: Dictionary) -> bool: return entry["node"].visual_style == "ap")
 	check(ap_ghosts.size() == 2 and world.own_shells_in_flight(0, "ap") == 2 and _player.secondary_weapon_count == 9,
 		"the host's AP and its ammo: two shells in flight, as many as the host allows")
-	check(SoundManager._predicted.size() == 3, "and its sound each time, as the host plays it")
+	check(SoundManager._predicted.size() == 2,
+		"and its sound for each that leaves, as the host plays it (none for the third, held back)")
 	for entry: Dictionary in world._ghosts:
 		entry["node"].queue_free()
 	world._ghosts.clear()
@@ -1938,7 +1939,7 @@ func _run() -> void:
 	Input.action_release("p1_shoot2")
 	await tree.process_frame  # (a mine goes in deferred)
 	var laid_here: Mine = world._ghost_mines[-1]["node"] if world._ghost_mines.size() == 1 else null
-	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 4 and SoundManager._predicted[-1][1] == &"lay_mine"
+	check(world._ghosts.is_empty() and SoundManager._predicted.size() == 3 and SoundManager._predicted[-1][1] == &"lay_mine"
 		and _lm.get_mines().size() == mines and laid_here != null and laid_here.net_shot == 256 + int(Net._shots[0][1])
 		and laid_here.collision_mask == 0,
 		"a mine: laid here at once, heard, numbered for the host (no mine of the host's world laid here)")
