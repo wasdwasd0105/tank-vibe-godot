@@ -60,7 +60,12 @@ func _page_texts() -> Array:
 
 
 func _option_texts() -> Array:
-	return _menu._option_items().map(func(button: Button) -> String: return button.text)
+	return _menu._option_items().map(_says)
+
+
+## An option as it shows: its name and its switch, "PLAYER 2: ON".
+func _says(row: Button) -> String:
+	return "%s: %s" % [MenuRows.name_label(row).text, "ON" if MenuRows.switch_of(row).on else "OFF"]
 
 
 func _bursts_at(pos: Vector2) -> int:
@@ -129,7 +134,7 @@ func _run() -> void:
 	await _key(KEY_RIGHT)
 	check(_focus() == _menu._p2_button, "right from RESUME reaches PLAYER 2, level with it")
 	await _key(KEY_ENTER)
-	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF"
+	check(GameManager.player_disabled[1] and _says(_menu._p2_button) == "PLAYER 2: OFF"
 		and _menu.visible and _focus() == _menu._p2_button, "Enter: PLAYER 2: OFF, still in the menu")
 	check(_hud.p2_lives_label.text == "OFF" and is_equal_approx(_hud.p2_score_label.modulate.a, 0.4)
 		and _hud.p2_score_label.text == "8700" and _hud.p2_score_label.visible,
@@ -174,10 +179,10 @@ func _run() -> void:
 	await _key(KEY_ESCAPE)
 	_menu._p2_button.mouse_entered.emit()
 	_menu._p2_button.pressed.emit()
-	check(not GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: ON" and _tank(1) != null
+	check(not GameManager.player_disabled[1] and _says(_menu._p2_button) == "PLAYER 2: ON" and _tank(1) != null
 		and _focus() == _menu._p2_button, "a click: back on, a tank beside the base")
 	await _key(KEY_ENTER)
-	check(GameManager.player_disabled[1] and _menu._p2_button.text == "PLAYER 2: OFF", "Enter: off again")
+	check(GameManager.player_disabled[1] and _says(_menu._p2_button) == "PLAYER 2: OFF", "Enter: off again")
 	await _key(KEY_LEFT)
 	check(_focus() == _menu._resume_button and GameManager.player_disabled[1], "left: RESUME, nothing flipped")
 	await _key(KEY_ESCAPE)
@@ -193,13 +198,15 @@ func _run() -> void:
 	check(GameManager.player_lives[0] < 0 and _game.get_game_over_countdown() > 0,
 		"player 1 out of lives: the countdown to Mission Fail starts")
 	await _key(KEY_ESCAPE)
-	check(_menu._p2_button.text == "PLAYER 2: OFF" and not _menu._p2_button.disabled, "PLAYER 2 can still come on")
+	check(_says(_menu._p2_button) == "PLAYER 2: OFF" and not _menu._p2_button.disabled
+		and _menu._p2_button.modulate == Color.WHITE, "PLAYER 2 can still come on")
 	await _key(KEY_RIGHT)
 	await _key(KEY_ENTER)
 	check(_tank(1) != null and _game.get_game_over_countdown() < 0,
 		"switched on, player 2's tank comes and the countdown stops")
-	check(_menu._p2_button.text == "PLAYER 2: ON" and _menu._p2_button.disabled,
-		"and can't go off again while player 1 is out: nobody would be left")
+	check(_says(_menu._p2_button) == "PLAYER 2: ON" and _menu._p2_button.disabled
+		and _menu._p2_button.modulate.a < 1.0,
+		"and can't go off again while player 1 is out (greyed): nobody would be left")
 	await _key(KEY_ENTER)
 	await _key(KEY_RIGHT)
 	check(not GameManager.player_disabled[1], "(not with Enter, nor right, which stays put)")
@@ -225,7 +232,7 @@ func _run() -> void:
 	check(_game.enemy_spawner.max_concurrent_enemies == stage_cap, "the same enemy count")
 	check(not _game._played_stage[1], "player 2 won't get a results panel for it")
 	await _key(KEY_ESCAPE)
-	check(_menu._p2_button.text == "PLAYER 2: OFF", "the menu says so")
+	check(_says(_menu._p2_button) == "PLAYER 2: OFF", "the menu says so")
 	await _key(KEY_ESCAPE)
 
 	print("\n[G] Player 2 dying, then sitting out before the new tank comes")

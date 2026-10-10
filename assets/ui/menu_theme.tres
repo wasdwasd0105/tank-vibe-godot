@@ -1,4 +1,4 @@
-[gd_resource type="Theme" load_steps=31 format=3]
+[gd_resource type="Theme" load_steps=32 format=3]
 
 [ext_resource type="FontFile" path="res://assets/ui/fonts/gold_font.fnt" id="1_font"]
 
@@ -7,6 +7,25 @@ content_margin_left = 28.0
 content_margin_top = 22.0
 content_margin_right = 28.0
 content_margin_bottom = 24.0
+bg_color = Color(0.043, 0.051, 0.07, 0.93)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.45, 0.36, 0.14, 1)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+shadow_color = Color(0, 0, 0, 0.55)
+shadow_size = 18
+shadow_offset = Vector2(0, 8)
+
+[sub_resource type="StyleBoxFlat" id="side_panel"]
+content_margin_left = 16.0
+content_margin_top = 22.0
+content_margin_right = 16.0
+content_margin_bottom = 18.0
 bg_color = Color(0.043, 0.051, 0.07, 0.93)
 border_width_left = 2
 border_width_top = 2
@@ -454,6 +473,8 @@ VScrollBar/styles/grabber_pressed = SubResource("scroll_grabber_hl")
 VScrollBar/styles/scroll = SubResource("scroll_bg")
 MenuPanel/base_type = &"PanelContainer"
 MenuPanel/styles/panel = SubResource("panel")
+SidePanel/base_type = &"PanelContainer"
+SidePanel/styles/panel = SubResource("side_panel")
 TitleLabel/base_type = &"Label"
 TitleLabel/colors/font_color = Color(1, 1, 1, 1)
 TitleLabel/colors/font_shadow_color = Color(0, 0, 0, 0.65)

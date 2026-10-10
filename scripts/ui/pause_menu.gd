@@ -1,6 +1,7 @@
 extends Control
 ## The pause screen, in the menus' style: RESUME, RESTART STAGE, SETTINGS, MAIN
-## MENU and QUIT GAME over the dimmed stage, and beside them OPTIONS, switches
+## MENU and QUIT GAME over the dimmed stage, in the middle of the screen (Sean,
+## 2026-10-10), and on their right OPTIONS, a narrow panel of on / off switches
 ## flipped at once (Sean, 2026-10-10): PLAYER 2 (in a two-player game, one
 ## person plays on while player 2 sits out, their tank off the field and
 ## everything they had kept), SOUND (all of it, kept for next time), ONLINE
@@ -61,12 +62,10 @@ const DRIVE_NAMES: Array[String] = ["P1 + P2", "P1 ONLY", "P2 ONLY", "WATCH ONLY
 @onready var _restart_button: Button = %RestartButton
 @onready var _main_menu_button: Button = %MainMenuButton
 @onready var _quit_button: Button = %QuitButton
-# The OPTIONS beside the menu.
+# The OPTIONS beside the menu, and as wide a space on its other side, which
+# keeps the menu in the middle of the screen.
 @onready var _options_panel: Control = %OptionsPanel
-@onready var _p2_button: Button = %PlayerTwoButton
-@onready var _sound_button: Button = %SoundButton
-@onready var _online_button: Button = %OnlineButton
-@onready var _fullscreen_button: Button = %FullscreenButton
+@onready var _balance: Control = %Balance
 @onready var _options_note: Label = %OptionsNote
 @onready var _settings_panel: Control = %SettingsPanel
 @onready var _settings_rows: VBoxContainer = %SettingsRows
@@ -107,6 +106,12 @@ var _online_note: Label
 ## The field being typed in, or null.
 var _typing: LineEdit = null
 
+# The OPTIONS' switch rows (MenuRows.make_switch_row), built at the start.
+var _p2_button: Button
+var _sound_button: Button
+var _online_button: Button
+var _fullscreen_button: Button
+
 # The host's HOST page, once someone has joined.
 var _host_button: Button
 var _host_panel: PanelContainer
@@ -119,6 +124,7 @@ var _kick_rows: Dictionary = {}    # peer id -> row
 func _ready() -> void:
 	visible = false
 	_nav = MenuFocus.new(get_viewport())
+	_build_options()
 	_common = CommonSettings.new(_settings_rows, true)
 	_common.controls_requested.connect(_open_controls)
 	for button: Button in [_resume_button, _settings_button, _restart_button, _main_menu_button, _quit_button,
@@ -126,10 +132,6 @@ func _ready() -> void:
 		button.mouse_entered.connect(button.grab_focus)   # hover focuses, as in every menu
 	_focus_on_hover(_settings_back_button)
 	_resume_button.pressed.connect(_resume)
-	_p2_button.pressed.connect(_toggle_p2)
-	_sound_button.pressed.connect(_toggle_sound)
-	_online_button.pressed.connect(_toggle_online)
-	_fullscreen_button.pressed.connect(_toggle_fullscreen)
 	WindowManager.fullscreen_changed.connect(_refresh_fullscreen)
 	_settings_button.pressed.connect(_open_settings)
 	_restart_button.pressed.connect(_leave.bind(restart_requested))
@@ -137,6 +139,7 @@ func _ready() -> void:
 	_quit_button.pressed.connect(_leave.bind(exit_requested))
 	_settings_back_button.pressed.connect(_close_settings)
 	_controls.closed.connect(_close_controls)
+	_options_panel.resized.connect(func() -> void: _balance.custom_minimum_size.x = _options_panel.size.x)
 	_build_settings_tabs()
 	_build_host_page()
 	Net.session_changed.connect(_on_session_changed)
@@ -228,6 +231,10 @@ func set_online_client(on: bool) -> void:
 
 
 func _open() -> void:
+	# (The switches first, while out of sight: they show how things are at
+	# once, not sliding there.)
+	_set_options_note("")
+	_refresh_options()
 	visible = true
 	if _online_client:
 		Net.input_blocked = true  # the keys drive this menu, not the tank
@@ -236,9 +243,28 @@ func _open() -> void:
 	_refresh_host_button()
 	_game.refresh()
 	_common.refresh()
-	_options_note.text = ""
-	_refresh_options()
 	_show_page(Page.MAIN, _resume_button)
+
+
+## The OPTIONS' rows, PLAYER 2, SOUND, ONLINE and FULLSCREEN, each its name and
+## a switch, over the note; as tall as the menu's buttons and as far apart, so
+## each sits level with one.
+func _build_options() -> void:
+	_p2_button = _add_option("PLAYER 2", _toggle_p2)
+	_p2_button.visible = false
+	_sound_button = _add_option("SOUND", _toggle_sound)
+	_online_button = _add_option("ONLINE", _toggle_online)
+	_fullscreen_button = _add_option("FULLSCREEN", _toggle_fullscreen)
+
+
+func _add_option(title: String, toggle: Callable) -> Button:
+	var row := MenuRows.make_switch_row(title)
+	row.custom_minimum_size.y = _resume_button.get_combined_minimum_size().y
+	row.pressed.connect(toggle)
+	var options := _options_note.get_parent()
+	options.add_child(row)
+	options.move_child(row, _options_note.get_index())
+	return row
 
 
 ## The OPTIONS as things are.
@@ -249,26 +275,28 @@ func _refresh_options() -> void:
 	_refresh_fullscreen(WindowManager.is_fullscreen())
 
 
-## "NAME: ON" or "NAME: OFF".
-static func _switch_text(name_template: String, on: bool) -> String:
-	return TranslationServer.translate(name_template) % TranslationServer.translate("ON" if on else "OFF")
+## A word under the options (why ONLINE couldn't open), or none.
+func _set_options_note(text: String) -> void:
+	_options_note.text = text
+	_options_note.visible = not text.is_empty()
 
 
 ## PLAYER 2 shows only when the game has both players, and says whether player 2
-## is in play. It can't be switched off while player 1 is out of lives: nobody
-## would be left on the field.
+## is in play. It can't be switched off while player 1 is out of lives (it's
+## greyed): nobody would be left on the field.
 func _refresh_p2() -> void:
 	_p2_button.visible = GameManager.player_active[0] and GameManager.player_active[1] \
 			and not Net.is_online()
 	var off: bool = GameManager.player_disabled[1]
-	_p2_button.text = tr("PLAYER 2: %s") % tr("OFF" if off else "ON")
+	MenuRows.switch_of(_p2_button).on = not off
 	_p2_button.disabled = not off and GameManager.player_lives[0] < 0
+	_p2_button.modulate = GameSettings.OFF_ROW_TINT if _p2_button.disabled else Color.WHITE
 
 
 ## FULLSCREEN, for the window as it is ([param on]: fullscreen), however it
 ## was switched (here, the settings' row, F11).
 func _refresh_fullscreen(on: bool) -> void:
-	_fullscreen_button.text = _switch_text("FULLSCREEN: %s", on)
+	MenuRows.switch_of(_fullscreen_button).on = on
 
 
 ## Switches fullscreen and stays on the page, the stage still paused.
@@ -277,7 +305,7 @@ func _toggle_fullscreen() -> void:
 
 
 func _refresh_sound() -> void:
-	_sound_button.text = _switch_text("SOUND: %s", SoundManager.is_sound_on())
+	MenuRows.switch_of(_sound_button).on = SoundManager.is_sound_on()
 
 
 ## All the sound on or off, kept for next time (SoundManager.set_sound_on).
@@ -289,13 +317,13 @@ func _toggle_sound() -> void:
 ## ONLINE: the game open to remote players, as the ONLINE tab's ALLOW REMOTE
 ## PLAYERS says (a client's menu has none).
 func _refresh_online_option() -> void:
-	_online_button.text = _switch_text("ONLINE: %s", _hosting_open())
+	MenuRows.switch_of(_online_button).on = _hosting_open()
 
 
 ## Opens the game to remote players, or closes it to newcomers, as ALLOW
 ## REMOTE PLAYERS does; a reason it couldn't open shows under the options.
 func _toggle_online() -> void:
-	_options_note.text = _switch_hosting()
+	_set_options_note(_switch_hosting())
 	_refresh_online_option()
 
 

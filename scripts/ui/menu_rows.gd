@@ -146,6 +146,26 @@ static func make_field_row(title: String, max_length: int, placeholder: String) 
 	return row
 
 
+## "NAME          (switch)" — a setting that is on or off, flipped by a press;
+## its "Switch" (a ToggleSwitch) shows which. The row is as wide as its name
+## and switch need, whatever the language.
+static func make_switch_row(title: String) -> Button:
+	var row := make_row()
+	var layout := layout_of(row)
+	var label := _make_name_label(title)
+	label.custom_minimum_size = Vector2.ZERO
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	layout.add_child(label)
+	var toggle := ToggleSwitch.new()
+	toggle.name = "Switch"
+	layout.add_child(toggle)
+	var fit := func() -> void:
+		row.custom_minimum_size.x = layout.get_combined_minimum_size().x + 2 * LAYOUT_MARGIN
+	layout.minimum_size_changed.connect(fit)
+	fit.call()
+	return row
+
+
 ## "NAME                    hint" — a row that runs an action when pressed.
 static func make_action_row(title: String, hint: String) -> Button:
 	var row := make_row()
@@ -175,6 +195,11 @@ static func value_label(row: Button) -> Label:
 ## A field row's text field.
 static func field(row: Button) -> LineEdit:
 	return row.get_node("Layout/Field") as LineEdit
+
+
+## A switch row's switch.
+static func switch_of(row: Button) -> ToggleSwitch:
+	return row.get_node("Layout/Switch") as ToggleSwitch
 
 
 ## A row's name label, on the left.

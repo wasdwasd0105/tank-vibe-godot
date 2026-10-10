@@ -40,6 +40,12 @@ layout_mode = 2
 mouse_filter = 2
 theme_override_constants/separation = 24
 
+[node name="Balance" type="Control" parent="PanelAnchor/MainPage"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+mouse_filter = 2
+
 [node name="MainPanel" type="PanelContainer" parent="PanelAnchor/MainPage"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(480, 0)
@@ -88,9 +94,10 @@ text = "QUIT GAME"
 
 [node name="OptionsPanel" type="PanelContainer" parent="PanelAnchor/MainPage"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(480, 0)
+custom_minimum_size = Vector2(240, 0)
 layout_mode = 2
-theme_type_variation = &"MenuPanel"
+size_flags_vertical = 0
+theme_type_variation = &"SidePanel"
 
 [node name="Options" type="VBoxContainer" parent="PanelAnchor/MainPage/OptionsPanel"]
 layout_mode = 2
@@ -102,34 +109,9 @@ theme_type_variation = &"HeaderLabel"
 text = "OPTIONS"
 horizontal_alignment = 1
 
-[node name="PlayerTwoButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
-unique_name_in_owner = true
-visible = false
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "PLAYER 2: ON"
-
-[node name="SoundButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "SOUND: ON"
-
-[node name="OnlineButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "ONLINE: OFF"
-
-[node name="FullscreenButton" type="Button" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_type_variation = &"MenuItemButton"
-text = "FULLSCREEN: OFF"
-
 [node name="OptionsNote" type="Label" parent="PanelAnchor/MainPage/OptionsPanel/Options"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 52)
+visible = false
 layout_mode = 2
 theme_type_variation = &"HintLabel"
 horizontal_alignment = 1

@@ -1,9 +1,9 @@
 extends Node
 ## Headless test for the pause menu: Esc or Start opens it over the paused
 ## stage; RESUME / RESTART STAGE / SETTINGS / MAIN MENU / QUIT GAME, and beside
-## them OPTIONS (right / left go between the two, fire flips one and stays):
-## SOUND, ONLINE (once on, every stage after opens again, till it's switched
-## off) and FULLSCREEN; the settings page changes sound, whether
+## them OPTIONS, a narrow panel of switches (right / left go between the two,
+## fire flips one and stays): SOUND, ONLINE (once on, every stage after opens
+## again, till it's switched off) and FULLSCREEN; the settings page changes sound, whether
 ## the game always opens fullscreen, the game's speed (the stage's clock follows it,
 ## and time runs normally again outside the stage), a key and a player's
 ## vibration without leaving the stage, and opens a player's controls page (the title screen's) on the
@@ -70,6 +70,11 @@ func _type(text: String) -> void:
 
 
 ## The settings file as it is on disk, read afresh.
+## An option as it shows: its name and its switch, "SOUND: ON".
+func _says(row: Button) -> String:
+	return "%s: %s" % [MenuRows.name_label(row).text, "ON" if MenuRows.switch_of(row).on else "OFF"]
+
+
 func _settings_file() -> ConfigFile:
 	var config := ConfigFile.new()
 	config.load(InputSettings.get_save_path())
@@ -323,13 +328,40 @@ func _run() -> void:
 	WindowManager.fullscreen_changed.connect(func(on: bool) -> void: fullscreen_asks.append(on))
 	await _key(KEY_ESCAPE)
 	await tree.process_frame
-	var options: Array = _menu._option_items().map(func(button: Button) -> String: return button.text)
+	var options: Array = _menu._option_items().map(_says)
 	check(_menu._main_page.visible and options == ["SOUND: ON", "ONLINE: OFF", "FULLSCREEN: OFF"]
-		and _menu._options_note.text.is_empty(),
+		and _menu._options_note.text.is_empty() and not _menu._options_note.visible,
 		"beside the menu, OPTIONS: %s (no PLAYER 2 in a one-player game)" % str(options))
-	check(_menu._option_items()[0].get_global_rect().position.y == _menu._resume_button.get_global_rect().position.y
-		and _menu._options_panel.get_global_rect().position.x > _menu._main_panel.get_global_rect().end.x,
-		"on the right, its first level with RESUME")
+	var level := true
+	for i in _menu._option_items().size():
+		var option: Control = _menu._option_items()[i]
+		var button: Control = _menu._menu_items()[i]
+		level = level and option.get_global_rect().position.y == button.get_global_rect().position.y \
+				and option.size.y == button.size.y
+	check(level and _menu._options_panel.get_global_rect().position.x > _menu._main_panel.get_global_rect().end.x,
+		"on the right, each option level with a button of the menu, as tall")
+	var fits := true
+	for row: Button in _menu._option_items():
+		var name_label: Label = MenuRows.name_label(row)
+		fits = fits and name_label.get_minimum_size().x <= name_label.size.x \
+				and row.get_global_rect().encloses(MenuRows.switch_of(row).get_global_rect())
+	check(fits and _menu._options_panel.size.x < _menu._main_panel.size.x * 0.65,
+		"narrow (Sean, 2026-10-10: \"half the wide\"): %d px beside the menu's %d, each name and switch inside its row"
+		% [_menu._options_panel.size.x, _menu._main_panel.size.x])
+	var toggle := ToggleSwitch.new()
+	_menu.add_child(toggle)   # (shown, and running while the stage is paused, as the menu does)
+	toggle.on = true
+	check(toggle.knob() == 0.0, "a switch flipped where it shows starts from where it was...")
+	await tree.create_timer(0.3, true).timeout
+	check(toggle.knob() == 1.0, "...and slides over")
+	toggle.visible = false
+	toggle.on = false
+	check(toggle.knob() == 0.0, "one out of sight is there at once")
+	toggle.free()
+	var middle: float = _menu.get_global_rect().get_center().x
+	check(absf(_menu._main_panel.get_global_rect().get_center().x - middle) < 1.0
+		and _menu._options_panel.get_global_rect().end.x < _menu.get_global_rect().end.x,
+		"the menu in the middle of the screen (Sean, 2026-10-10), the options on the screen beside it")
 	await _key(KEY_RIGHT)
 	check(_focus() == _menu._sound_button, "right from RESUME: SOUND, level with it")
 	await _key(KEY_RIGHT)
@@ -338,20 +370,20 @@ func _run() -> void:
 	await _key(KEY_DOWN)
 	check(_focus() == _menu._fullscreen_button, "down twice: FULLSCREEN")
 	await _key(KEY_ENTER)
-	check(fullscreen_asks == [true] and _menu._fullscreen_button.text == "FULLSCREEN: ON"
+	check(fullscreen_asks == [true] and _says(_menu._fullscreen_button) == "FULLSCREEN: ON"
 		and _menu.visible and tree.paused and _focus() == _menu._fullscreen_button,
 		"Enter: fullscreen, FULLSCREEN: ON, still paused on it")
 	WindowManager.set_fullscreen(false)  # as F11 or the settings' row would
-	check(_menu._fullscreen_button.text == "FULLSCREEN: OFF", "back in a window, however switched: FULLSCREEN: OFF")
+	check(_says(_menu._fullscreen_button) == "FULLSCREEN: OFF", "back in a window, however switched: FULLSCREEN: OFF")
 	await _key(KEY_DOWN)
 	check(_focus() == _menu._sound_button, "down past the last: round to SOUND")
 	var master := AudioServer.get_bus_index(&"Master")
 	await _key(KEY_ENTER)
-	check(_menu._sound_button.text == "SOUND: OFF" and AudioServer.is_bus_mute(master)
+	check(_says(_menu._sound_button) == "SOUND: OFF" and AudioServer.is_bus_mute(master)
 		and _settings_file().get_value("audio", "sound_on") == false and SoundManager.get_sfx_volume() > 0.0,
 		"SOUND, Enter: all the sound off, kept, the volumes as they were")
 	await _key(KEY_ENTER)
-	check(_menu._sound_button.text == "SOUND: ON" and not AudioServer.is_bus_mute(master)
+	check(_says(_menu._sound_button) == "SOUND: ON" and not AudioServer.is_bus_mute(master)
 		and _settings_file().get_value("audio", "sound_on") == true, "Enter again: on")
 	AudioServer.set_bus_mute(master, true)  # (a test run stays quiet)
 	_menu._fullscreen_button.mouse_entered.emit()
@@ -367,6 +399,13 @@ func _run() -> void:
 	check(_focus() == _menu._fullscreen_button, "right from QUIT GAME, below them all: the nearest, FULLSCREEN")
 	await _key(KEY_ESCAPE)
 	check(not _menu.visible and not tree.paused, "Esc from the options: resumed")
+	SoundManager.set_sound_on(false)   # (as from elsewhere, the menu closed)
+	await _key(KEY_ESCAPE)
+	check(_says(_menu._sound_button) == "SOUND: OFF" and MenuRows.switch_of(_menu._sound_button).knob() == 0.0,
+		"opened again: each switch shows how things are at once, no slide")
+	await _key(KEY_ESCAPE)
+	SoundManager.set_sound_on(true)
+	AudioServer.set_bus_mute(master, true)
 
 	print("\n[F] Mouse, and no pausing during a game over")
 	await _key(KEY_ESCAPE)
@@ -759,7 +798,7 @@ func _test_online_option() -> void:
 	await _key(KEY_ESCAPE)
 	_menu._online_button.grab_focus()
 	await _key(KEY_ENTER)
-	check(Net.is_host() and Net.port == port and Net.keep_hosting and _menu._online_button.text == "ONLINE: ON"
+	check(Net.is_host() and Net.port == port and Net.keep_hosting and _says(_menu._online_button) == "ONLINE: ON"
 		and _menu._options_note.text.is_empty() and _game.has_node("NetHostWorld") and tree.paused,
 		"ONLINE, Enter: the game opens to others, the menu still up")
 	_menu._refresh_online_tab()
@@ -774,10 +813,10 @@ func _test_online_option() -> void:
 		and PlayerInput.seats[0] == PlayerInput.LOCAL_P1,
 		"the next stage opens to others by itself, on the same port, player 1 on this machine's keys")
 	await _key(KEY_ESCAPE)
-	check(_menu._online_button.text == "ONLINE: ON", "its menu: ONLINE: ON")
+	check(_says(_menu._online_button) == "ONLINE: ON", "its menu: ONLINE: ON")
 	_menu._online_button.grab_focus()
 	await _key(KEY_ENTER)
-	check(not Net.is_online() and not Net.keep_hosting and _menu._online_button.text == "ONLINE: OFF",
+	check(not Net.is_online() and not Net.keep_hosting and _says(_menu._online_button) == "ONLINE: OFF",
 		"Enter: off, offline again (nobody had joined), the switch off")
 	await _key(KEY_ESCAPE)
 	_drop_stage()
@@ -788,12 +827,12 @@ func _test_online_option() -> void:
 		await _key(KEY_ESCAPE)
 		_menu._online_button.grab_focus()
 		await _key(KEY_ENTER)
-		check(not Net.is_online() and not Net.keep_hosting and _menu._online_button.text == "ONLINE: OFF"
-			and _menu._options_note.text == "That port is in use. Try another.",
+		check(not Net.is_online() and not Net.keep_hosting and _says(_menu._online_button) == "ONLINE: OFF"
+			and _menu._options_note.text == "That port is in use. Try another." and _menu._options_note.visible,
 			"a port in use: it says so under the options, and stays OFF")
 		blocker.stop()
 		await _key(KEY_ESCAPE)
 		await _key(KEY_ESCAPE)
-		check(_menu._options_note.text.is_empty(), "opened again: no old word under them")
+		check(_menu._options_note.text.is_empty() and not _menu._options_note.visible, "opened again: no old word under them")
 		await _key(KEY_ESCAPE)
 	_drop_stage()

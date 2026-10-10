@@ -233,7 +233,8 @@ func _run() -> void:
 	var menu = game.get_node("PauseLayer/PauseMenu")
 	menu._open()
 	await tree.process_frame
-	check(menu._p2_button.text == "玩家 2：关" and _shown(menu._resume_button) == "继续", "the pause menu: 继续, 玩家 2：关")
+	check(_shown(MenuRows.name_label(menu._p2_button)) == "玩家 2" and not MenuRows.switch_of(menu._p2_button).on
+		and _shown(menu._resume_button) == "继续", "the pause menu: 继续, and 玩家 2 switched off")
 	check(Array(game.stage_overlay.box_words()) == ["战斗成绩", "总计"],
 		"the results box, the one in-game text translated: 战斗成绩 over it, 总计 at its foot")
 	menu._open_settings()
@@ -241,8 +242,8 @@ func _run() -> void:
 	await tree.process_frame
 	menu._common.language_row.grab_focus()
 	await _key(KEY_RIGHT)
-	check(Localization.get_language() == "en" and menu._p2_button.text == "PLAYER 2: OFF",
-		"English from its settings: PLAYER 2: OFF rebuilt at once")
+	check(Localization.get_language() == "en" and _shown(MenuRows.name_label(menu._p2_button)) == "PLAYER 2"
+		and not MenuRows.switch_of(menu._p2_button).on, "English from its settings: PLAYER 2 at once, still off")
 	check(Array(game.stage_overlay.box_words()) == ["RESULTS", "TOTAL"], "and the results box's RESULTS / TOTAL")
 	Localization.set_language("zh_CN")
 	menu._close()
